@@ -1,0 +1,15 @@
+{
+  "name": "helm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local-first personal LLM harness for coding and office tasks.",
+  "type": "module",
+  "packageManager": "pnpm@10.34.5",
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "dev:cli": "pnpm --filter @helm/cli dev",
+    "dev:desktop": "pnpm --filter @helm/desktop dev",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck"
+  }
+}
