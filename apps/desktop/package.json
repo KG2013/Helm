@@ -15,6 +15,7 @@
     "test:electron": "tsx test/electron-smoke.ts"
   },
   "dependencies": {
+    "@helm/providers": "workspace:*",
     "@helm/runtime": "workspace:*",
     "@vitejs/plugin-react": "6.1.1",
     "concurrently": "10.0.5",

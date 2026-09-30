@@ -2,7 +2,7 @@
 
 Helm 是个人本地 LLM Harness，目标是连接 DeepSeek、智谱、Kimi，完成本地编码与 DOCX、XLSX、PDF 任务。首发平台为 macOS Apple Silicon，提供 Electron 桌面端和 CLI，由同一个 TypeScript Runtime 管理任务、权限、执行和验收。
 
-**当前阶段：架构已确认，#1–#4 的 Desktop IPC → Runtime → Mock Provider 纵向骨架已完成。** 当前 CLI 和桌面端都运行 Mock Provider；真实厂商和真实文件工具仍待后续切片。
+**当前阶段：架构已确认，#1–#4 的 Desktop IPC → Runtime → Mock Provider 纵向骨架已完成。** Kimi Code 已提供可选的 Keychain-backed 真实 Provider 冒烟路径；真实工具、其他厂商和持久恢复仍待后续切片。
 
 ## 快速开始
 
@@ -40,6 +40,15 @@ CLI 输出 Task、Session、Run、Verification 和事件数量的 JSON 汇总。
 node apps/cli/dist/main.js run "骨架冒烟检查"
 ```
 
+使用已保存到 macOS Keychain 的 Kimi Code Key 做真实请求：
+
+```bash
+HELM_PROVIDER=kimi pnpm --filter @helm/cli start -- run "用一句话说明 Helm 当前状态"
+HELM_PROVIDER=kimi pnpm --filter @helm/desktop start
+```
+
+这两条命令读取 Keychain 服务 `com.helm.provider.kimi-code`、账户 `helm`，默认调用 Kimi Code 的 `kimi-for-coding` 模型和中国区 OpenAI-compatible 地址。海外地址或模型可通过 `HELM_KIMI_BASE_URL`、`HELM_KIMI_MODEL` 覆盖；Key 不应放入 shell 命令、仓库或事件日志。
+
 ## 界面与前后端分工
 
 - 左栏：工作区和会话列表。
@@ -55,9 +64,9 @@ node apps/cli/dist/main.js run "骨架冒烟检查"
 | 路径 | 职责与当前状态 |
 |---|---|
 | `apps/desktop` | Electron + React + Vite 界面、typed preload/IPC、Run 控制/审批与 Mock Runtime 纵向切片 |
-| `apps/cli` | 调用 Runtime 的 Mock 演示命令 |
+| `apps/cli` | 调用 Runtime 的 Mock 演示命令；可选 Kimi Code Keychain-backed Provider |
 | `packages/runtime` | Task/Session/Run、状态机、内存事件账本、Policy/Executor/Verifier 接口；含待绑定的 SQLite 实现 |
-| `packages/providers` | 通用非流式 OpenAI-compatible HTTP 适配器与三家厂商 id；真实 API 尚未联调 |
+| `packages/providers` | 通用非流式 OpenAI-compatible HTTP 适配器与三家厂商 id；Kimi Code 已通过桌面和 CLI 冒烟，DeepSeek/智谱仍未联调 |
 | `workers/document-worker` | JSONL 协议骨架，仅实现 health 和文件元数据 inspect |
 | `docs/design`、`docs/adr` | 已确认架构、决策记录、来源归属 |
 | `docs/development` | 实现状态、验证记录和后续任务 |
@@ -75,7 +84,7 @@ printf '{"id":"health-1","operation":"health"}\n' | python3 workers/document-wor
 
 ## 接下来开发什么
 
-下一步推进受限 Coding 工具和真实 Provider 接入，再补 Keychain、SQLite 重启恢复和 Office worker。真实副作用接入前必须完成路径、策略和执行边界。
+下一步推进受限 Coding 工具、DeepSeek/智谱 Provider 和统一 Provider 配置，再补 SQLite 重启恢复和 Office worker。真实副作用接入前必须完成路径、策略和执行边界。
 
 分阶段交付条件见 [下一步实施计划](docs/development/next-steps.md)。
 

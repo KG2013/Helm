@@ -25,7 +25,7 @@
 
 ## 3. 真实 Provider 与凭据
 
-先联调 DeepSeek，再接智谱和 Kimi。验证各厂商当前 endpoint、模型、工具/流式协议，补上下文与工具结果回传、schema 校验、超时/取消、usage 和错误分类。凭据由主进程/CLI 通过 Keychain resolver 取得，数据库只存引用。
+Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证；下一步联调 DeepSeek 和智谱，并补各厂商的工具/流式协议、上下文与工具结果回传、schema 校验、超时/取消、usage 和错误分类。凭据由主进程/CLI 通过 Keychain resolver 取得，数据库只存引用。
 
 完成条件：每家至少一个可重复文本/工具任务通过；配置与事件不含密钥；中止和失败不会把未知执行结果当成成功。测试 fixture 通过和真实厂商调用成功要分别记录。
 

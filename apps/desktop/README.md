@@ -11,3 +11,5 @@ pnpm --filter @helm/desktop start     # Open the built renderer in Electron
 ```
 
 The renderer receives only the narrow API exposed by the preload. Node integration is disabled and context isolation, sandboxing, and an IPC allowlist are enabled in the Electron window. Current IPC handlers expose runtime info, task submission, Run snapshot, pause/resume/cancel, approval resolution, and ordered Run events. Browser preview can show the UI but does not provide Electron preload or IPC. The current slice still uses an in-memory ledger and MockProvider. See [desktop/runtime boundary](../../docs/design/desktop-runtime-boundary.md).
+
+For a real Kimi Code request, set `HELM_PROVIDER=kimi` before `pnpm --filter @helm/desktop start`. The Main process reads the Keychain item `com.helm.provider.kimi-code` for account `helm`; it never exposes the key to Renderer or Runtime events. Omit the variable to keep the deterministic MockProvider path.

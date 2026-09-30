@@ -17,7 +17,7 @@ flowchart TD
     Runtime --> Mock[Mock Provider]
     Runtime -. 待联调 .-> Adapter[Provider Adapter]
     Adapter -. HTTPS .-> LLM[DeepSeek / 智谱 / Kimi]
-    Main -. 凭据解析待实现 .-> Keychain[macOS Keychain]
+    Main -. Kimi Code 已接入；其他厂商待实现 .-> Keychain[macOS Keychain]
     Runtime -. 原生绑定待接入 .-> SQLite[SQLite 事件账本]
     Runtime -. 待接线 .-> Worker[Python Document Worker]
     Runtime -. 待实现 .-> Execution[路径守卫 / 工具 / Sandbox]
@@ -42,7 +42,7 @@ flowchart TD
 - 右栏展示当前 Run 对应的 Artifact、Diff、Approval 和 Verification。
 - 终端和原始 Trace 可进入底部抽屉；这部分目前仍是规划。
 
-当前 UI 已改为由 Runtime 事件和快照驱动的消息流、输入框、执行卡片、Approval 和 Verification。Renderer 只调用 preload 暴露的 start/snapshot/control/approval 方法；主进程将 Runtime 事件按 runId/sequence 转发并做脱敏。当前使用 InMemoryEventStore 与 MockProvider，因此 UI 冒烟证明的是本地 IPC 与 Runtime 边界，不是实际厂商、文件工具或应用退出后的恢复。
+当前 UI 已改为由 Runtime 事件和快照驱动的消息流、输入框、执行卡片、Approval 和 Verification。Renderer 只调用 preload 暴露的 start/snapshot/control/approval 方法；主进程将 Runtime 事件按 runId/sequence 转发并做脱敏。默认使用 InMemoryEventStore 与 MockProvider；设置 `HELM_PROVIDER=kimi` 时，Main 从 macOS Keychain 读取 Kimi Code 凭据并调用真实 Provider。UI 冒烟和 Kimi 文本请求分别证明本地 IPC 边界与 Provider 连通性，不代表真实文件工具或应用退出后的恢复。
 
 ## 下一步的调用流程
 

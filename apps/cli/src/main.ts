@@ -4,18 +4,26 @@ import {
   RuntimeFacade,
   type ProviderResponse,
 } from '@helm/runtime'
+import { OpenAICompatibleProvider } from '@helm/providers'
+import { readKeychainSecret } from './keychain.js'
 
 function printHelp(): void {
-  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local demo task through the shared Runtime\n  helm help             Show this help\n\nThe P0 skeleton uses a Mock Provider. Provider adapters, Keychain lookup,\nand real tool execution will be connected in subsequent slices.`)
+  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm help             Show this help\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
 }
 
 async function run(goal: string): Promise<void> {
-  const responses: ProviderResponse[] = [
-    { kind: 'final', content: `Completed local task: ${goal}` },
-  ]
+  const useKimi = process.env.HELM_PROVIDER?.toLowerCase() === 'kimi'
+  const provider = useKimi
+    ? new OpenAICompatibleProvider({
+        id: 'kimi',
+        model: process.env.HELM_KIMI_MODEL ?? 'kimi-for-coding',
+        baseUrl: process.env.HELM_KIMI_BASE_URL ?? 'https://api.kimi.com/coding/v1',
+        getApiKey: () => readKeychainSecret(process.env.HELM_KIMI_KEYCHAIN_SERVICE ?? 'com.helm.provider.kimi-code'),
+      })
+    : new MockProvider([{ kind: 'final', content: `Completed local task: ${goal}` } satisfies ProviderResponse])
   const runtime = new RuntimeFacade({
     store: new InMemoryEventStore(),
-    provider: new MockProvider(responses),
+    provider,
   })
   const task = await runtime.createTask({ goal, workspaceId: process.cwd() })
   const session = await runtime.createSession({ taskId: task.id })

@@ -17,6 +17,7 @@
     "pretypecheck": "pnpm --filter @helm/runtime build"
   },
   "dependencies": {
+    "@helm/providers": "workspace:*",
     "@helm/runtime": "workspace:*"
   },
   "devDependencies": {
