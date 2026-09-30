@@ -10,9 +10,12 @@
     "build": "tsc -b && vite build && npm run build:electron",
     "start": "electron .",
     "preview": "vite preview --config vite.config.ts",
-    "build:electron": "esbuild src/main/main.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/main.cjs && esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload.cjs"
+    "build:electron": "esbuild src/main/main.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/main.cjs && esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload.cjs",
+    "test": "tsx --test test/*.test.ts",
+    "test:electron": "tsx test/electron-smoke.ts"
   },
   "dependencies": {
+    "@helm/runtime": "workspace:*",
     "@vitejs/plugin-react": "6.1.1",
     "concurrently": "10.0.5",
     "electron": "44.5.0",
@@ -26,6 +29,8 @@
     "@types/node": "26.6.3",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "playwright-core": "1.63.0",
+    "tsx": "4.23.15",
     "typescript": "7.0.2"
   }
 }

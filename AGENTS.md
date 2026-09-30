@@ -28,3 +28,17 @@
 - 更新相关文档中的实现状态、运行步骤和限制；最终报告区分已测、未测与计划。
 - 提交前检查 diff，保留用户已有工作；编译产物、依赖目录、临时文件和凭据按 `.gitignore` 排除。
 - 用户要求提交时完成检查后直接 commit；push 需要用户授权。若新建分支，使用 `codex/` 前缀。
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specifications live in GitHub Issues for `KG2013/Helm`; use the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default canonical labels `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository using the root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.

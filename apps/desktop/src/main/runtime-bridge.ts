@@ -1,0 +1,107 @@
+import { reduceRunEvents, type DomainEvent, type RuntimeFacade, type Session, type Task } from '@helm/runtime'
+import {
+  IPC_CHANNELS,
+  isRunId,
+  isRunControlRequest,
+  isRunApprovalRequest,
+  isStartRunRequest,
+  type RuntimeInfo,
+  type RunSnapshot,
+  type StartRunRequest,
+  type RunControlRequest,
+  type RunApprovalRequest,
+  type StartRunResponse,
+} from '../shared/ipc.js'
+
+export type RuntimeIpc = {
+  handle(channel: string, handler: (event: unknown, request?: unknown) => unknown): void
+}
+
+export type RuntimeBridgeOptions = {
+  ipc: RuntimeIpc
+  runtime: RuntimeFacade
+  runtimeInfo: RuntimeInfo
+  emit: (event: DomainEvent) => void
+  workspaceIds?: readonly string[]
+}
+
+const SENSITIVE_KEYS = /api[-_]?key|authorization|cookie|secret|password|token/i
+
+function sanitizeValue(value: unknown, depth = 0): unknown {
+  if (depth > 4) return '[truncated]'
+  if (typeof value === 'string') return value.length > 4000 ? `${value.slice(0, 4000)}…` : value
+  if (Array.isArray(value)) return value.slice(0, 100).map((item) => sanitizeValue(item, depth + 1))
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value).slice(0, 100).map(([key, item]) => [key, SENSITIVE_KEYS.test(key) ? '[redacted]' : sanitizeValue(item, depth + 1)]))
+}
+
+function sanitizeEvent(event: DomainEvent): DomainEvent {
+  return { ...event, payload: sanitizeValue(event.payload) as Record<string, unknown> }
+}
+
+export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () => void {
+  const { ipc, runtime } = options
+  const unsubscribe = runtime.onEvent((event) => {
+    if (event.runId) options.emit(sanitizeEvent(event))
+  })
+
+  ipc.handle(IPC_CHANNELS.runtimeInfo, () => options.runtimeInfo)
+  ipc.handle(IPC_CHANNELS.runStart, async (_event, value) => {
+    if (!isStartRunRequest(value)) throw new Error('Invalid run request: goal and workspaceId are required.')
+    const request = value as StartRunRequest
+    if (!(options.workspaceIds ?? ['workspace-helm']).includes(request.workspaceId)) throw new Error('Unknown workspace.')
+    let task: Task
+    let session: Session
+    if (request.sessionId) {
+      const existingSession = runtime.getSession(request.sessionId)
+      if (!existingSession) throw new Error('Unknown session.')
+      const existingTask = runtime.getTask(existingSession.taskId)
+      if (!existingTask || existingTask.workspaceId !== request.workspaceId) throw new Error('Session workspace mismatch.')
+      session = existingSession
+      task = existingTask
+    } else {
+      task = await runtime.createTask({ goal: request.goal.trim(), workspaceId: request.workspaceId.trim() })
+      session = await runtime.createSession({ taskId: task.id })
+    }
+    const run = await runtime.startRun({ taskId: task.id, sessionId: session.id })
+    void runtime.run(run.id).catch(() => undefined)
+    const response: StartRunResponse = { task, session, run }
+    return response
+  })
+  ipc.handle(IPC_CHANNELS.runControl, async (_event, value) => {
+    if (!isRunControlRequest(value)) throw new Error('Invalid Run control request.')
+    const request = value as RunControlRequest
+    const current = await runtime.getRun(request.runId)
+    if (!current) throw new Error('Unknown run.')
+    if (request.action === 'cancel' && ['completed', 'failed', 'cancelled', 'needs_reconciliation'].includes(current.state)) return current
+    if (request.action === 'pause' && (current.state === 'paused' || ['completed', 'failed', 'cancelled', 'needs_reconciliation'].includes(current.state))) return current
+    if (request.action === 'resume' && current.state !== 'paused') return current
+    if (request.action === 'pause') return runtime.pauseRun(request.runId, request.reason ?? 'paused by user')
+    if (request.action === 'resume') {
+      const resumed = await runtime.resumeRun(request.runId)
+      void runtime.run(request.runId).catch(() => undefined)
+      return resumed
+    }
+    return runtime.cancelRun(request.runId, request.reason ?? 'cancelled by user')
+  })
+  ipc.handle(IPC_CHANNELS.runApproval, async (_event, value) => {
+    if (!isRunApprovalRequest(value)) throw new Error('Invalid approval request.')
+    const request = value as RunApprovalRequest
+    const task = runtime.getTask((await runtime.getRun(request.runId))?.taskId ?? '')
+    if (!task || task.workspaceId !== request.workspaceId) throw new Error('Approval workspace mismatch.')
+    return runtime.resolveApproval(request.runId, request.approvalId, request.decision, request.workspaceId)
+  })
+  ipc.handle(IPC_CHANNELS.runSnapshot, async (_event, value) => {
+    if (!isRunId(value)) throw new Error('Invalid run id.')
+    const events = await runtime.getEvents(value)
+    if (!events.length) throw new Error('Unknown run.')
+    const run = reduceRunEvents(events, value)
+    const task = runtime.getTask(run.taskId)
+    const session = runtime.getSession(run.sessionId)
+    if (!task || !session) throw new Error('Run metadata unavailable.')
+    const snapshot: RunSnapshot = { task, session, run, events }
+    return snapshot
+  })
+
+  return unsubscribe
+}

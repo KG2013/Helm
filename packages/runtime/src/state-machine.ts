@@ -51,7 +51,7 @@ const transitions: Record<RunState, Partial<Record<RunAction, RunState>>> = {
     needs_input: 'paused',
     cancel: 'cancelled',
   },
-  paused: { resume: 'recovering', cancel: 'cancelled' },
+  paused: { resume: 'recovering', approval_deny: 'failed', cancel: 'cancelled' },
   recovering: { recovered: 'deciding', fail: 'failed', cancel: 'cancelled' },
   completed: {},
   failed: {},

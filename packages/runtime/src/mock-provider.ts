@@ -28,6 +28,6 @@ export class MockProvider implements Provider {
 
   async complete(request: ProviderRequest): Promise<ProviderResponse> {
     this.requests.push(request);
-    return this.queue.shift() ?? { kind: 'final', content: 'mock response' };
+    return this.queue.shift() ?? { kind: 'final', content: `Completed local task: ${request.task.goal}` };
   }
 }

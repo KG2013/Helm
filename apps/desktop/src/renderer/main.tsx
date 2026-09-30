@@ -1,38 +1,34 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { reduceRunEvents } from '@helm/runtime'
+import type { DomainEvent, Run, Session, Task } from '@helm/runtime'
+import type { RunEventPayload, RunSnapshot } from '../shared/ipc.js'
 import './styles.css'
 
-type StepState = 'done' | 'running' | 'queued'
-
-type TimelineStep = {
+type ChatMessage = {
   id: string
-  label: string
-  detail: string
-  state: StepState
-  time?: string
+  role: 'user' | 'assistant'
+  content: string
+  source: 'task' | 'runtime'
+  status?: 'failed'
 }
 
-const initialSteps: TimelineStep[] = [
-  { id: 'intent', label: 'Understand request', detail: 'Task intent and constraints extracted', state: 'done', time: '10:42:01' },
-  { id: 'plan', label: 'Plan changes', detail: '3 files, 1 verification gate', state: 'done', time: '10:42:08' },
-  { id: 'edit', label: 'Apply implementation', detail: 'Waiting for workspace permission', state: 'running' },
-  { id: 'verify', label: 'Run verification', detail: 'Tests and artifact checks', state: 'queued' },
-  { id: 'deliver', label: 'Prepare delivery', detail: 'Summary and changed files', state: 'queued' },
-]
+type TimelineState = 'done' | 'running' | 'queued' | 'failed'
+type TimelineStep = { id: string; label: string; detail: string; state: TimelineState }
+type PendingApproval = { approvalId: string; reason: string; call: { name: string; arguments: Record<string, unknown> } }
 
-function Icon({ name }: { name: 'grid' | 'folder' | 'plus' | 'chevron' | 'code' | 'file' | 'check' | 'clock' | 'shield' | 'spark' | 'play' | 'more' | 'search' | 'send' | 'terminal' }) {
+const TERMINAL_STATES: Run['state'][] = ['completed', 'failed', 'cancelled', 'needs_reconciliation']
+
+function Icon({ name }: { name: 'folder' | 'plus' | 'chevron' | 'code' | 'check' | 'clock' | 'shield' | 'spark' | 'more' | 'search' | 'send' | 'terminal' }) {
   const paths: Record<string, string> = {
-    grid: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z',
     folder: 'M3 6.5A1.5 1.5 0 0 1 4.5 5H10l2 2h7.5A1.5 1.5 0 0 1 21 8.5v8A1.5 1.5 0 0 1 19.5 18h-15A1.5 1.5 0 0 1 3 16.5z',
     plus: 'M12 5v14M5 12h14',
     chevron: 'm9 18 6-6-6-6',
     code: 'm8 9-3 3 3 3m8-6 3 3-3 3m-4-9-2 12',
-    file: 'M6 3h8l4 4v14H6zM14 3v5h5M9 13h6M9 17h6',
     check: 'm5 12 4 4L19 6',
     clock: 'M12 7v5l3 2M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z',
     shield: 'M12 3 19 6v5c0 4.6-3 8-7 10-4-2-7-5.4-7-10V6zM9 12l2 2 4-4',
     spark: 'm12 3 1.4 5.6L19 10l-5.6 1.4L12 17l-1.4-5.6L5 10l5.6-1.4zM19 17v4M17 19h4',
-    play: 'm8 5 11 7-11 7z',
     more: 'M6 12h.01M12 12h.01M18 12h.01',
     search: 'm20 20-4.3-4.3m2.3-5.2a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0z',
     send: 'm21 3-7.2 18-3.8-7-7-3.8zM10 14l4-4',
@@ -41,53 +37,253 @@ function Icon({ name }: { name: 'grid' | 'folder' | 'plus' | 'chevron' | 'code' 
   return <svg className="icon" viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>
 }
 
-function App() {
-  const [steps, setSteps] = useState(initialSteps)
-  const [isRunning, setIsRunning] = useState(false)
-  const [approvalState, setApprovalState] = useState<'pending' | 'approved'>('pending')
-  const [runtime, setRuntime] = useState('local runtime')
-  const [inputValue, setInputValue] = useState('')
+function eventPayload(event: DomainEvent): Record<string, unknown> {
+  return event.payload as Record<string, unknown>
+}
 
-  useEffect(() => {
-    window.helm?.runtimeInfo().then((info) => setRuntime(`${info.platform} · ${info.isPackaged ? 'packaged' : 'dev'}`)).catch(() => undefined)
-    const unsubscribe = window.helm?.subscribe('run:event', (payload) => {
-      if (!payload || typeof payload !== 'object') return
-      const event = payload as { stepId?: string; state?: StepState; detail?: string }
-      if (!event.stepId) return
-      setSteps((current) => current.map((step) => step.id === event.stepId ? { ...step, state: event.state ?? step.state, detail: event.detail ?? step.detail } : step))
+function isTerminal(state: Run['state'] | undefined): boolean {
+  return state ? TERMINAL_STATES.includes(state) : false
+}
+
+/** Project a run from the same event ledger that drives the chat messages. */
+function projectRun(events: readonly DomainEvent[], fallback?: Run): Run | undefined {
+  if (events.some((event) => event.type === 'run.created')) {
+    try {
+      return reduceRunEvents(events)
+    } catch {
+      // A partial event stream can arrive before run.created. Keep the last snapshot until it is complete.
+    }
+  }
+  return fallback
+}
+
+function timeline(run: Run | undefined): TimelineStep[] {
+  if (!run) {
+    return [
+      { id: 'task', label: 'Accept request', detail: 'Waiting for a task', state: 'queued' },
+      { id: 'provider', label: 'Run provider', detail: 'Waiting for Runtime', state: 'queued' },
+      { id: 'verify', label: 'Verify output', detail: 'Waiting for a Run', state: 'queued' },
+      { id: 'deliver', label: 'Report result', detail: 'Waiting for output', state: 'queued' },
+    ]
+  }
+
+  const failed = ['failed', 'cancelled', 'needs_reconciliation'].includes(run.state)
+  const providerState: TimelineState = run.state === 'completed' || run.steps > 0 ? 'done' : failed ? 'failed' : 'running'
+  const verificationState: TimelineState = run.state === 'completed'
+    ? 'done'
+    : failed
+      ? 'failed'
+      : ['verifying', 'reducing'].includes(run.state)
+        ? 'running'
+        : 'queued'
+  const deliveryState: TimelineState = run.state === 'completed' ? 'done' : failed ? 'failed' : 'queued'
+
+  return [
+    { id: 'task', label: 'Accept request', detail: `Task ${run.taskId}`, state: 'done' },
+    { id: 'provider', label: 'Run provider', detail: providerState === 'done' ? `${run.steps} step${run.steps === 1 ? '' : 's'}` : run.state, state: providerState },
+    { id: 'verify', label: 'Verify output', detail: run.verification?.result ?? run.state, state: verificationState },
+    { id: 'deliver', label: 'Report result', detail: run.state, state: deliveryState },
+  ]
+}
+
+function messagesFromLedger(task: Task | undefined, run: Run | undefined, events: readonly DomainEvent[]): ChatMessage[] {
+  if (!task) return []
+  const messages: ChatMessage[] = [{ id: `task:${task.id}`, role: 'user', content: task.goal, source: 'task' }]
+  const terminalMessages = events
+    .filter((event) => event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.needs_reconciliation')
+    .map((event): ChatMessage | undefined => {
+      const payload = eventPayload(event)
+      if (event.type === 'run.completed' && typeof payload.output === 'string') {
+        return { id: event.id, role: 'assistant', content: payload.output, source: 'runtime' }
+      }
+      const detail = typeof payload.error === 'string' ? payload.error : typeof payload.reason === 'string' ? payload.reason : undefined
+      if (!detail) return undefined
+      return { id: event.id, role: 'assistant', content: detail, source: 'runtime', status: 'failed' }
     })
-    return () => unsubscribe?.()
+    .filter((message): message is ChatMessage => Boolean(message))
+
+  // The completed event is authoritative. The fallback only covers an already materialized snapshot
+  // whose event batch is still being backfilled, and is keyed by the run so it cannot duplicate output.
+  if (terminalMessages.length === 0 && run?.finalOutput) {
+    terminalMessages.push({ id: `run-output:${run.id}`, role: 'assistant', content: run.finalOutput, source: 'runtime' })
+  }
+  return [...messages, ...terminalMessages]
+}
+
+function pendingApproval(events: readonly DomainEvent[]): PendingApproval | undefined {
+  const decided = new Set<string>()
+  for (const event of events) {
+    if (event.type === 'approval.decided') {
+      const approvalId = eventPayload(event).approvalId
+      if (typeof approvalId === 'string') decided.add(approvalId)
+    }
+  }
+  for (const event of [...events].reverse()) {
+    if (event.type !== 'approval.requested') continue
+    const payload = eventPayload(event)
+    const approvalId = payload.approvalId
+    const call = payload.call
+    if (typeof approvalId !== 'string' || decided.has(approvalId) || !call || typeof call !== 'object') continue
+    const callRecord = call as Record<string, unknown>
+    if (typeof callRecord.name !== 'string' || !callRecord.arguments || typeof callRecord.arguments !== 'object') continue
+    return { approvalId, reason: typeof payload.reason === 'string' ? payload.reason : 'Runtime requests approval.', call: { name: callRecord.name, arguments: callRecord.arguments as Record<string, unknown> } }
+  }
+  return undefined
+}
+
+function App() {
+  const [runtime, setRuntime] = useState('local runtime')
+  const [task, setTask] = useState<Task>()
+  const [session, setSession] = useState<Session>()
+  const [run, setRun] = useState<Run>()
+  const [events, setEvents] = useState<DomainEvent[]>([])
+  const [history, setHistory] = useState<ChatMessage[]>([])
+  const [inputValue, setInputValue] = useState('')
+  const [error, setError] = useState<string>()
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [controlPending, setControlPending] = useState(false)
+
+  const activeRunIdRef = useRef<string | undefined>(undefined)
+  const submittingRef = useRef(false)
+  const snapshotRequestRef = useRef(0)
+  const ledgersRef = useRef(new Map<string, Map<string, DomainEvent>>())
+
+  const mergeEvents = useCallback((runId: string, incoming: readonly DomainEvent[]): DomainEvent[] => {
+    const ledger = ledgersRef.current.get(runId) ?? new Map<string, DomainEvent>()
+    const existingSequences = new Set(Array.from(ledger.values(), (event) => event.sequence))
+    for (const event of incoming) {
+      if (event.runId && event.runId !== runId) continue
+      if (ledger.has(event.id) || existingSequences.has(event.sequence)) continue
+      // Runtime sequences are monotonic per run. An unseen lower sequence is still
+      // accepted so a snapshot can backfill an event that arrived after a live event.
+      ledger.set(event.id, event)
+      existingSequences.add(event.sequence)
+    }
+    ledgersRef.current.set(runId, ledger)
+    return Array.from(ledger.values()).sort((left, right) => left.sequence - right.sequence)
   }, [])
 
-  const completed = useMemo(() => steps.filter((step) => step.state === 'done').length, [steps])
+  const applySnapshot = useCallback((snapshot: RunSnapshot, requestId: number) => {
+    if (activeRunIdRef.current !== snapshot.run.id || snapshotRequestRef.current !== requestId) return
+    const merged = mergeEvents(snapshot.run.id, snapshot.events)
+    setTask(snapshot.task)
+    setSession(snapshot.session)
+    setEvents(merged)
+    setRun((previous) => projectRun(merged, snapshot.run) ?? previous ?? snapshot.run)
+  }, [mergeEvents])
 
-  function startRun() {
-    setIsRunning(true)
-    setSteps((current) => current.map((step) => step.id === 'edit' ? { ...step, state: 'running', detail: 'Applying changes in isolated workspace' } : step))
-    window.setTimeout(() => {
-      setSteps((current) => current.map((step) => step.id === 'edit' ? { ...step, state: 'done', detail: 'Changes applied to 3 files', time: '10:42:19' } : step.id === 'verify' ? { ...step, state: 'running', detail: 'Running checks' } : step))
-      window.setTimeout(() => {
-        setSteps((current) => current.map((step) => step.id === 'verify' ? { ...step, state: 'done', detail: 'All checks passed', time: '10:42:24' } : step.id === 'deliver' ? { ...step, state: 'running', detail: 'Preparing summary' } : step))
-        setIsRunning(false)
-      }, 1000)
-    }, 900)
+  const refreshSnapshot = useCallback(async (runId: string, requestId: number) => {
+    try {
+      const snapshot = await window.helm?.getRunSnapshot(runId)
+      if (snapshot) applySnapshot(snapshot, requestId)
+    } catch (cause) {
+      if (activeRunIdRef.current === runId && snapshotRequestRef.current === requestId) {
+        setError(cause instanceof Error ? cause.message : 'Unable to load the Run snapshot.')
+      }
+    }
+  }, [applySnapshot])
+
+  useEffect(() => {
+    const bridge = window.helm
+    if (!bridge) {
+      setRuntime('browser preview')
+      return undefined
+    }
+    void bridge.runtimeInfo()
+      .then((info) => setRuntime(`${info.platform} · ${info.isPackaged ? 'packaged' : 'dev'}`))
+      .catch(() => setRuntime('local runtime · unavailable'))
+
+    const unsubscribe = bridge.subscribe((payload: RunEventPayload) => {
+      const runId = payload.runId
+      // Events are broadcast to every renderer. Only the selected Run may mutate this view.
+      if (!runId || runId !== activeRunIdRef.current) return
+      const merged = mergeEvents(runId, [payload])
+      setEvents(merged)
+      setRun((previous) => projectRun(merged, previous) ?? previous)
+    })
+    return unsubscribe
+  }, [mergeEvents])
+
+  const steps = useMemo(() => timeline(run), [run])
+  const currentMessages = useMemo(() => messagesFromLedger(task, run, events), [events, run, task])
+  const messages = useMemo(() => [...history, ...currentMessages], [currentMessages, history])
+  const completedSteps = steps.filter((step) => step.state === 'done').length
+  const canSend = Boolean(inputValue.trim()) && !isSubmitting && (!run || isTerminal(run.state))
+  const verificationResult = run?.state === 'needs_reconciliation' ? 'needs_reconciliation' : run?.verification?.result ?? 'pending'
+  const approval = useMemo(() => pendingApproval(events), [events])
+
+  async function sendMessage() {
+    const goal = inputValue.trim()
+    if (!goal || submittingRef.current || !canSend) return
+    const previousRunId = activeRunIdRef.current
+    submittingRef.current = true
+    setIsSubmitting(true)
+    setError(undefined)
+    // Stop old-run events from landing while the new IPC request is in flight.
+    activeRunIdRef.current = undefined
+    const requestId = ++snapshotRequestRef.current
+    try {
+      const response = await window.helm?.startRun({ goal, workspaceId: 'workspace-helm' })
+      if (!response) throw new Error('Desktop IPC is unavailable. Open Helm through Electron.')
+      activeRunIdRef.current = response.run.id
+      ledgersRef.current.set(response.run.id, new Map())
+      // Keep completed Run messages in the conversation when switching to the next Run.
+      // The execution card and right rail still follow only the newly selected Run.
+      if (task && run) {
+        setHistory((previous) => {
+          const known = new Set(previous.map((message) => message.id))
+          return [...previous, ...currentMessages.filter((message) => !known.has(message.id))]
+        })
+      }
+      setInputValue('')
+      setTask(response.task)
+      setSession(response.session)
+      setRun(response.run)
+      setEvents([])
+      await refreshSnapshot(response.run.id, requestId)
+    } catch (cause) {
+      activeRunIdRef.current = previousRunId
+      setError(cause instanceof Error ? cause.message : 'Unable to start the Run.')
+    } finally {
+      submittingRef.current = false
+      setIsSubmitting(false)
+    }
   }
 
-  async function approve() {
-    await window.helm?.requestApproval({ action: 'workspace.write', reason: 'Apply the planned implementation' })
-    setApprovalState('approved')
+  async function controlRun(action: 'pause' | 'resume' | 'cancel') {
+    if (!run || controlPending) return
+    setControlPending(true)
+    try {
+      const next = await window.helm?.controlRun({ runId: run.id, action })
+      if (next) setRun(next)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to control the Run.')
+    } finally {
+      setControlPending(false)
+    }
   }
 
-  function sendMessage() {
-    if (!inputValue.trim()) return
-    setInputValue('')
+  async function decideApproval(decision: 'approve' | 'deny') {
+    if (!run || !approval || controlPending) return
+    setControlPending(true)
+    try {
+      const next = await window.helm?.resolveApproval({ runId: run.id, approvalId: approval.approvalId, workspaceId: task?.workspaceId ?? 'workspace-helm', decision })
+      if (next) setRun(next)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to resolve the approval.')
+    } finally {
+      setControlPending(false)
+    }
   }
+
+  const runStatus = run?.state ?? 'ready'
+  const runLabel = runStatus === 'completed' ? 'Run complete' : runStatus === 'needs_reconciliation' ? 'Reconciliation required' : runStatus === 'failed' ? 'Run failed' : runStatus === 'cancelled' ? 'Run cancelled' : 'Working on the task'
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand"><div className="brand-mark"><Icon name="spark" /></div><span>Helm</span><span className="beta">LOCAL AI WORKBENCH</span></div>
-        <div className="topbar-center"><span className="connection-dot" />{runtime}<span className="separator">/</span><span className="provider">DeepSeek</span><button className="icon-button" aria-label="More options"><Icon name="more" /></button></div>
+        <div className="topbar-center"><span className="connection-dot" />{runtime}<span className="separator">/</span><span className="provider">Mock Provider · deterministic</span><button className="icon-button" aria-label="More options"><Icon name="more" /></button></div>
         <div className="topbar-actions"><button className="icon-button" aria-label="Search"><Icon name="search" /></button><div className="avatar">ZK</div></div>
       </header>
 
@@ -96,56 +292,34 @@ function App() {
           <div className="panel-heading"><span>Workspace</span><button className="icon-button subtle" aria-label="Add workspace"><Icon name="plus" /></button></div>
           <div className="workspace-selector"><div className="workspace-icon"><Icon name="folder" /></div><div><strong>Helm</strong><span>~/Lab/Helm</span></div><Icon name="chevron" /></div>
           <div className="section-heading"><span>SESSIONS</span><button className="new-button"><Icon name="plus" /> New</button></div>
-          <div className="session-list">
-            <button className="session-item active"><span className="session-status running" /><span className="session-copy"><strong>Desktop shell</strong><span>Build the initial workbench</span></span><span className="session-time">now</span></button>
-            <button className="session-item"><span className="session-status done" /><span className="session-copy"><strong>Provider adapter</strong><span>DeepSeek connection</span></span><span className="session-time">yesterday</span></button>
-            <button className="session-item"><span className="session-status done" /><span className="session-copy"><strong>Event ledger</strong><span>SQLite schema draft</span></span><span className="session-time">Sep 28</span></button>
-          </div>
+          <div className="session-list"><button className="session-item active"><span className={`session-status ${run && !isTerminal(run.state) ? 'running' : 'done'}`} /><span className="session-copy"><strong>{session ? `Session ${session.id.slice(-6)}` : 'New session'}</strong><span>{task?.goal ?? 'Start a local task'}</span></span><span className="session-time">{run ? runStatus : 'now'}</span></button></div>
           <div className="left-footer"><div className="system-health"><span className="health-dot" /> System ready</div><button className="footer-link"><Icon name="shield" /> Permissions</button></div>
         </aside>
 
         <section className="center-panel panel">
           <div className="conversation-header">
             <div>
-              <div className="eyebrow"><span className="run-pulse" /> ACTIVE SESSION <span className="run-id">RUN-240930-01</span></div>
-              <h1>Build the initial workbench</h1>
-              <p>Helm session · Coding task · DeepSeek</p>
+              <div className="eyebrow"><span className={`run-pulse ${isTerminal(runStatus) ? 'stopped' : ''}`} /> {run ? 'ACTIVE SESSION' : 'READY'} <span className="run-id" data-testid="run-id">{run?.id ?? 'none'}</span></div>
+              <h1>{task?.goal ?? 'Start a local task'}</h1>
+              <p>Helm session · Coding task · {runtime}</p>
             </div>
             <button className="run-menu icon-button" aria-label="Run options"><Icon name="more" /></button>
           </div>
 
-          <div className="chat-stream">
-            <div className="message user-message">
-              <div className="message-avatar user-avatar">ZK</div>
-              <div className="message-body"><div className="message-meta"><strong>You</strong><time>10:41</time></div><p>Build the initial workbench with an Electron + React desktop shell and a secure local runtime.</p></div>
-            </div>
-            <div className="message assistant-message">
-              <div className="message-avatar assistant-avatar"><Icon name="spark" /></div>
-              <div className="message-body"><div className="message-meta"><strong>Helm</strong><span className="message-provider">DeepSeek</span><time>10:42</time></div><p>I’ll set up the desktop shell, keep the Runtime behind a narrow boundary, and verify the workspace changes before delivery.</p>
-                <div className="execution-card">
-                  <div className="execution-card-header"><div><Icon name="terminal" /><strong>Working on the task</strong></div><span>{completed} / {steps.length} steps</span></div>
-                  <div className="execution-steps">{steps.slice(0, 4).map((step) => <div className={`execution-step ${step.state}`} key={step.id}><span className="execution-marker">{step.state === 'done' ? <Icon name="check" /> : step.state === 'running' ? <span className="marker-dot" /> : null}</span><span>{step.label}</span><span className="execution-detail">{step.state === 'done' ? 'Done' : step.state === 'running' ? 'Running' : 'Queued'}</span></div>)}</div>
-                  <div className="execution-footer"><span><span className="budget-bar"><span /></span> 6 / 30 steps</span><span>Budget 15 min</span><button className="inline-action" onClick={startRun} disabled={isRunning || approvalState !== 'approved'}><Icon name="play" /> {isRunning ? 'Running…' : 'Continue run'}</button></div>
-                </div>
-              </div>
-            </div>
-            <div className="message assistant-message latest-message">
-              <div className="message-avatar assistant-avatar"><Icon name="spark" /></div>
-              <div className="message-body"><div className="message-meta"><strong>Helm</strong><span className="message-provider">Planning</span></div><p className="message-muted">The plan is ready. Approve workspace writes in the right panel, then I’ll continue the run.</p></div>
-            </div>
+          <div className="chat-stream" data-testid="messages">
+            {messages.length === 0 && <div className="empty-state"><div className="message-avatar assistant-avatar"><Icon name="spark" /></div><h2>What should Helm work on?</h2><p>Describe a local coding or office task. Runtime events will appear here.</p></div>}
+            {messages.map((message) => <div className={`message ${message.role === 'user' ? 'user-message' : 'assistant-message'} ${message.status === 'failed' ? 'failed-message' : ''}`} key={message.id}><div className={`message-avatar ${message.role === 'user' ? 'user-avatar' : 'assistant-avatar'}`}>{message.role === 'user' ? 'ZK' : <Icon name="spark" />}</div><div className="message-body"><div className="message-meta"><strong>{message.role === 'user' ? 'You' : 'Helm'}</strong><span className="message-provider">{message.role === 'user' ? 'Task input' : 'Runtime · Mock Provider'}</span></div><p>{message.content}</p></div></div>)}
+            {run && <div className="message assistant-message latest-message"><div className="message-avatar assistant-avatar"><Icon name="spark" /></div><div className="message-body"><div className="message-meta"><strong>Helm</strong><span className="message-provider">Runtime projection</span></div><div className="execution-card"><div className="execution-card-header"><div><Icon name="terminal" /><strong>{runLabel}</strong></div><span>{completedSteps} / {steps.length} steps</span></div><div className="execution-steps">{steps.map((step) => <div className={`execution-step ${step.state}`} key={step.id}><span className="execution-marker">{step.state === 'done' ? <Icon name="check" /> : step.state === 'failed' ? <span className="marker-failure">!</span> : step.state === 'running' ? <span className="marker-dot" /> : null}</span><span>{step.label}</span><span className="execution-detail">{step.detail}</span></div>)}</div><div className="execution-footer"><span><span className="budget-bar"><span style={{ width: `${run.budget.maxSteps > 0 ? Math.min(100, (run.steps / run.budget.maxSteps) * 100) : 0}%` }} /></span> {run.steps} / {run.budget.maxSteps} steps</span><span data-testid="run-state">{run.state}</span>{run.state === 'paused' ? <button className="inline-action" data-testid="run-resume" disabled={controlPending} onClick={() => void controlRun('resume')}>Resume</button> : !isTerminal(run.state) && <button className="inline-action" data-testid="run-pause" disabled={controlPending} onClick={() => void controlRun('pause')}>Pause</button>}{!isTerminal(run.state) && <button className="inline-action" data-testid="run-cancel" disabled={controlPending} onClick={() => void controlRun('cancel')}>Cancel</button>}</div></div></div></div>}
           </div>
 
-          <div className="composer-wrap">
-            <div className="composer"><textarea value={inputValue} onChange={(event) => setInputValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) sendMessage() }} placeholder="Message Helm…" rows={2} /><div className="composer-toolbar"><span><Icon name="code" /> Coding task</span><span className="composer-hint">⌘ ↵ to send</span><button className="composer-send" aria-label="Send message" onClick={sendMessage} disabled={!inputValue.trim()}><Icon name="send" /></button></div></div>
-            <div className="composer-note">Helm can read and modify files only after an explicit approval.</div>
-          </div>
+          <div className="composer-wrap"><div className="composer"><textarea value={inputValue} disabled={isSubmitting} onChange={(event) => setInputValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) void sendMessage() }} placeholder={isSubmitting ? 'Starting Run…' : 'Message Helm…'} rows={2} /><div className="composer-toolbar"><span><Icon name="code" /> Coding task</span><span className="composer-hint">⌘ ↵ to send</span><button className="composer-send" data-testid="run-submit" aria-label="Send message" onClick={() => void sendMessage()} disabled={!canSend}><Icon name="send" /></button></div></div><div className="composer-note">Runtime events are shown here. Local tools require an explicit Approval.</div>{error && <div className="composer-note" data-testid="run-error" role="alert">{error}</div>}</div>
         </section>
 
         <aside className="right-panel panel">
-          <div className="right-tabs"><button className="right-tab active">Artifacts <span>3</span></button><button className="right-tab">Trace</button></div>
-          <div className="artifact-section"><div className="section-heading"><span>CHANGED FILES</span><span className="muted">3 files</span></div><div className="artifact-card"><div className="artifact-icon code-icon"><Icon name="code" /></div><div className="artifact-copy"><strong>apps/desktop</strong><span>Electron shell</span></div><span className="artifact-status added">M</span></div><div className="artifact-card"><div className="artifact-icon file-icon"><Icon name="file" /></div><div className="artifact-copy"><strong>src/main/main.ts</strong><span>Secure IPC boundary</span></div><span className="artifact-status added">A</span></div><div className="artifact-card"><div className="artifact-icon file-icon"><Icon name="file" /></div><div className="artifact-copy"><strong>src/renderer/main.tsx</strong><span>Workbench UI</span></div><span className="artifact-status added">A</span></div></div>
-          <div className="approval-section"><div className="section-heading"><span>APPROVAL</span><span className={`approval-state ${approvalState}`}>{approvalState === 'approved' ? 'Approved' : 'Required'}</span></div><div className="approval-card"><div className="approval-icon"><Icon name="shield" /></div><div><strong>Write to workspace</strong><p>Allow Helm to apply the planned changes to this workspace.</p></div>{approvalState === 'pending' ? <button className="approve-button" onClick={approve}>Allow</button> : <Icon name="check" />}</div></div>
-          <div className="verification-section"><div className="section-heading"><span>VERIFICATION</span><span className="muted">P0 gate</span></div><div className="verification-card"><div className="verification-row"><span className="verification-icon passed"><Icon name="check" /></span><span>Workspace boundary</span><strong>Passed</strong></div><div className="verification-row"><span className="verification-icon pending"><Icon name="clock" /></span><span>Build and typecheck</span><strong>Pending</strong></div><div className="verification-row"><span className="verification-icon pending"><Icon name="clock" /></span><span>Artifact receipt</span><strong>Pending</strong></div></div></div>
+          <div className="right-tabs"><button className="right-tab active">Run evidence <span>{events.length}</span></button><button className="right-tab">Trace</button></div>
+          <div className="artifact-section"><div className="section-heading"><span>RUN CONTEXT</span><span className="muted">{run?.id ?? 'none'}</span></div><div className="artifact-card"><div className="artifact-icon code-icon"><Icon name="code" /></div><div className="artifact-copy"><strong>{task?.workspaceId ?? 'workspace-helm'}</strong><span>{task ? 'Workspace selected · no file changes' : 'Waiting for task input'}</span></div></div></div>
+          <div className="approval-section"><div className="section-heading"><span>APPROVAL</span><span className="approval-state">Runtime owned</span></div><div className={`approval-card ${approval ? 'approval-card-pending' : ''}`}><div className="approval-icon"><Icon name="shield" /></div><div>{approval ? <><strong>Approval required: {approval.call.name}</strong><p>{approval.reason}</p><code>{JSON.stringify(approval.call.arguments)}</code><div className="approval-actions"><button className="inline-action" disabled={controlPending} onClick={() => void decideApproval('approve')}>Approve</button><button className="inline-action danger" disabled={controlPending} onClick={() => void decideApproval('deny')}>Deny</button></div></> : <><strong>{events.some((event) => event.type === 'policy.decision') ? 'Policy decision recorded' : 'No pending approval'}</strong><p>Approval appears here only for a concrete Runtime tool proposal.</p></>}</div></div></div>
+          <div className="verification-section"><div className="section-heading"><span>VERIFICATION</span><span className="muted">Runtime evidence</span></div><div className={`verification-card verification-${verificationResult}`} data-testid="verification"><div className="verification-row"><span className={`verification-icon ${verificationResult === 'passed' ? 'passed' : verificationResult === 'failed' || verificationResult === 'needs_reconciliation' ? 'failed' : 'pending'}`}><Icon name={verificationResult === 'passed' ? 'check' : 'clock'} /></span><span>{run?.state === 'needs_reconciliation' ? 'Unknown side effect; reconciliation required.' : run?.verification?.message ?? (run?.lastError ?? 'Waiting for final output')}</span><strong>{verificationResult}</strong></div></div></div>
         </aside>
       </main>
     </div>

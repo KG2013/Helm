@@ -34,6 +34,7 @@ export type RunAction =
   | 'recovered'
   | 'execution_failed'
   | 'side_effect_unknown'
+  | 'approval_deny'
   | 'fail'
   | 'cancel';
 
@@ -249,6 +250,8 @@ export type EventType =
   | 'step.started'
   | 'step.proposal'
   | 'policy.decision'
+  | 'approval.requested'
+  | 'approval.decided'
   | 'tool.call'
   | 'tool.receipt'
   | 'step.observation'
@@ -303,6 +306,8 @@ export interface RuntimeOptions {
   ids?: RuntimeIdFactory;
   defaultBudget?: Partial<Budget>;
 }
+
+export type RuntimeEventListener = (event: DomainEvent) => void;
 
 export interface RunResult extends Run {
   verification?: Verification;

@@ -6,13 +6,13 @@
 
 Helm 逻辑上前后端分离，部署上本地一体化，桌面通信优先使用 IPC。它与互联网 Web 应用同样区分展示和业务逻辑，但首版不需要部署远程业务服务器，也不需要为了 CLI 单独启动 HTTP 服务。
 
-以下是目标关系，虚线表示尚未接通的主要边界：
+以下是当前关系；虚线表示仍待后续接入的主要边界：
 
 ```mermaid
 flowchart TD
     UI[React Renderer：对话与工作台] --> Bridge[typed preload / Electron IPC]
-    Bridge -. 任务与审批操作待接线 .-> Main[Electron Main：本地组合层]
-    Main -. 待实例化 .-> Runtime[TypeScript Runtime]
+    Bridge --> Main[Electron Main：本地组合层]
+    Main --> Runtime[TypeScript Runtime]
     CLI[CLI] --> Runtime
     Runtime --> Mock[Mock Provider]
     Runtime -. 待联调 .-> Adapter[Provider Adapter]
@@ -42,7 +42,7 @@ flowchart TD
 - 右栏展示当前 Run 对应的 Artifact、Diff、Approval 和 Verification。
 - 终端和原始 Trace 可进入底部抽屉；这部分目前仍是规划。
 
-当前 UI 已改为消息流与输入框布局，但消息、步骤和右栏结果来自本地演示数据。`sendMessage()` 只清空输入，`Continue run` 使用定时器改变步骤，审批 IPC 返回 pending 后界面自行显示 approved；均不能作为执行证据。
+当前 UI 已改为由 Runtime 事件和快照驱动的消息流、输入框、执行卡片、Approval 和 Verification。Renderer 只调用 preload 暴露的 start/snapshot/control/approval 方法；主进程将 Runtime 事件按 runId/sequence 转发并做脱敏。当前使用 InMemoryEventStore 与 MockProvider，因此 UI 冒烟证明的是本地 IPC 与 Runtime 边界，不是实际厂商、文件工具或应用退出后的恢复。
 
 ## 下一步的调用流程
 
@@ -53,7 +53,7 @@ flowchart TD
 5. 暂停/恢复/取消由 Runtime 处理。审批提交绑定的动作标识及决定，不能靠 UI 布尔值或模型文字放行。
 6. Provider 流式输出、实际文件工具和持久恢复逐步接入；最初用 Mock 跑通相同控制路径。
 
-这些步骤是下一切片的验收目标，目前尚未实现。
+上述 Task → Session → Run → 事件 → 快照路径已在 #1–#4 的骨架中实现；持久化、真实 Provider、工具执行和跨进程恢复仍是后续切片。
 
 ## 进程与部署边界
 

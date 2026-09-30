@@ -93,6 +93,60 @@ test('tool calls are executed through the injected executor and remain auditable
   assert.ok(events.some((event) => event.type === 'tool.receipt'));
 });
 
+test('an approval resumes the same proposal without asking the provider again', async () => {
+  const store = new InMemoryEventStore();
+  const provider = new MockProvider([
+    { kind: 'tool_call', name: 'write_file', arguments: { path: 'report.md', content: 'hello' } },
+    { kind: 'final', content: 'approved and complete' },
+  ]);
+  const calls: string[] = [];
+  const runtime = new RuntimeFacade({
+    store,
+    provider,
+    policy: { decide: () => ({ decision: 'ask' as const, reason: 'writing requires approval' }) },
+    executor: async (call) => { calls.push(call.id); return { ok: true, output: 'written', receipt: { sideEffect: 'known' } }; },
+  });
+  const task = await runtime.createTask({ goal: 'write a report', workspaceId: 'workspace-1' });
+  const session = await runtime.createSession({ taskId: task.id });
+  const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  const paused = await runtime.run(run.id);
+  assert.equal(paused.state, 'paused');
+  const requested = (await runtime.getEvents(run.id)).find((event) => event.type === 'approval.requested');
+  assert.ok(requested);
+  const approvalId = requested.payload.approvalId as string;
+
+  const result = await runtime.resolveApproval(run.id, approvalId, 'approve');
+  assert.equal(result.state, 'completed');
+  assert.equal(provider.requests.length, 2);
+  assert.deepEqual(calls, [approvalId]);
+  const events = await runtime.getEvents(run.id);
+  assert.equal(events.filter((event) => event.type === 'approval.requested').length, 1);
+  assert.equal(events.filter((event) => event.type === 'approval.decided').length, 1);
+  assert.equal(events.filter((event) => event.type === 'tool.call').length, 1);
+  assert.equal((await runtime.resolveApproval(run.id, approvalId, 'approve')).state, 'completed');
+});
+
+test('denying an approval is auditable and never reaches the executor', async () => {
+  const store = new InMemoryEventStore();
+  let executorCalls = 0;
+  const runtime = new RuntimeFacade({
+    store,
+    provider: new MockProvider([{ kind: 'tool_call', name: 'shell', arguments: { command: 'unsafe' } }]),
+    policy: { decide: () => ({ decision: 'ask' as const, reason: 'shell requires approval' }) },
+    executor: async () => { executorCalls += 1; return { ok: true }; },
+  });
+  const task = await runtime.createTask({ goal: 'run shell', workspaceId: 'workspace-1' });
+  const session = await runtime.createSession({ taskId: task.id });
+  const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  await runtime.run(run.id);
+  const requested = (await runtime.getEvents(run.id)).find((event) => event.type === 'approval.requested');
+  assert.ok(requested);
+  const result = await runtime.resolveApproval(run.id, requested.payload.approvalId as string, 'deny');
+  assert.equal(result.state, 'failed');
+  assert.equal(executorCalls, 0);
+  assert.equal((await runtime.getEvents(run.id)).filter((event) => event.type === 'tool.call').length, 0);
+});
+
 test('a new facade can hydrate task and session metadata from the event ledger', async () => {
   const store = new InMemoryEventStore();
   const first = new RuntimeFacade({ store, provider: new MockProvider() });
@@ -157,4 +211,33 @@ test('unknown tool side effects require reconciliation instead of a normal failu
 
   assert.equal(result.state, 'needs_reconciliation');
   assert.ok((await runtime.getEvents(run.id)).some((event) => event.type === 'run.needs_reconciliation'));
+});
+
+test('cancelling while the provider is in flight prevents a late proposal or tool action', async () => {
+  let release!: (response: ProviderResponse) => void;
+  const provider = {
+    id: 'deferred',
+    model: 'deferred-model',
+    capabilities: new MockProvider().capabilities,
+    complete: async () => new Promise<ProviderResponse>((resolve) => { release = resolve; }),
+  };
+  const store = new InMemoryEventStore();
+  const runtime = new RuntimeFacade({ store, provider });
+  const task = await runtime.createTask({ goal: 'cancel in flight', workspaceId: 'workspace-1' });
+  const session = await runtime.createSession({ taskId: task.id });
+  const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  const running = runtime.run(run.id);
+
+  await new Promise<void>((resolve) => {
+    const poll = () => provider.complete && release ? resolve() : setTimeout(poll, 1);
+    poll();
+  });
+  await runtime.cancelRun(run.id);
+  release({ kind: 'tool_call', name: 'write_file', arguments: { path: 'late.md' } });
+  const result = await running;
+
+  assert.equal(result.state, 'cancelled');
+  const events = await store.list(run.id);
+  assert.equal(events.filter((event) => event.type === 'tool.call').length, 0);
+  assert.equal(events.filter((event) => event.type === 'step.proposal').length, 0);
 });

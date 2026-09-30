@@ -1,10 +1,10 @@
 # 下一步实施计划
 
-更新日期：2026-09-30。架构已确认；以下是骨架完成后的工作拆分，均尚未完成。当前能力参见 [实现状态](implementation-status.md)。
+更新日期：2026-09-30。架构已确认；#1–#4 的桌面 Runtime 骨架已完成，以下拆分从受限工具和真实 Provider 接入继续。当前能力参见 [实现状态](implementation-status.md)。
 
-## 1. 对话界面接入 Runtime：下一切片
+## 1. 对话界面接入 Runtime：已完成（#1–#4）
 
-目标：用户在中栏提交任务后，能够看到真实 Mock Run 的事件与结果。
+目标：用户在中栏提交任务后，能够看到真实 Mock Run 的事件与结果，并能控制 Run、处理审批和识别失败/未知结果。
 
 - 定义 typed IPC 的输入、响应、错误和事件类型，并在主进程校验请求。
 - Main 组装 RuntimeFacade + InMemoryEventStore + MockProvider，Renderer 仅通过 preload 调用。
@@ -13,7 +13,7 @@
 - 接通暂停/恢复/取消，处理重复启动与调用在途时的竞争。
 - 审批绑定待执行动作，持有提案并记录决定；ask → approve 后继续原动作，而非重新向模型索取另一个提案。
 
-完成条件：桌面提交一次任务可追踪到 Task/Session/Run；运行状态、验收与 CLI 语义一致；取消后不追加新的执行动作；拒绝审批不调用 executor；刷新视图可从 Main 中仍存活的 Run 重建展示。此阶段不宣称应用退出后的恢复。
+完成条件已由 #1–#4 验证：桌面提交可追踪到 Task/Session/Run；运行状态、验收与 CLI 复用 Runtime；取消后不追加新的执行动作；拒绝审批不调用 executor；approve 续行同一 proposal；快照可重建 Main 中仍存活的 Run。此阶段不宣称应用退出后的恢复。
 
 ## 2. 受限 Coding 流程
 

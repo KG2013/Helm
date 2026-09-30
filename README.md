@@ -2,7 +2,7 @@
 
 Helm 是个人本地 LLM Harness，目标是连接 DeepSeek、智谱、Kimi，完成本地编码与 DOCX、XLSX、PDF 任务。首发平台为 macOS Apple Silicon，提供 Electron 桌面端和 CLI，由同一个 TypeScript Runtime 管理任务、权限、执行和验收。
 
-**当前阶段：架构已确认，可运行骨架已建立，正在等待桌面端与 Runtime 接线。** 当前 CLI 运行 Mock Provider；桌面端是可预览的交互骨架。尚不能通过界面调用真实模型完成编码或办公任务。
+**当前阶段：架构已确认，#1–#4 的 Desktop IPC → Runtime → Mock Provider 纵向骨架已完成。** 当前 CLI 和桌面端都运行 Mock Provider；真实厂商和真实文件工具仍待后续切片。
 
 ## 快速开始
 
@@ -48,13 +48,13 @@ node apps/cli/dist/main.js run "骨架冒烟检查"
 
 逻辑上前后端分离，部署上本地一体化：React Renderer 是前端，Electron 主进程承载本地后端和 Runtime，双方通过 preload/IPC 通信。CLI 直接调用 Runtime，不需要独立 HTTP 后端。远程模型 API 负责推理；本地任务不等于离线推理。
 
-目前中栏消息和执行进度是演示数据，发送按钮仅清空输入框；审批按钮只切换界面状态。完整职责、通信图和接线目标见 [桌面端、CLI 与 Runtime 分工](docs/design/desktop-runtime-boundary.md)。
+桌面中栏现在通过 typed preload/IPC 提交和控制任务，Runtime 事件驱动消息、执行卡片和 Verification；右栏展示 Runtime 产生的运行上下文、审批请求和验收证据。当前使用 InMemoryEventStore 与 MockProvider，真实 Provider、工具执行和应用退出后的恢复仍待后续切片。完整职责和通信图见 [桌面端、CLI 与 Runtime 分工](docs/design/desktop-runtime-boundary.md)。
 
 ## 仓库结构
 
 | 路径 | 职责与当前状态 |
 |---|---|
-| `apps/desktop` | Electron + React + Vite 界面与 preload；尚未接入 Runtime |
+| `apps/desktop` | Electron + React + Vite 界面、typed preload/IPC、Run 控制/审批与 Mock Runtime 纵向切片 |
 | `apps/cli` | 调用 Runtime 的 Mock 演示命令 |
 | `packages/runtime` | Task/Session/Run、状态机、内存事件账本、Policy/Executor/Verifier 接口；含待绑定的 SQLite 实现 |
 | `packages/providers` | 通用非流式 OpenAI-compatible HTTP 适配器与三家厂商 id；真实 API 尚未联调 |
@@ -75,7 +75,7 @@ printf '{"id":"health-1","operation":"health"}\n' | python3 workers/document-wor
 
 ## 接下来开发什么
 
-先打通“输入任务 → IPC → Runtime → Mock Provider → 事件 → 对话与验收展示”，再推进受限 Coding 工具、DeepSeek/Keychain、智谱/Kimi、SQLite 重启恢复和 Office worker。真实副作用接入前必须完成路径、策略和执行边界。
+下一步推进受限 Coding 工具和真实 Provider 接入，再补 Keychain、SQLite 重启恢复和 Office worker。真实副作用接入前必须完成路径、策略和执行边界。
 
 分阶段交付条件见 [下一步实施计划](docs/development/next-steps.md)。
 

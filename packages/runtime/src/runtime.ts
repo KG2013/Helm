@@ -15,6 +15,7 @@ import type {
   RuntimeClock,
   RuntimeIdFactory,
   RuntimeOptions,
+  RuntimeEventListener,
   Session,
   Task,
   TaskInput,
@@ -55,6 +56,24 @@ const defaultExecutor: ToolExecutor = async () => ({
   receipt: { executor: 'default', sideEffect: 'none' },
 });
 
+function sanitizeDiagnostic(value: unknown): string {
+  const message = value instanceof Error ? value.message : String(value);
+  return message
+    .replace(/(?:api[-_ ]?key|authorization|cookie|secret|password|token)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi, '[redacted]')
+    .replace(/\b(?:sk|pk)-[A-Za-z0-9_-]{8,}\b/g, '[redacted]')
+    .slice(0, 500);
+}
+
+type PendingApproval = {
+  approvalId: ID;
+  task: Task;
+  session: Session;
+  request: ProviderRequest;
+  call: ToolCall;
+  index: number;
+  reason: string;
+};
+
 export class RuntimeFacade {
   private readonly store: EventStore;
   private readonly provider: Provider;
@@ -64,8 +83,10 @@ export class RuntimeFacade {
   private readonly clock: RuntimeClock;
   private readonly ids: RuntimeIdFactory;
   private readonly defaultBudget: Budget;
+  private readonly eventListeners = new Set<RuntimeEventListener>();
   private readonly tasks = new Map<ID, Task>();
   private readonly sessions = new Map<ID, Session>();
+  private readonly pendingApprovals = new Map<ID, PendingApproval>();
 
   constructor(options: RuntimeOptions) {
     this.store = options.store;
@@ -151,10 +172,14 @@ export class RuntimeFacade {
       try {
         response = await this.provider.complete(request);
       } catch (error) {
-        await this.failRun(run.id, `Provider error: ${error instanceof Error ? error.message : String(error)}`);
+        run = await this.requireRun(run.id);
+        if (isTerminalRunState(run.state) || run.state === 'paused') break;
+        await this.failRun(run.id, `Provider error: ${sanitizeDiagnostic(error)}`);
         run = await this.requireRun(run.id);
         break;
       }
+      run = await this.requireRun(run.id);
+      if (isTerminalRunState(run.state) || run.state === 'paused') break;
       const proposal: Proposal = response.kind === 'tool_call'
         ? { kind: 'tool_call', name: response.name, arguments: response.arguments }
         : response.kind === 'wait_for_input'
@@ -185,36 +210,36 @@ export class RuntimeFacade {
           break;
         }
         if (policy.decision === 'ask') {
+          const pending: PendingApproval = {
+            approvalId: call.id,
+            task,
+            session,
+            request,
+            call,
+            index,
+            reason: policy.reason,
+          };
+          this.pendingApprovals.set(call.id, pending);
+          await this.append({
+            type: 'approval.requested',
+            taskId: task.id,
+            sessionId: session.id,
+            runId: run.id,
+            payload: {
+              approvalId: call.id,
+              reason: policy.reason,
+              workspaceId: task.workspaceId,
+              call,
+            },
+          });
           await this.transition(run.id, 'needs_input', { stepId, reason: policy.reason });
           run = await this.requireRun(run.id);
           break;
         }
-        await this.transition(run.id, 'policy_allow', { stepId });
-        await this.append({ type: 'tool.call', taskId: task.id, sessionId: session.id, runId: run.id, payload: call as unknown as Record<string, unknown> });
-        let observation: Observation;
-        try {
-          const result = await this.executor(call, request);
-          observation = { ok: result.ok, output: result.output, error: result.error, receipt: result.receipt };
-        } catch (error) {
-          observation = { ok: false, error: error instanceof Error ? error.message : String(error), receipt: { executorError: true } };
-        }
-        await this.append({ type: 'tool.receipt', taskId: task.id, sessionId: session.id, runId: run.id, payload: { stepId, toolCallId: call.id, ...observation } });
-        await this.append({ type: 'step.observation', taskId: task.id, sessionId: session.id, runId: run.id, payload: { stepId, observation } });
-        if (!observation.ok) {
-          await this.append({ type: 'step.completed', taskId: task.id, sessionId: session.id, runId: run.id, payload: { stepId, index } });
-          const sideEffectUnknown = observation.receipt?.sideEffect === 'unknown';
-          if (sideEffectUnknown) {
-            await this.transition(run.id, 'side_effect_unknown', { reason: observation.error ?? 'Tool side effect is unknown' });
-          } else {
-            await this.failRun(run.id, observation.error ?? 'Tool execution failed');
-          }
-          run = await this.requireRun(run.id);
-          break;
-        }
-        await this.transition(run.id, 'observation', { stepId });
-        await this.transition(run.id, 'continue', { stepId });
-        await this.append({ type: 'step.completed', taskId: task.id, sessionId: session.id, runId: run.id, payload: { stepId, index } });
         run = await this.requireRun(run.id);
+        if (isTerminalRunState(run.state) || run.state === 'paused') break;
+        run = await this.executeToolCall({ approvalId: call.id, task, session, request, call, index, reason: '' }, run.id);
+        if (isTerminalRunState(run.state) || run.state === 'paused') break;
         continue;
       }
 
@@ -250,8 +275,43 @@ export class RuntimeFacade {
   async cancelRun(runId: ID, reason = 'cancelled by user'): Promise<Run> {
     const run = await this.requireRun(runId);
     if (isTerminalRunState(run.state)) return run;
+    for (const [approvalId, pending] of this.pendingApprovals) {
+      if (pending.call.runId === runId) this.pendingApprovals.delete(approvalId);
+    }
     await this.transition(runId, 'cancel', { reason });
     return this.requireRun(runId);
+  }
+
+  async resolveApproval(runId: ID, approvalId: ID, decision: 'approve' | 'deny', workspaceId?: ID): Promise<Run> {
+    const run = await this.requireRun(runId);
+    const pending = this.pendingApprovals.get(approvalId);
+    if (!pending) {
+      const prior = (await this.store.list(runId)).reverse().find((event) => event.type === 'approval.decided' && event.payload.approvalId === approvalId);
+      if (prior && prior.payload.decision === decision) return run;
+      throw new Error(`Unknown or stale approval: ${approvalId}`);
+    }
+    if (pending.call.runId !== runId) throw new Error('Approval does not belong to this Run.');
+    if (workspaceId !== undefined && pending.task.workspaceId !== workspaceId) throw new Error('Approval workspace mismatch.');
+    if (run.state !== 'paused') throw new RunStateError(run.state, 'resume');
+
+    await this.append({
+      type: 'approval.decided',
+      taskId: pending.task.id,
+      sessionId: pending.session.id,
+      runId,
+      payload: { approvalId, decision, call: pending.call },
+    });
+    this.pendingApprovals.delete(approvalId);
+    if (decision === 'deny') {
+      await this.transition(runId, 'approval_deny', { approvalId, error: 'Tool execution denied by user.' });
+      return this.requireRun(runId);
+    }
+
+    await this.resumeRun(runId);
+    await this.transition(runId, 'proposal_valid', { stepId: pending.call.stepId, approvalId });
+    const afterExecution = await this.executeToolCall(pending, runId);
+    if (isTerminalRunState(afterExecution.state) || afterExecution.state === 'paused') return afterExecution;
+    return this.run(runId);
   }
 
   async getRun(runId: ID): Promise<Run | undefined> {
@@ -260,6 +320,11 @@ export class RuntimeFacade {
 
   async getEvents(runId: ID): Promise<DomainEvent[]> {
     return this.store.list(runId);
+  }
+
+  onEvent(listener: RuntimeEventListener): () => void {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
   }
 
   getTask(taskId: ID): Task | undefined {
@@ -306,12 +371,49 @@ export class RuntimeFacade {
     return undefined;
   }
 
+  private async executeToolCall(pending: PendingApproval, runId: ID): Promise<Run> {
+    const run = await this.requireRun(runId);
+    await this.transition(run.id, 'policy_allow', { stepId: pending.call.stepId, approvalId: pending.approvalId });
+    await this.append({ type: 'tool.call', taskId: pending.task.id, sessionId: pending.session.id, runId: run.id, payload: pending.call as unknown as Record<string, unknown> });
+    let observation: Observation;
+    try {
+      const result = await this.executor(pending.call, { ...pending.request, run: await this.requireRun(run.id), context: await this.store.list(run.id) });
+      observation = { ok: result.ok, output: result.output, error: result.error, receipt: result.receipt };
+    } catch (error) {
+      observation = { ok: false, error: sanitizeDiagnostic(error), receipt: { executorError: true } };
+    }
+    let current = await this.requireRun(run.id);
+    await this.append({ type: 'tool.receipt', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, toolCallId: pending.call.id, ...observation } });
+    await this.append({ type: 'step.observation', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, observation } });
+    current = await this.requireRun(run.id);
+    if (isTerminalRunState(current.state) || current.state === 'paused') return current;
+    if (!observation.ok) {
+      await this.append({ type: 'step.completed', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, index: pending.index } });
+      const sideEffectUnknown = observation.receipt?.sideEffect === 'unknown';
+      if (sideEffectUnknown) await this.transition(current.id, 'side_effect_unknown', { reason: observation.error ?? 'Tool side effect is unknown' });
+      else await this.failRun(current.id, observation.error ?? 'Tool execution failed');
+      return this.requireRun(current.id);
+    }
+    await this.transition(current.id, 'observation', { stepId: pending.call.stepId });
+    await this.transition(current.id, 'continue', { stepId: pending.call.stepId });
+    await this.append({ type: 'step.completed', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, index: pending.index } });
+    return this.requireRun(current.id);
+  }
+
   private timestamp(): string {
     return this.clock.now().toISOString();
   }
 
   private async append(event: NewDomainEvent): Promise<DomainEvent> {
-    return this.store.append({ ...event, timestamp: event.timestamp ?? this.timestamp() });
+    const stored = await this.store.append({ ...event, timestamp: event.timestamp ?? this.timestamp() });
+    for (const listener of this.eventListeners) {
+      try {
+        listener(stored);
+      } catch {
+        // Observers must not be able to break the Runtime write path.
+      }
+    }
+    return stored;
   }
 
   private async transition(runId: ID, action: Parameters<typeof transitionRunState>[1], payload: Record<string, unknown> = {}): Promise<Run> {

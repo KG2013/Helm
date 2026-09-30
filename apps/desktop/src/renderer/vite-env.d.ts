@@ -1,8 +1,11 @@
 interface Window {
   helm?: {
-    runtimeInfo: () => Promise<{ appVersion: string; platform: string; isPackaged: boolean }>
-    requestApproval: (request: { action: string; reason?: string }) => Promise<unknown>
-    subscribe: (channel: 'run:event', listener: (payload: unknown) => void) => () => void
+    runtimeInfo: () => Promise<import('../shared/ipc.js').RuntimeInfo>
+    startRun: (request: import('../shared/ipc.js').StartRunRequest) => Promise<import('../shared/ipc.js').StartRunResponse>
+    getRunSnapshot: (runId: string) => Promise<import('../shared/ipc.js').RunSnapshot>
+    controlRun: (request: import('../shared/ipc.js').RunControlRequest) => Promise<import('@helm/runtime').Run>
+    resolveApproval: (request: import('../shared/ipc.js').RunApprovalRequest) => Promise<import('@helm/runtime').Run>
+    subscribe: (listener: (payload: import('../shared/ipc.js').RunEventPayload) => void) => () => void
   }
 }
 
