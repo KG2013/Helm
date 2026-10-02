@@ -212,6 +212,20 @@ export interface ToolPolicy {
   decide(input: ToolPolicyInput): Promise<ToolPolicyResult> | ToolPolicyResult;
 }
 
+export interface ToolProfile {
+  id: string;
+  version: string;
+  allowedArguments?: readonly string[];
+  readOnly: boolean;
+  scope: 'workspace';
+  network: 'none';
+  maxOutputBytes: number;
+}
+
+export interface ToolRegistry {
+  get(id: string): ToolProfile | undefined;
+}
+
 export interface ToolExecutorResult {
   ok: boolean;
   output?: unknown;
@@ -301,6 +315,7 @@ export interface RuntimeOptions {
   provider: Provider;
   executor?: ToolExecutor;
   policy?: ToolPolicy;
+  toolRegistry?: ToolRegistry;
   verifier?: Verifier;
   clock?: RuntimeClock;
   ids?: RuntimeIdFactory;

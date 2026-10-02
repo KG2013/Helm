@@ -22,6 +22,7 @@ import type {
   ToolCall,
   ToolExecutor,
   ToolPolicy,
+  ToolRegistry,
   Verification,
   Verifier,
 } from './types.js';
@@ -56,6 +57,8 @@ const defaultExecutor: ToolExecutor = async () => ({
   receipt: { executor: 'default', sideEffect: 'none' },
 });
 
+const emptyToolRegistry: ToolRegistry = { get: () => undefined };
+
 function sanitizeDiagnostic(value: unknown): string {
   const message = value instanceof Error ? value.message : String(value);
   return message
@@ -79,6 +82,7 @@ export class RuntimeFacade {
   private readonly provider: Provider;
   private readonly executor: ToolExecutor;
   private readonly policy: ToolPolicy;
+  private readonly toolRegistry: ToolRegistry;
   private readonly verifier: Verifier;
   private readonly clock: RuntimeClock;
   private readonly ids: RuntimeIdFactory;
@@ -93,6 +97,7 @@ export class RuntimeFacade {
     this.provider = options.provider;
     this.executor = options.executor ?? defaultExecutor;
     this.policy = options.policy ?? defaultPolicy;
+    this.toolRegistry = options.toolRegistry ?? emptyToolRegistry;
     this.verifier = options.verifier ?? new TextOutputVerifier();
     this.clock = options.clock ?? new SystemClock();
     this.ids = options.ids ?? new DefaultIdFactory();
@@ -203,7 +208,15 @@ export class RuntimeFacade {
         await this.transition(run.id, 'proposal_valid', { stepId });
         const call: ToolCall = { id: this.ids.next('tool'), runId: run.id, stepId, name: response.name, arguments: response.arguments };
         const policy = await this.policy.decide({ task, session, run: await this.requireRun(run.id), call });
-        await this.append({ type: 'policy.decision', taskId: task.id, sessionId: session.id, runId: run.id, payload: { stepId, decision: policy.decision, reason: policy.reason } });
+        const profile = this.toolRegistry.get(response.name);
+        if (!profile) {
+          const reason = `Tool ${response.name} is not registered.`;
+          await this.append({ type: 'policy.decision', taskId: task.id, sessionId: session.id, runId: run.id, payload: { stepId, decision: 'deny', reason, policyDecision: policy.decision } });
+          await this.transition(run.id, 'policy_deny', { stepId, error: reason });
+          run = await this.requireRun(run.id);
+          break;
+        }
+        await this.append({ type: 'policy.decision', taskId: task.id, sessionId: session.id, runId: run.id, payload: { stepId, decision: policy.decision, reason: policy.reason, toolProfile: profile } });
         if (policy.decision === 'deny') {
           await this.transition(run.id, 'policy_deny', { stepId, error: policy.reason });
           run = await this.requireRun(run.id);

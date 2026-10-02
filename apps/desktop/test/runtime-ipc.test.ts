@@ -1,8 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { InMemoryEventStore, MockProvider, RuntimeFacade, type ProviderResponse } from '@helm/runtime'
+import { createReadOnlyWorkspacePolicy, createWorkspaceInspectionExecutor, StaticToolRegistry, workspaceInspectProfile } from '@helm/runtime/tools'
+import { WorkspaceInspectVerifier } from '@helm/runtime'
 import { IPC_CHANNELS } from '../src/shared/ipc.js'
 import { registerRuntimeIpcHandlers, type RuntimeIpc } from '../src/main/runtime-bridge.js'
+
+const registeredTestTools = {
+  get: (id: string) => ({ id, version: 'test-v1', readOnly: false, scope: 'workspace' as const, network: 'none' as const, maxOutputBytes: 32_000 }),
+}
 
 class FakeIpcMain implements RuntimeIpc {
   private readonly handlers = new Map<string, (event: unknown, request?: unknown) => unknown>()
@@ -58,6 +65,49 @@ test('desktop IPC starts a Runtime Run and forwards ordered events', async () =>
   assert.deepEqual(events, [...events].sort((left, right) => left - right))
   assert.ok(snapshot.events.every((event) => event.runId === started.run.id))
   stop()
+})
+
+test('desktop IPC inspect uses the registered read-only Runtime path and artifact verifier', async () => {
+  const root = await mkdtemp('/tmp/helm-desktop-inspect-')
+  try {
+    const registry = new StaticToolRegistry([workspaceInspectProfile])
+    const runtime = new RuntimeFacade({
+      store: new InMemoryEventStore(),
+      provider: new MockProvider([
+        { kind: 'tool_call', name: 'workspace.inspect', arguments: { path: '.' } },
+        { kind: 'final', content: 'Workspace inspection completed.' },
+      ]),
+      toolRegistry: registry,
+      policy: createReadOnlyWorkspacePolicy(registry, { roots: { 'workspace-test': root } }),
+      executor: createWorkspaceInspectionExecutor({ roots: { 'workspace-test': root } }),
+      verifier: new WorkspaceInspectVerifier(),
+    })
+    const ipc = new FakeIpcMain()
+    const stop = registerRuntimeIpcHandlers({
+      ipc,
+      runtime,
+      workspaceIds: ['workspace-test'],
+      runtimeInfo: { appVersion: '0.1.0', platform: 'test', isPackaged: false },
+      emit: () => undefined,
+    })
+    const started = await ipc.invoke(IPC_CHANNELS.runStart, { goal: 'inspect .', workspaceId: 'workspace-test' }) as { run: { id: string } }
+    await new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + 1_000
+      const poll = () => void runtime.getRun(started.run.id).then((run) => {
+        if (run?.state === 'completed') return resolve()
+        if (Date.now() >= deadline) return reject(new Error(`inspect Run did not complete: ${run?.state}`))
+        setTimeout(poll, 5)
+      })
+      poll()
+    })
+    const snapshot = await ipc.invoke(IPC_CHANNELS.runSnapshot, started.run.id) as { run: { verification?: { result: string; evidence: Array<{ uri?: string }> } }; events: Array<{ type: string; payload: Record<string, unknown> }> }
+    assert.equal(snapshot.run.verification?.result, 'passed')
+    assert.match(snapshot.run.verification?.evidence[0]?.uri ?? '', /^workspace:\/\//)
+    assert.ok(snapshot.events.some((event) => event.type === 'tool.receipt'))
+    stop()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('desktop IPC cancellation is idempotent while a provider call is in flight', async () => {
@@ -161,6 +211,7 @@ test('desktop IPC approval binds the original proposal and exposes deny without 
   const runtime = new RuntimeFacade({
     store: new InMemoryEventStore(),
     provider,
+    toolRegistry: registeredTestTools,
     policy: { decide: () => ({ decision: 'ask' as const, reason: 'write requires approval' }) },
     executor: async (call) => { executed.push(call.id); return { ok: true, output: 'saved', receipt: { sideEffect: 'known' } } },
   })
@@ -201,6 +252,7 @@ test('desktop IPC approval binds the original proposal and exposes deny without 
   const denyRuntime = new RuntimeFacade({
     store: new InMemoryEventStore(),
     provider: new MockProvider([{ kind: 'tool_call', name: 'shell', arguments: { command: 'rm -rf /' } }]),
+    toolRegistry: registeredTestTools,
     policy: { decide: () => ({ decision: 'ask' as const, reason: 'shell requires approval' }) },
     executor: async () => { throw new Error('executor must not run') },
   })
@@ -268,6 +320,7 @@ test('desktop IPC keeps bounded failures and unknown outcomes explicit', async (
   const budget = await runToState(new RuntimeFacade({
     store: new InMemoryEventStore(),
     provider: new MockProvider([{ kind: 'tool_call', name: 'read_file', arguments: { path: 'README.md' } }]),
+    toolRegistry: registeredTestTools,
     policy: { decide: () => ({ decision: 'allow' as const, reason: 'read allowed' }) },
     executor: async () => ({ ok: true, output: 'read', receipt: { sideEffect: 'none' } }),
     defaultBudget: { maxSteps: 1 },
@@ -277,6 +330,7 @@ test('desktop IPC keeps bounded failures and unknown outcomes explicit', async (
   const reconciliation = await runToState(new RuntimeFacade({
     store: new InMemoryEventStore(),
     provider: new MockProvider([{ kind: 'tool_call', name: 'write_file', arguments: { path: 'report.md' } }]),
+    toolRegistry: registeredTestTools,
     policy: { decide: () => ({ decision: 'allow' as const, reason: 'write allowed' }) },
     executor: async () => ({ ok: false, error: 'connection lost', receipt: { sideEffect: 'unknown' } }),
   }), 'unknown side effect', 'needs_reconciliation')

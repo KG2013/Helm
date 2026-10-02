@@ -2,7 +2,7 @@
 
 Helm 是个人本地 LLM Harness，目标是连接 DeepSeek、智谱、Kimi，完成本地编码与 DOCX、XLSX、PDF 任务。首发平台为 macOS Apple Silicon，提供 Electron 桌面端和 CLI，由同一个 TypeScript Runtime 管理任务、权限、执行和验收。
 
-**当前阶段：架构已确认，#1–#4 的 Desktop IPC → Runtime → Mock Provider 纵向骨架已完成。** Kimi Code 已提供可选的 Keychain-backed 真实 Provider 冒烟路径；真实工具、其他厂商和持久恢复仍待后续切片。
+**当前阶段：架构已确认，#1–#4 的 Desktop IPC → Runtime → Mock Provider 纵向骨架和 #6 的安全只读工作区检查已完成。** Kimi Code 已提供可选的 Keychain-backed 真实 Provider 冒烟路径；编码写入、其他厂商和持久恢复仍待后续切片。
 
 ## 快速开始
 
@@ -32,9 +32,10 @@ pnpm --filter @helm/desktop start
 ```bash
 pnpm --filter @helm/cli dev -- run "检查 Helm 工作区"
 pnpm --filter @helm/cli start -- run "生成报告演示"
+pnpm --filter @helm/cli start -- inspect .
 ```
 
-CLI 输出 Task、Session、Run、Verification 和事件数量的 JSON 汇总。Mock Provider 返回固定模板文本，不会实际检查文件或生成报告。当前 `passed` 仅表示最终文本非空。CLI 用进程工作目录作为 workspace；通过 pnpm filter 启动时通常是 `apps/cli`，若需要以根目录启动，可在构建后执行：
+CLI 输出 Task、Session、Run、Verification 和事件数量的 JSON 汇总。`inspect` 使用 Runtime 注册的只读 Tool Profile，仅返回工作区内的文件元数据并生成 `workspace://` Artifact 引用；它不会读取文件内容、写入文件或访问凭据。普通 Mock Run 返回固定模板文本，当前 `passed` 仅表示最终文本非空。CLI 的 inspect 根目录是启动进程的工作目录；通过 pnpm filter 启动时通常是 `apps/cli`，若需要以根目录启动，可在构建后执行：
 
 ```bash
 node apps/cli/dist/main.js run "骨架冒烟检查"
@@ -55,17 +56,17 @@ HELM_PROVIDER=kimi pnpm --filter @helm/desktop start
 - 中栏：对话消息流、嵌入消息中的执行卡片、底部输入框；详细轨迹按需展开。
 - 右栏：工件、审批、验收证据；终端和长日志规划为可展开面板。
 
-逻辑上前后端分离，部署上本地一体化：React Renderer 是前端，Electron 主进程承载本地后端和 Runtime，双方通过 preload/IPC 通信。CLI 直接调用 Runtime，不需要独立 HTTP 后端。远程模型 API 负责推理；本地任务不等于离线推理。
+逻辑上前后端分离，部署上本地一体化：React Renderer 是前端，Electron 主进程承载本地后端和 Runtime，双方通过 preload/IPC 通信。CLI 直接调用 Runtime，不需要独立 HTTP 后端。远程模型 API 负责推理；本地任务不等于离线推理。文件系统 inspect executor 只从主进程/CLI 的受信 workspace 根目录运行，Renderer 不直接加载 Node 文件系统模块。
 
-桌面中栏现在通过 typed preload/IPC 提交和控制任务，Runtime 事件驱动消息、执行卡片和 Verification；右栏展示 Runtime 产生的运行上下文、审批请求和验收证据。当前使用 InMemoryEventStore 与 MockProvider，真实 Provider、工具执行和应用退出后的恢复仍待后续切片。完整职责和通信图见 [桌面端、CLI 与 Runtime 分工](docs/design/desktop-runtime-boundary.md)。
+桌面中栏现在通过 typed preload/IPC 提交和控制任务，Runtime 事件驱动消息、执行卡片和 Verification；右栏展示 Runtime 产生的运行上下文、审批请求和验收证据。默认 Mock Runtime 已支持 `inspect <path>` 的受信主进程只读执行；真实写入工具和应用退出后的恢复仍待后续切片。完整职责和通信图见 [桌面端、CLI 与 Runtime 分工](docs/design/desktop-runtime-boundary.md)。
 
 ## 仓库结构
 
 | 路径 | 职责与当前状态 |
 |---|---|
 | `apps/desktop` | Electron + React + Vite 界面、typed preload/IPC、Run 控制/审批与 Mock Runtime 纵向切片 |
-| `apps/cli` | 调用 Runtime 的 Mock 演示命令；可选 Kimi Code Keychain-backed Provider |
-| `packages/runtime` | Task/Session/Run、状态机、内存事件账本、Policy/Executor/Verifier 接口；含待绑定的 SQLite 实现 |
+| `apps/cli` | 调用 Runtime 的 Mock 演示和安全 `inspect` 命令；可选 Kimi Code Keychain-backed Provider |
+| `packages/runtime` | Task/Session/Run、状态机、内存事件账本、Tool Registry、只读 workspace inspect、Policy/Executor/Verifier 接口；含待绑定的 SQLite 实现 |
 | `packages/providers` | 通用非流式 OpenAI-compatible HTTP 适配器与三家厂商 id；Kimi Code 已通过桌面和 CLI 冒烟，DeepSeek/智谱仍未联调 |
 | `workers/document-worker` | JSONL 协议骨架，仅实现 health 和文件元数据 inspect |
 | `docs/design`、`docs/adr` | 已确认架构、决策记录、来源归属 |

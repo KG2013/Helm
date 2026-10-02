@@ -1,6 +1,10 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'node:path'
-import { InMemoryEventStore, MockProvider, RuntimeFacade } from '@helm/runtime'
+import {
+  InMemoryEventStore,
+  MockProvider,
+} from '@helm/runtime'
+import { createWorkspaceInspectionRuntime } from '@helm/runtime/tools'
 import { OpenAICompatibleProvider } from '@helm/providers'
 import { registerRuntimeIpcHandlers } from './runtime-bridge.js'
 import { readKeychainSecret } from './keychain.js'
@@ -43,7 +47,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   const useKimi = process.env.HELM_PROVIDER?.toLowerCase() === 'kimi'
-  const provider = useKimi
+  const baseProvider = useKimi
     ? new OpenAICompatibleProvider({
         id: 'kimi',
         model: process.env.HELM_KIMI_MODEL ?? 'kimi-for-coding',
@@ -51,9 +55,13 @@ app.whenReady().then(() => {
         getApiKey: () => readKeychainSecret(process.env.HELM_KIMI_KEYCHAIN_SERVICE ?? 'com.helm.provider.kimi-code'),
       })
     : new MockProvider()
-  const runtime = new RuntimeFacade({
+  const workspaceId = 'workspace-helm'
+  const workspaceRoot = process.env.HELM_WORKSPACE_ROOT ?? process.cwd()
+  const runtime = createWorkspaceInspectionRuntime({
     store: new InMemoryEventStore(),
-    provider,
+    provider: baseProvider,
+    workspaceId,
+    root: workspaceRoot,
   })
   registerRuntimeIpcHandlers({
     ipc: {
@@ -65,6 +73,7 @@ app.whenReady().then(() => {
       }),
     },
     runtime,
+    workspaceIds: [workspaceId],
     runtimeInfo: {
       appVersion: app.getVersion(),
       platform: process.platform,

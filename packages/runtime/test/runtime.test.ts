@@ -7,10 +7,15 @@ import {
   RunStateError,
   transitionRunState,
   type ProviderResponse,
+  type ToolRegistry,
 } from '../src/index.js';
 
 const allowToolPolicy = {
   decide: () => ({ decision: 'allow' as const, reason: 'test policy' }),
+};
+
+const registeredTestTools: ToolRegistry = {
+  get: (id) => ({ id, version: 'test-v1', readOnly: false, scope: 'workspace', network: 'none', maxOutputBytes: 32_000 }),
 };
 
 test('run state machine accepts the bounded happy path and rejects illegal transitions', () => {
@@ -76,6 +81,7 @@ test('tool calls are executed through the injected executor and remain auditable
   const runtime = new RuntimeFacade({
     store,
     provider,
+    toolRegistry: registeredTestTools,
     policy: allowToolPolicy,
     executor: async (call) => {
       calls.push(call.name);
@@ -103,6 +109,7 @@ test('an approval resumes the same proposal without asking the provider again', 
   const runtime = new RuntimeFacade({
     store,
     provider,
+    toolRegistry: registeredTestTools,
     policy: { decide: () => ({ decision: 'ask' as const, reason: 'writing requires approval' }) },
     executor: async (call) => { calls.push(call.id); return { ok: true, output: 'written', receipt: { sideEffect: 'known' } }; },
   });
@@ -132,6 +139,7 @@ test('denying an approval is auditable and never reaches the executor', async ()
   const runtime = new RuntimeFacade({
     store,
     provider: new MockProvider([{ kind: 'tool_call', name: 'shell', arguments: { command: 'unsafe' } }]),
+    toolRegistry: registeredTestTools,
     policy: { decide: () => ({ decision: 'ask' as const, reason: 'shell requires approval' }) },
     executor: async () => { executorCalls += 1; return { ok: true }; },
   });
@@ -168,6 +176,7 @@ test('the default tool executor fails closed when no execution boundary is confi
   const runtime = new RuntimeFacade({
     store,
     provider: new MockProvider([{ kind: 'tool_call', name: 'shell', arguments: { command: 'echo unsafe' } }]),
+    toolRegistry: registeredTestTools,
     policy: allowToolPolicy,
   });
   const task = await runtime.createTask({ goal: 'run a command', workspaceId: 'workspace-1' });
@@ -185,6 +194,7 @@ test('tool proposals are denied when no policy is configured', async () => {
   const runtime = new RuntimeFacade({
     store: new InMemoryEventStore(),
     provider: new MockProvider([{ kind: 'tool_call', name: 'shell', arguments: { command: 'echo blocked' } }]),
+    toolRegistry: registeredTestTools,
     executor: async () => { throw new Error('executor must not run'); },
   });
   const task = await runtime.createTask({ goal: 'run a command', workspaceId: 'workspace-1' });
@@ -201,6 +211,7 @@ test('unknown tool side effects require reconciliation instead of a normal failu
   const runtime = new RuntimeFacade({
     store: new InMemoryEventStore(),
     provider: new MockProvider([{ kind: 'tool_call', name: 'write_file', arguments: { path: 'report.md' } }]),
+    toolRegistry: registeredTestTools,
     policy: allowToolPolicy,
     executor: async () => ({ ok: false, error: 'process disconnected', receipt: { sideEffect: 'unknown' } }),
   });

@@ -6,6 +6,7 @@ CLI 与桌面端共用 `@helm/runtime`。默认命令使用 `MockProvider` 和 `
 pnpm --filter @helm/cli dev -- run "inspect the Helm workspace"
 pnpm --filter @helm/cli build
 pnpm --filter @helm/cli start -- run "produce a local report"
+pnpm --filter @helm/cli start -- inspect README.md
 
 # Kimi Code（Keychain service: com.helm.provider.kimi-code, account: helm）
 HELM_PROVIDER=kimi pnpm --filter @helm/cli start -- run "summarize the Helm runtime"
