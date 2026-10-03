@@ -84,6 +84,8 @@ export interface Run {
   verification?: Verification;
   finalOutput?: string;
   checkpoint?: Checkpoint;
+  ownerId?: ID;
+  leaseExpiresAt?: string;
 }
 
 export interface Turn {
@@ -391,7 +393,9 @@ export type EventType =
   | 'step.completed'
   | 'verification.result'
   | 'run.checkpoint'
-  | 'usage.recorded';
+  | 'usage.recorded'
+  | 'run.owner_acquired'
+  | 'run.owner_released';
 
 export interface UsageRecord {
   requestId?: ID;
@@ -471,6 +475,8 @@ export interface RuntimeOptions {
   clock?: RuntimeClock;
   ids?: RuntimeIdFactory;
   defaultBudget?: Partial<Budget>;
+  ownerId?: ID;
+  leaseDurationMs?: number;
 }
 
 export type RuntimeEventListener = (event: DomainEvent) => void;

@@ -33,7 +33,7 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 原生 Node SQLite adapter 已提供版本化迁移、WAL/事务、append-only sequence、durable projections、checkpoint、pending approval/receipt 恢复、未知工具对账和 JSONL 脱敏导出。CLI 通过 `HELM_STATE_DB` 接入，Desktop 主进程默认使用用户数据目录数据库。
 
-原生 SQLite contract tests 已覆盖迁移、事务、序列、projection 和恢复核心；跨客户端 Runtime ownership、lease、stale client 拒绝和同一 Run 的显式互斥仍属于后续 T9/#14，因此 #7 的跨客户端部分暂不宣称完成。
+原生 SQLite contract tests 已覆盖迁移、事务、序列、projection 和恢复核心；Runtime owner/lease、stale owner 控制拒绝与 shutdown 安全暂停已接入，跨进程 owner arbitration 和完整 reconnect smoke 仍属于后续 T9/#14。
 
 ## 5. Office Worker 核心已建立，Runtime 交付仍待接线
 

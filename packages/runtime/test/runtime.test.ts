@@ -103,6 +103,19 @@ test('token budget hard-stops a response before delivery', async () => {
   assert.equal(result.finalOutput, undefined);
 });
 
+test('Runtime ownership blocks stale controls and releases safely on shutdown', async () => {
+  const store = new InMemoryEventStore();
+  const first = new RuntimeFacade({ store, ownerId: 'desktop-owner', provider: new MockProvider([{ kind: 'final', content: 'done' }]) });
+  const task = await first.createTask({ goal: 'owned run', workspaceId: 'workspace-1' });
+  const session = await first.createSession({ taskId: task.id });
+  const run = await first.startRun({ taskId: task.id, sessionId: session.id });
+  const second = new RuntimeFacade({ store, ownerId: 'cli-owner', provider: new MockProvider([{ kind: 'final', content: 'stale' }]) });
+  await assert.rejects(() => second.cancelRun(run.id), /owned by another active Runtime/);
+  await first.shutdown();
+  const resumed = await second.resumeRun(run.id);
+  assert.equal(resumed.state, 'deciding');
+});
+
 test('tool calls are executed through the injected executor and remain auditable', async () => {
   const store = new InMemoryEventStore();
   const provider = new MockProvider([

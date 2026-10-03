@@ -72,6 +72,16 @@ export function reduceRunEvents(events: readonly DomainEvent[], runId?: string):
       case 'usage.recorded':
         run.updatedAt = event.timestamp;
         break;
+      case 'run.owner_acquired':
+        run.ownerId = typeof payload.ownerId === 'string' ? payload.ownerId : run.ownerId;
+        run.leaseExpiresAt = typeof payload.leaseExpiresAt === 'string' ? payload.leaseExpiresAt : run.leaseExpiresAt;
+        run.updatedAt = event.timestamp;
+        break;
+      case 'run.owner_released':
+        run.ownerId = undefined;
+        run.leaseExpiresAt = undefined;
+        run.updatedAt = event.timestamp;
+        break;
       default:
         break;
     }

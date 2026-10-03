@@ -57,6 +57,6 @@ flowchart TD
 
 ## 进程与部署边界
 
-桌面 app 和 CLI 复用代码，不代表它们共享同一个运行进程或内存。Desktop 默认打开用户数据目录 SQLite，CLI 设置 `HELM_STATE_DB` 后也可打开指定账本；跨客户端同时推进同一个 Run 仍需要应用级 owner/lease 和 stale-client 拒绝协议。
+桌面 app 和 CLI 复用代码，不代表它们共享同一个运行进程或内存。Desktop 默认打开用户数据目录 SQLite，CLI 设置 `HELM_STATE_DB` 后也可打开指定账本；Runtime 已持久化 owner/lease 并拒绝 stale owner 控制，跨进程 owner arbitration 和完整 reconnect smoke 仍待补。
 
 Node Runtime 首先以 package 形式嵌入。将来若长任务需要脱离窗口持续运行，可以移到本地独立进程；无需现在引入网络服务、账号或多租户部署。

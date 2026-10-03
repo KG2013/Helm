@@ -230,7 +230,7 @@ export class SqliteEventStore implements EventStore {
         [event.sessionId, event.taskId, JSON.stringify(payload), event.sequence],
       );
     }
-    if (event.runId && ['run.created', 'run.started', 'run.resumed', 'run.state_changed', 'run.paused', 'run.completed', 'run.failed', 'run.cancelled', 'run.needs_reconciliation'].includes(event.type)) {
+    if (event.runId && ['run.created', 'run.started', 'run.resumed', 'run.state_changed', 'run.paused', 'run.completed', 'run.failed', 'run.cancelled', 'run.needs_reconciliation', 'run.owner_acquired', 'run.owner_released'].includes(event.type)) {
       const state = typeof payload.state === 'string'
         ? payload.state
         : event.type === 'run.completed' ? 'completed'
@@ -343,7 +343,7 @@ function rowToEvent(row: SqliteEventRow): DomainEvent {
 }
 
 const KNOWN_EVENT_TYPES = new Set<DomainEvent['type']>([
-  'task.created', 'session.created', 'run.created', 'run.started', 'run.state_changed', 'run.paused', 'run.resumed', 'run.completed', 'run.failed', 'run.cancelled', 'run.needs_reconciliation', 'step.started', 'step.proposal', 'policy.decision', 'approval.requested', 'approval.decided', 'tool.call', 'tool.receipt', 'step.observation', 'step.completed', 'verification.result', 'run.checkpoint', 'usage.recorded',
+  'task.created', 'session.created', 'run.created', 'run.started', 'run.state_changed', 'run.paused', 'run.resumed', 'run.completed', 'run.failed', 'run.cancelled', 'run.needs_reconciliation', 'step.started', 'step.proposal', 'policy.decision', 'approval.requested', 'approval.decided', 'tool.call', 'tool.receipt', 'step.observation', 'step.completed', 'verification.result', 'run.checkpoint', 'usage.recorded', 'run.owner_acquired', 'run.owner_released',
 ]);
 
 const REDACTED_KEY = /api[-_]?key|authorization|cookie|secret|password|token/i;

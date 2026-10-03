@@ -90,6 +90,8 @@ export class RuntimeFacade {
   private readonly clock: RuntimeClock;
   private readonly ids: RuntimeIdFactory;
   private readonly defaultBudget: Budget;
+  private readonly ownerId: ID;
+  private readonly leaseDurationMs: number;
   private readonly eventListeners = new Set<RuntimeEventListener>();
   private readonly tasks = new Map<ID, Task>();
   private readonly sessions = new Map<ID, Session>();
@@ -107,6 +109,8 @@ export class RuntimeFacade {
     this.clock = options.clock ?? new SystemClock();
     this.ids = options.ids ?? new DefaultIdFactory();
     this.defaultBudget = { ...DEFAULT_BUDGET, ...options.defaultBudget };
+    this.ownerId = options.ownerId ?? 'runtime-local';
+    this.leaseDurationMs = options.leaseDurationMs ?? 5 * 60 * 1000;
   }
 
   async createTask(input: TaskInput): Promise<Task> {
@@ -155,12 +159,14 @@ export class RuntimeFacade {
     };
     await this.append({ type: 'run.created', taskId: task.id, sessionId: session.id, runId: run.id, payload: run as unknown as Record<string, unknown> });
     await this.transition(run.id, 'start');
+    await this.acquireOwnership(run.id);
     return (await this.requireRun(run.id));
   }
 
   async run(runId: ID): Promise<RunResult> {
     let run = await this.recoverRun(runId);
     if (isTerminalRunState(run.state) || run.state === 'paused') return run;
+    run = await this.ensureOwnership(runId, run);
     const task = await this.requireTask(run.taskId);
     const session = await this.requireSession(run.sessionId);
     const startedAt = this.clock.now().getTime();
@@ -320,6 +326,7 @@ export class RuntimeFacade {
 
   async pauseRun(runId: ID, reason: string): Promise<Run> {
     const run = await this.requireRun(runId);
+    await this.assertOwner(run);
     if (run.state === 'paused') return run;
     await this.transition(runId, 'needs_input', { reason });
     return this.requireRun(runId);
@@ -327,6 +334,7 @@ export class RuntimeFacade {
 
   async resumeRun(runId: ID): Promise<Run> {
     const run = await this.requireRun(runId);
+    await this.assertOwner(run);
     if (run.state !== 'paused') throw new RunStateError(run.state, 'resume');
     await this.transition(runId, 'resume');
     await this.append({ type: 'run.resumed', taskId: run.taskId, sessionId: run.sessionId, runId, payload: { state: 'recovering' } });
@@ -336,6 +344,7 @@ export class RuntimeFacade {
 
   async cancelRun(runId: ID, reason = 'cancelled by user'): Promise<Run> {
     const run = await this.requireRun(runId);
+    await this.assertOwner(run);
     if (isTerminalRunState(run.state)) return run;
     this.runControllers.get(runId)?.abort();
     for (const [approvalId, pending] of this.pendingApprovals) {
@@ -347,6 +356,7 @@ export class RuntimeFacade {
 
   async resolveApproval(runId: ID, approvalId: ID, decision: 'approve' | 'deny', workspaceId?: ID): Promise<Run> {
     const run = await this.requireRun(runId);
+    await this.assertOwner(run);
     let pending = this.pendingApprovals.get(approvalId);
     if (!pending) pending = await this.hydratePendingApproval(runId, approvalId);
     if (!pending) {
@@ -376,6 +386,21 @@ export class RuntimeFacade {
     const afterExecution = await this.executeToolCall(pending, runId);
     if (isTerminalRunState(afterExecution.state) || afterExecution.state === 'paused') return afterExecution;
     return this.run(runId);
+  }
+
+  /** Pause owned active Runs before the host process disconnects. */
+  async shutdown(reason = 'Runtime owner shutting down'): Promise<void> {
+    for (const event of await this.store.listAll()) {
+      if (event.type !== 'run.created' || !event.runId) continue;
+      const run = await this.store.getRun(event.runId);
+      if (!run || isTerminalRunState(run.state)) continue;
+      try {
+        if (run.state !== 'paused') await this.pauseRun(run.id, reason);
+        await this.append({ type: 'run.owner_released', taskId: run.taskId, sessionId: run.sessionId, runId: run.id, payload: { ownerId: this.ownerId, reason, state: 'paused' } });
+      } catch {
+        // A stale owner cannot pause a Run it no longer controls.
+      }
+    }
   }
 
   private async hydratePendingApproval(runId: ID, approvalId: ID): Promise<PendingApproval | undefined> {
@@ -507,6 +532,28 @@ export class RuntimeFacade {
     const run = await this.store.getRun(runId);
     if (!run) throw new Error(`Unknown run: ${runId}`);
     return run;
+  }
+
+  private async acquireOwnership(runId: ID): Promise<Run> {
+    const run = await this.requireRun(runId);
+    const leaseExpiresAt = new Date(this.clock.now().getTime() + this.leaseDurationMs).toISOString();
+    await this.append({ type: 'run.owner_acquired', taskId: run.taskId, sessionId: run.sessionId, runId, payload: { ownerId: this.ownerId, leaseExpiresAt, state: run.state } });
+    return this.requireRun(runId);
+  }
+
+  private async ensureOwnership(runId: ID, run: Run): Promise<Run> {
+    if (run.ownerId === this.ownerId) return run;
+    if (!run.ownerId || (run.leaseExpiresAt && new Date(run.leaseExpiresAt).getTime() <= this.clock.now().getTime())) return this.acquireOwnership(runId);
+    throw new Error(`Run ${runId} is owned by another active Runtime.`);
+  }
+
+  private async assertOwner(run: Run): Promise<void> {
+    if (!run.ownerId || run.ownerId === this.ownerId) return;
+    if (run.leaseExpiresAt && new Date(run.leaseExpiresAt).getTime() <= this.clock.now().getTime()) {
+      await this.acquireOwnership(run.id);
+      return;
+    }
+    throw new Error(`Run ${run.id} is owned by another active Runtime.`);
   }
 
   private async requireTask(taskId: ID): Promise<Task> {
