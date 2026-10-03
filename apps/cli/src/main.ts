@@ -1,6 +1,7 @@
 import {
   buildRunProjection,
   InMemoryEventStore,
+  isTerminalRunState,
   MockProvider,
   redactRunJsonl,
   RuntimeFacade,
@@ -15,7 +16,7 @@ import { OpenAICompatibleProvider } from '@helm/providers'
 import { readKeychainSecret } from './keychain.js'
 
 function printHelp(): void {
-  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm export <run-id>  Export a redacted Run ledger and evidence projection\n  helm help             Show this help\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
+  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm export <run-id>  Export a redacted Run ledger and evidence projection\n  helm help             Show this help\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
 }
 
 async function printRun(runtime: RuntimeFacade, goal: string, workspaceId: string): Promise<void> {
@@ -58,6 +59,33 @@ async function exportRun(runId: string): Promise<void> {
     const projection = buildRunProjection(events, run)
     const jsonl = database.store.exportJsonl ? await database.store.exportJsonl(runId) : redactRunJsonl(events)
     console.log(JSON.stringify({ runId, jsonl, projection, artifacts: projection.artifacts }, null, 2))
+  } finally {
+    await database.store.close()
+  }
+}
+
+async function controlRun(runId: string, action: 'pause' | 'resume' | 'cancel', reason?: string): Promise<void> {
+  const statePath = process.env.HELM_STATE_DB
+  if (!statePath) {
+    console.error('helm control requires HELM_STATE_DB to point at the Runtime SQLite ledger')
+    process.exitCode = 2
+    return
+  }
+  const database = openSqliteEventStore(statePath)
+  const runtime = new RuntimeFacade({ store: database.store, provider: new MockProvider() })
+  try {
+    const current = await runtime.getRun(runId)
+    if (!current) throw new Error(`Unknown run: ${runId}`)
+    let result = current
+    if (action === 'pause' && current.state !== 'paused' && !isTerminalRunState(current.state)) result = await runtime.pauseRun(runId, reason ?? 'paused by CLI')
+    if (action === 'resume' && current.state === 'paused') {
+      result = await runtime.resumeRun(runId)
+      result = await runtime.run(runId)
+    }
+    if (action === 'cancel' && !isTerminalRunState(current.state)) result = await runtime.cancelRun(runId, reason ?? 'cancelled by CLI')
+    const events = await runtime.getEvents(runId)
+    const projection = buildRunProjection(events, result)
+    console.log(JSON.stringify({ runId, run: result, projection, artifacts: projection.artifacts, eventCount: events.length }, null, 2))
   } finally {
     await database.store.close()
   }
@@ -124,6 +152,15 @@ if (command === 'run') {
     process.exitCode = 2
   } else {
     await exportRun(runId)
+  }
+} else if (command === 'control') {
+  const runId = args[0]?.trim()
+  const action = args[1]
+  if (!runId || (action !== 'pause' && action !== 'resume' && action !== 'cancel')) {
+    console.error('helm control requires a run id and one of pause, resume, cancel')
+    process.exitCode = 2
+  } else {
+    await controlRun(runId, action, args.slice(2).join(' ').trim() || undefined)
   }
 } else {
   printHelp()
