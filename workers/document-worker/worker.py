@@ -12,7 +12,10 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
+import time
 import zipfile
 import xml.etree.ElementTree as ET
 from html import escape
@@ -22,13 +25,16 @@ from typing import Any
 MAX_BYTES = 1_000_000
 VERSION = "0.3.0"
 MAX_XLSX_CELLS = 1_000
+MAX_RENDER_SECONDS = 15
+MAX_OCR_SECONDS = 20
+MIN_OCR_CONFIDENCE = 0.5
 
 
 def response(request_id: str, *, ok: bool, result: Any = None, error: str | None = None, receipt: dict[str, Any] | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {"id": request_id, "ok": ok}
-    if ok:
+    if result is not None:
         payload["result"] = result
-    else:
+    if not ok:
         payload["error"] = error or "worker_error"
     if receipt is not None:
         payload["receipt"] = receipt
@@ -102,8 +108,9 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
                 return response(request_id, ok=False, error="paragraphs_invalid")
             path.parent.mkdir(parents=True, exist_ok=True)
             write_minimal_docx(path, [str(item)[:4_000] for item in paragraphs])
-            checks, limitations = verify_docx(path, [str(item)[:4_000] for item in paragraphs])
+            checks, limitations, rendering = verify_docx(path, [str(item)[:4_000] for item in paragraphs])
             docx_receipt = receipt(path, operation="docx_create", request=request, limitations=limitations, checks=checks)
+            docx_receipt["rendering"] = rendering
             if any(status in {"unknown", "conflict"} for status in checks.values()):
                 docx_receipt["verification"] = "unknown"
             if checks.get("structure") != "passed" or checks.get("content") != "passed":
@@ -169,20 +176,32 @@ def handle_pdf(request: dict[str, Any], request_id: str) -> dict[str, Any]:
     pages: list[dict[str, Any]] = []
     for index, page in enumerate(reader.pages[:100]):
         text = (page.extract_text() or "").strip()
-        pages.append({"page": index + 1, "text": text[:10_000], "hasTextLayer": bool(text), "source": {"path": path.relative_to(workspace_root()).as_posix(), "page": index + 1}})
-    complete = bool(pages) and all(page["hasTextLayer"] for page in pages)
-    checks = {"coverage": "passed" if complete else "unknown", "sources": "passed" if pages else "unknown"}
-    limitations = [] if complete else ["One or more pages have no text layer; OCR is not enabled in this worker."]
+        pages.append({"page": index + 1, "text": text[:10_000], "hasTextLayer": bool(text), "extraction": "text-layer" if text else "unknown", "confidence": 1.0 if text else None, "source": {"path": path.relative_to(workspace_root()).as_posix(), "page": index + 1, "extraction": "text-layer" if text else "unknown"}})
+    missing_pages = [page["page"] for page in pages if not page["hasTextLayer"]]
+    ocr_limitations: list[str] = []
+    ocr_metadata: dict[str, Any] = {"requestedPages": missing_pages, "status": "not_needed" if not missing_pages else "unknown"}
+    if missing_pages:
+        ocr_pages, ocr_metadata, ocr_limitations = ocr_missing_pages(path, missing_pages)
+        if ocr_pages is not None:
+            for page in pages:
+                replacement = ocr_pages.get(page["page"])
+                if replacement is not None:
+                    page.update(replacement)
+    complete = bool(pages) and all(bool(page.get("text")) and (page.get("hasTextLayer") or (page.get("extraction") == "ocr" and isinstance(page.get("confidence"), (int, float)) and page["confidence"] >= MIN_OCR_CONFIDENCE)) for page in pages)
+    sources_complete = bool(pages) and all(isinstance(page.get("source"), dict) and isinstance(page["source"].get("page"), int) for page in pages)
+    checks = {"coverage": "passed" if complete else "unknown", "sources": "passed" if sources_complete else "unknown"}
+    limitations = ocr_limitations if not complete else []
     pdf_receipt = receipt(path, operation="pdf_extract", request=request, side_effect="none", limitations=limitations, checks=checks, target={"pages": [page["page"] for page in pages]})
-    result = {"pages": pages, "extraction": "text-layer", "checks": checks}
+    pdf_receipt["ocr"] = ocr_metadata
+    result = {"pages": pages, "extraction": "text-layer" if not missing_pages else "text-layer+ocr", "checks": checks, "ocr": ocr_metadata}
     if not complete:
         pdf_receipt["verification"] = "unknown"
-        return response(request_id, ok=False, result=result, error="unknown_text_layer", receipt=pdf_receipt)
+        return response(request_id, ok=False, result=result, error="ocr_unavailable" if missing_pages and ocr_metadata.get("status") != "passed" else "unknown_text_layer", receipt=pdf_receipt)
     return response(request_id, ok=True, result=result, receipt=pdf_receipt)
 
 
-def verify_docx(path: Path, paragraphs: list[str]) -> tuple[dict[str, str], list[str]]:
-    """Validate package/XML/content; rendering needs an external office renderer."""
+def verify_docx(path: Path, paragraphs: list[str]) -> tuple[dict[str, str], list[str], dict[str, Any]]:
+    """Validate package/XML/content and, when available, bounded PDF rendering."""
     limitations: list[str] = []
     structure = "passed"
     content = "passed"
@@ -199,12 +218,99 @@ def verify_docx(path: Path, paragraphs: list[str]) -> tuple[dict[str, str], list
                     content = "conflict"
     except (OSError, ET.ParseError, zipfile.BadZipFile, KeyError):
         structure = "conflict"
-    rendering = "unknown"
-    if shutil.which("soffice") or shutil.which("libreoffice"):
-        limitations.append("A renderer is available but rendering was not invoked by this bounded operation.")
-    else:
-        limitations.append("No office renderer is available; visual rendering remains unverified.")
-    return {"structure": structure, "content": content, "rendering": rendering}, limitations
+    rendering, rendering_evidence, rendering_limitation = render_docx(path)
+    if rendering_limitation:
+        limitations.append(rendering_limitation)
+    return {"structure": structure, "content": content, "rendering": rendering}, limitations, rendering_evidence
+
+
+def render_docx(path: Path) -> tuple[str, dict[str, Any], str | None]:
+    renderer = shutil.which("soffice") or shutil.which("libreoffice")
+    if not renderer:
+        return "unknown", {"status": "unavailable"}, "No office renderer is available; visual rendering remains unverified."
+    with tempfile.TemporaryDirectory(prefix="helm-docx-render-") as temporary:
+        output_dir = Path(temporary)
+        command = [renderer, "--headless", "--nologo", "--nodefault", "--nofirststartwizard", "--nolockcheck", "--convert-to", "pdf", "--outdir", str(output_dir), str(path)]
+        try:
+            completed = subprocess.run(command, cwd=temporary, env=command_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=MAX_RENDER_SECONDS, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return "unknown", {"status": "failed", "renderer": Path(renderer).name}, "DOCX rendering command failed or exceeded its time bound."
+        rendered = output_dir / f"{path.stem}.pdf"
+        if completed.returncode != 0 or not rendered.is_file() or rendered.stat().st_size > MAX_BYTES:
+            return "unknown", {"status": "failed", "renderer": Path(renderer).name}, "DOCX renderer did not produce a bounded PDF artifact."
+        try:
+            from pypdf import PdfReader
+            pages = len(PdfReader(str(rendered)).pages)
+        except (ImportError, OSError, ValueError):
+            return "unknown", {"status": "failed", "renderer": Path(renderer).name}, "Rendered PDF could not be opened for a page-count check."
+        if pages < 1:
+            return "unknown", {"status": "failed", "renderer": Path(renderer).name}, "Rendered PDF has no pages."
+        return "passed", {"status": "passed", "renderer": Path(renderer).name, "pdfPages": pages}, "Rendering evidence proves bounded PDF conversion and opening; pixel-level visual comparison is not performed."
+
+
+def ocr_missing_pages(path: Path, page_numbers: list[int]) -> tuple[dict[int, dict[str, Any]] | None, dict[str, Any], list[str]]:
+    pdftoppm = shutil.which("pdftoppm")
+    tesseract = shutil.which("tesseract")
+    if not pdftoppm or not tesseract:
+        missing = [name for name, value in (("pdftoppm", pdftoppm), ("tesseract", tesseract)) if not value]
+        return None, {"status": "unavailable", "missing": missing, "requestedPages": page_numbers}, [f"OCR is unavailable; missing command(s): {', '.join(missing)}."]
+    deadline = time.monotonic() + MAX_OCR_SECONDS
+    pages: dict[int, dict[str, Any]] = {}
+    limitations: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="helm-pdf-ocr-") as temporary:
+        output_dir = Path(temporary)
+        for page_number in page_numbers:
+            if time.monotonic() >= deadline:
+                limitations.append("OCR exceeded the total time bound before all pages were processed.")
+                break
+            image_prefix = output_dir / f"page-{page_number}"
+            try:
+                rendered = subprocess.run([pdftoppm, "-f", str(page_number), "-l", str(page_number), "-singlefile", "-png", "-r", "150", str(path), str(image_prefix)], cwd=temporary, env=command_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=max(1, min(10, int(deadline - time.monotonic()))), check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                limitations.append(f"OCR page {page_number} rendering failed or timed out.")
+                continue
+            image = image_prefix.with_suffix(".png")
+            if rendered.returncode != 0 or not image.is_file() or image.stat().st_size > MAX_BYTES:
+                limitations.append(f"OCR page {page_number} image was unavailable or exceeded its bound.")
+                continue
+            try:
+                recognized = subprocess.run([tesseract, str(image), "stdout", "--psm", "6", "tsv"], cwd=temporary, env=command_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=max(1, min(10, int(deadline - time.monotonic()))), check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                limitations.append(f"OCR page {page_number} recognition failed or timed out.")
+                continue
+            text, confidence = parse_tesseract_tsv(recognized.stdout if recognized.returncode == 0 else "")
+            pages[page_number] = {"text": text[:10_000], "hasTextLayer": False, "extraction": "ocr", "confidence": confidence, "source": {"path": path.relative_to(workspace_root()).as_posix(), "page": page_number, "extraction": "ocr", "confidence": confidence}}
+            if not text or confidence is None:
+                limitations.append(f"OCR page {page_number} returned no text or confidence.")
+            elif confidence < MIN_OCR_CONFIDENCE:
+                limitations.append(f"OCR page {page_number} confidence is below the delivery threshold.")
+    status = "passed" if pages and all(page_number in pages and pages[page_number].get("confidence") is not None and pages[page_number].get("confidence", 0) >= MIN_OCR_CONFIDENCE for page_number in page_numbers) else "unknown"
+    return pages, {"status": status, "engine": "tesseract", "requestedPages": page_numbers, "processedPages": sorted(pages)}, limitations
+
+
+def parse_tesseract_tsv(value: str) -> tuple[str, float | None]:
+    words: list[str] = []
+    confidences: list[float] = []
+    for line in value.splitlines()[1:]:
+        columns = line.split("\t")
+        if len(columns) < 12:
+            continue
+        word = columns[11].strip()
+        try:
+            confidence = float(columns[10])
+        except ValueError:
+            continue
+        if word and confidence >= 0:
+            words.append(word)
+            confidences.append(confidence / 100.0)
+    return " ".join(words), sum(confidences) / len(confidences) if confidences else None
+
+
+def command_environment() -> dict[str, str]:
+    allowed = {"PATH", "LANG", "LC_ALL", "TMPDIR"}
+    environment = {key: value for key, value in os.environ.items() if key in allowed}
+    environment.setdefault("PATH", os.defpath)
+    return environment
 
 
 def xlsx_selector(request: dict[str, Any]) -> str | None:

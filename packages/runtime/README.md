@@ -37,3 +37,9 @@ policy validates workspace paths and asks for approval before artifact writes,
 while `OfficeVerifier` requires an artifact hash, source Run, and
 operation-specific evidence checks. Missing rendering, OCR, page coverage, or
 workbook-scope evidence remains `unknown` and pauses delivery.
+
+The bundled Python worker performs a bounded DOCX-to-PDF rendering check when
+`soffice` or `libreoffice` is available. Scanned PDF pages use bounded
+`pdftoppm`/`tesseract` OCR when both commands are available and record page,
+engine, confidence, and limitations; unavailable or inconclusive OCR remains
+`unknown`.

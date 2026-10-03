@@ -37,9 +37,9 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 ## 5. Office Worker Runtime 核心已接线，桌面交付仍待补
 
-受限 JSONL worker 已提供 DOCX package/content 检查、XLSX 指定单元格/范围读写与 target/scope snapshot、PDF text-layer 分页来源与 coverage，并返回 hash、source Run、worker Receipt、checks 与 limitations。Runtime 已通过 `createOfficeRuntime` 注册 Tool Profile、Policy/Approval、Worker Client、Artifact receipt 和 Office Verifier；缺渲染、OCR、覆盖率或未授权范围证据时返回 UNKNOWN 并暂停交付。
+受限 JSONL worker 已提供 DOCX package/content 与可选有界 `soffice`/`libreoffice` PDF 转换检查、XLSX 指定单元格/范围读写与 target/scope snapshot、PDF text-layer 分页来源与 coverage，并在 `pdftoppm`/`tesseract` 可用时提供带页码和 confidence 的 OCR。所有路径均返回 hash、source Run、worker Receipt、checks 与 limitations；缺渲染、OCR、覆盖率或未授权范围证据时返回 UNKNOWN 并暂停交付。
 
-下一步接入真实 worker 进程管理、CLI/Desktop 的同一 Artifact/Verification 投影；扫描 PDF 需接入带 confidence/页码来源的 OCR，DOCX 需显式执行视觉渲染检查后才可交付。
+真实 worker 进程管理和 Runtime E2E 已覆盖；下一步接入 CLI/Desktop 的同一 Artifact/Verification 投影，并在目标环境验证 OCR 工具链。当前 DOCX 检查验证有界转换和可打开的 PDF 页数，不做像素级视觉对比；缺少渲染器或 OCR 命令时保持 UNKNOWN。
 
 随后补跨恢复预算、重试/限流分类、诊断导出、故障注入与 Experience Candidate review UI；UsageLedger、Episode、release gate 和成对 Context compaction 核心已建立，仍需接入固定 Coding/Office dev/holdout 三轮运行。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化等维持 P0 范围约束。
 

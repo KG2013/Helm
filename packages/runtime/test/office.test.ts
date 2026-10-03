@@ -217,13 +217,13 @@ test('PythonDocumentWorkerClient enforces the JSONL process boundary and preserv
     assert.equal(response.ok, true);
     assert.equal(response.receipt?.artifact && (response.receipt.artifact as { sourceRunId?: string }).sourceRunId, 'run-client-1');
     assert.equal((response.receipt?.checks as { structure?: string }).structure, 'passed');
-    assert.equal((response.receipt?.checks as { rendering?: string }).rendering, 'unknown');
+    assert.ok(['passed', 'unknown'].includes(String((response.receipt?.checks as { rendering?: string }).rendering)));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test('Runtime plus the real Document Worker keeps missing DOCX rendering evidence UNKNOWN', async () => {
+test('Runtime plus the real Document Worker delivers only when bounded rendering evidence exists', async () => {
   const root = await mkdtemp('/tmp/helm-office-e2e-');
   try {
     const scriptPath = resolve(fileURLToPath(new URL('../../../workers/document-worker/worker.py', import.meta.url)));
@@ -243,9 +243,15 @@ test('Runtime plus the real Document Worker keeps missing DOCX rendering evidenc
     const paused = await runtime.run(started.id);
     assert.equal(paused.state, 'paused');
     const result = await approveLatest(runtime, paused.id);
-    assert.equal(result.state, 'paused');
-    assert.equal(result.verification?.result, 'unknown');
-    assert.match(result.verification?.message ?? '', /rendering/i);
+    const receipt = (await runtime.getEvents(result.id)).find((event) => event.type === 'tool.receipt')?.payload.receipt as { checks?: { rendering?: string } } | undefined;
+    if (receipt?.checks?.rendering === 'passed') {
+      assert.equal(result.state, 'completed');
+      assert.equal(result.verification?.result, 'passed');
+    } else {
+      assert.equal(result.state, 'paused');
+      assert.equal(result.verification?.result, 'unknown');
+      assert.match(result.verification?.message ?? '', /rendering/i);
+    }
     await access(resolve(root, 'report.docx'));
   } finally {
     await rm(root, { recursive: true, force: true });
