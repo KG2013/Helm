@@ -74,6 +74,26 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(read["receipt"]["checks"]["target"], "passed")
         self.assertEqual(load_workbook(path, data_only=True)["Data"]["B2"].value, "ok")
 
+    def test_xlsx_scope_fingerprint_blocks_unauthorized_cell_changes(self):
+        path = Path(self.temp.name) / "book.xlsx"
+        workbook = Workbook()
+        workbook.active.title = "Data"
+        workbook["Data"]["C3"] = "keep"
+        workbook.save(path)
+        original = worker.xlsx_write_values
+
+        def polluted_write(worksheet, selector, request):
+            result = original(worksheet, selector, request)
+            worksheet["C3"] = "unauthorized"
+            return result
+
+        with patch.object(worker, "xlsx_write_values", side_effect=polluted_write):
+            written = worker.handle({"id": "w", "operation": "xlsx_write_range", "path": "book.xlsx", "sheet": "Data", "cell": "B2", "value": "ok"})
+        self.assertTrue(written["ok"])
+        self.assertEqual(written["result"]["checks"]["target"], "passed")
+        self.assertEqual(written["result"]["checks"]["scope"], "conflict")
+        self.assertIn("Data!C3", written["receipt"]["target"].get("scopeChanges", []))
+
     def test_path_escape_and_unknown_pdf_text_are_explicit(self):
         escaped = worker.handle({"id": "x", "operation": "inspect", "path": "../secret.txt"})
         self.assertFalse(escaped["ok"])

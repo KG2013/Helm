@@ -189,9 +189,10 @@ def handle_xlsx(request: dict[str, Any], request_id: str, operation: str) -> dic
     after = xlsx_snapshot(after_workbook)
     actual = xlsx_values(after_workbook[sheet], selector)
     target_passed = actual == expected
-    scope_passed = before is not None and after is not None and changed_outside_target(before, after, sheet, selector) == []
+    scope_changes = changed_outside_target(before, after, sheet, selector) if before is not None and after is not None else []
+    scope_passed = before is not None and after is not None and scope_changes == []
     checks = {"target": "passed" if target_passed else "conflict", "scope": "passed" if scope_passed else "unknown" if before is None or after is None else "conflict"}
-    target = {"sheet": sheet, "selector": selector, "cells": xlsx_cells(selector), "before": before_target, "after": actual}
+    target = {"sheet": sheet, "selector": selector, "cells": xlsx_cells(selector), "before": before_target, "after": actual, "scopeChanges": scope_changes}
     result = {"sheet": sheet, "selector": selector, "value": actual, "checks": checks}
     limitations = [] if scope_passed else ["Workbook scope could not be fully compared; unauthorized changes remain unverified."]
     return response(request_id, ok=True, result=result, receipt=receipt(path, operation=operation, request=request, checks=checks, target=target, limitations=limitations))
@@ -420,27 +421,83 @@ def xlsx_write_values(worksheet: Any, selector: str, request: dict[str, Any]) ->
 
 
 def xlsx_snapshot(workbook: Any) -> dict[str, Any] | None:
-    snapshot: dict[str, Any] = {}
+    """Capture a bounded workbook fingerprint for scope verification.
+
+    Values alone cannot prove that an edit stayed in its authorized range: a
+    worker could mutate a formula, style, comment, merge, or another sheet and
+    still return the requested target value.  Keep the fingerprint bounded and
+    deterministic so it can be compared across the save/reopen boundary.
+    """
+    sheets: dict[str, Any] = {}
     count = 0
     for sheet in workbook.worksheets:
         if sheet.max_row * sheet.max_column > MAX_XLSX_CELLS:
             return None
+        cells: dict[str, Any] = {}
         for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=1, max_col=sheet.max_column):
             for cell in row:
-                snapshot[f"{sheet.title}!{cell.coordinate}"] = cell.value
+                hyperlink = cell.hyperlink.target if cell.hyperlink is not None else None
+                # openpyxl materializes default blank cells while reopening a
+                # workbook.  Ignore those synthetic cells, but retain blank
+                # cells carrying a style, comment, or hyperlink because they
+                # are part of the user's workbook state.
+                if cell.value is None and cell.style_id == 0 and cell.comment is None and hyperlink is None:
+                    continue
+                cells[cell.coordinate] = {
+                    "value": cell.value,
+                    "dataType": cell.data_type,
+                    "styleId": cell.style_id,
+                    "numberFormat": cell.number_format,
+                    "hasComment": cell.comment is not None,
+                    "hyperlink": hyperlink,
+                }
                 count += 1
                 if count > MAX_XLSX_CELLS:
                     return None
-    return snapshot
+        sheets[sheet.title] = {
+            "state": sheet.sheet_state,
+            "mergedRanges": sorted(str(value) for value in sheet.merged_cells.ranges),
+            "cells": cells,
+        }
+    defined_names = {
+        name: {
+            "attrText": value.attr_text,
+            "localSheetId": value.localSheetId,
+            "hidden": value.hidden,
+        }
+        for name, value in sorted(workbook.defined_names.items())
+    }
+    return {"sheetNames": [sheet.title for sheet in workbook.worksheets], "sheets": sheets, "definedNames": defined_names}
 
 
 def changed_outside_target(before: dict[str, Any], after: dict[str, Any], sheet: str, selector: str) -> list[str]:
-    target = {f"{sheet}!{cell}" for cell in xlsx_cells(selector)}
+    """Return stable fingerprint paths changed outside the authorized cells."""
     changed: list[str] = []
-    for key in set(before) | set(after):
-        if key not in target and before.get(key) != after.get(key):
-            changed.append(key)
-    return changed
+    if before.get("sheetNames") != after.get("sheetNames"):
+        changed.append("workbook.sheetNames")
+    if before.get("definedNames") != after.get("definedNames"):
+        changed.append("workbook.definedNames")
+    before_sheets = before.get("sheets", {})
+    after_sheets = after.get("sheets", {})
+    target = set(xlsx_cells(selector))
+    for sheet_name in set(before_sheets) | set(after_sheets):
+        if sheet_name not in before_sheets or sheet_name not in after_sheets:
+            changed.append(f"sheet:{sheet_name}")
+            continue
+        before_sheet = before_sheets[sheet_name]
+        after_sheet = after_sheets[sheet_name]
+        if before_sheet.get("state") != after_sheet.get("state"):
+            changed.append(f"sheet:{sheet_name}.state")
+        if before_sheet.get("mergedRanges") != after_sheet.get("mergedRanges"):
+            changed.append(f"sheet:{sheet_name}.mergedRanges")
+        before_cells = before_sheet.get("cells", {})
+        after_cells = after_sheet.get("cells", {})
+        for coordinate in set(before_cells) | set(after_cells):
+            if sheet_name == sheet and coordinate in target:
+                continue
+            if before_cells.get(coordinate) != after_cells.get(coordinate):
+                changed.append(f"{sheet_name}!{coordinate}")
+    return sorted(changed)
 
 
 def write_minimal_docx(path: Path, paragraphs: list[str]) -> None:
