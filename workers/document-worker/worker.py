@@ -240,7 +240,8 @@ def render_docx(path: Path) -> tuple[str, dict[str, Any], str | None]:
         return "unknown", {"status": "unavailable"}, "No office renderer is available; visual rendering remains unverified."
     with tempfile.TemporaryDirectory(prefix="helm-docx-render-") as temporary:
         output_dir = Path(temporary)
-        command = [renderer, "--headless", "--nologo", "--nodefault", "--nofirststartwizard", "--nolockcheck", "--convert-to", "pdf", "--outdir", str(output_dir), str(path)]
+        profile = (output_dir / "profile").resolve()
+        command = [renderer, "--headless", "--nologo", "--nodefault", "--nofirststartwizard", "--nolockcheck", f"-env:UserInstallation={profile.as_uri()}", "--convert-to", "pdf", "--outdir", str(output_dir), str(path)]
         try:
             completed = subprocess.run(command, cwd=temporary, env=command_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=MAX_RENDER_SECONDS, check=False)
         except (OSError, subprocess.TimeoutExpired):
