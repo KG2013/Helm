@@ -46,11 +46,25 @@ export interface ProjectedApproval {
   call?: Record<string, unknown>;
 }
 
+export interface CodingDeliveryProjection {
+  sourceRunId: ID;
+  changedFiles: string[];
+  diff?: ProjectedArtifact['diff'];
+  tests: NonNullable<ProjectedArtifact['test']>[];
+  hashes: string[];
+  hasRead: boolean;
+  hasEdit: boolean;
+  hasPassingTest: boolean;
+  hasDiff: boolean;
+  ready: boolean;
+}
+
 export interface RunProjection {
   run: Run;
   artifacts: ProjectedArtifact[];
   approvals: ProjectedApproval[];
   verification?: Verification;
+  codingDelivery?: CodingDeliveryProjection;
 }
 
 /** Serialize a Run's public ledger without leaking credentials or private file contents. */
@@ -100,11 +114,43 @@ export function buildRunProjection(events: readonly DomainEvent[], run?: Run): R
 
   const latestVerification = [...events].reverse().find((event) => event.type === 'verification.result');
   const verification = asRecord(latestVerification?.payload)?.verification;
+  const codingDelivery = buildCodingDelivery(projectedRun.id, artifacts);
   return {
     run: projectedRun,
     artifacts,
     approvals: [...approvals.values()],
     verification: isVerification(verification) ? verification : projectedRun.verification,
+    codingDelivery,
+  };
+}
+
+function buildCodingDelivery(runId: ID, artifacts: readonly ProjectedArtifact[]): CodingDeliveryProjection | undefined {
+  const coding = artifacts.filter((artifact) => artifact.tool.startsWith('workspace.') && (
+    artifact.tool === 'workspace.read'
+    || artifact.tool === 'workspace.edit'
+    || artifact.tool === 'workspace.patch'
+    || artifact.tool === 'workspace.test'
+    || artifact.tool === 'workspace.diff'
+  ));
+  if (!coding.length) return undefined;
+  const changedFiles = [...new Set(coding.flatMap((artifact) => artifact.changedFiles))];
+  const tests = coding.flatMap((artifact) => artifact.test ? [artifact.test] : []);
+  const diff = [...coding].reverse().find((artifact) => artifact.tool === 'workspace.diff')?.diff;
+  const hasRead = coding.some((artifact) => artifact.ok && artifact.tool === 'workspace.read');
+  const hasEdit = coding.some((artifact) => artifact.ok && (artifact.tool === 'workspace.edit' || artifact.tool === 'workspace.patch'));
+  const hasPassingTest = tests.some((test) => test.exitCode === 0);
+  const hasDiff = coding.some((artifact) => artifact.ok && artifact.tool === 'workspace.diff' && Boolean(artifact.diff));
+  return {
+    sourceRunId: runId,
+    changedFiles,
+    diff,
+    tests,
+    hashes: [...new Set(coding.flatMap((artifact) => artifact.hash ? [artifact.hash] : []))],
+    hasRead,
+    hasEdit,
+    hasPassingTest,
+    hasDiff,
+    ready: hasRead && hasEdit && hasPassingTest && hasDiff,
   };
 }
 
