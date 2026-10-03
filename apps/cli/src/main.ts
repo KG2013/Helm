@@ -19,7 +19,7 @@ import {
   createCodingRuntime,
   createWorkspaceInspectionRuntime,
 } from '@helm/runtime/tools'
-import { OpenAICompatibleProvider } from '@helm/providers'
+import { createProviderFromEnv } from '@helm/providers'
 import { readKeychainSecret } from './keychain.js'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -168,15 +168,8 @@ async function controlRun(runId: string, action: 'pause' | 'resume' | 'cancel', 
 }
 
 async function run(goal: string): Promise<void> {
-  const useKimi = process.env.HELM_PROVIDER?.toLowerCase() === 'kimi'
-  const provider = useKimi
-    ? new OpenAICompatibleProvider({
-        id: 'kimi',
-        model: process.env.HELM_KIMI_MODEL ?? 'kimi-for-coding',
-        baseUrl: process.env.HELM_KIMI_BASE_URL ?? 'https://api.kimi.com/coding/v1',
-        getApiKey: () => readKeychainSecret(process.env.HELM_KIMI_KEYCHAIN_SERVICE ?? 'com.helm.provider.kimi-code'),
-      })
-    : new MockProvider([{ kind: 'final', content: `Completed local task: ${goal}` } satisfies ProviderResponse])
+  const provider = createProviderFromEnv({ env: process.env, getApiKey: (service) => readKeychainSecret(service) })
+    ?? new MockProvider([{ kind: 'final', content: `Completed local task: ${goal}` } satisfies ProviderResponse])
   const workspaceId = process.env.HELM_WORKSPACE_ID ?? 'workspace-cli'
   const workspaceRoot = process.env.HELM_WORKSPACE_ROOT ?? process.cwd()
   const database = process.env.HELM_STATE_DB ? openSqliteEventStore(process.env.HELM_STATE_DB) : undefined

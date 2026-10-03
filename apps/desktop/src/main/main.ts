@@ -9,7 +9,7 @@ import {
 } from '@helm/runtime'
 import { openSqliteEventStore } from '@helm/runtime/sqlite-node'
 import { createCodingRuntime, createWorkspaceInspectionRuntime } from '@helm/runtime/tools'
-import { OpenAICompatibleProvider } from '@helm/providers'
+import { createProviderFromEnv } from '@helm/providers'
 import { registerRuntimeIpcHandlers } from './runtime-bridge.js'
 import { readKeychainSecret } from './keychain.js'
 
@@ -53,15 +53,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  const useKimi = process.env.HELM_PROVIDER?.toLowerCase() === 'kimi'
-  const baseProvider = useKimi
-    ? new OpenAICompatibleProvider({
-        id: 'kimi',
-        model: process.env.HELM_KIMI_MODEL ?? 'kimi-for-coding',
-        baseUrl: process.env.HELM_KIMI_BASE_URL ?? 'https://api.kimi.com/coding/v1',
-        getApiKey: () => readKeychainSecret(process.env.HELM_KIMI_KEYCHAIN_SERVICE ?? 'com.helm.provider.kimi-code'),
-      })
-    : new MockProvider()
+  const baseProvider = createProviderFromEnv({ env: process.env, getApiKey: (service) => readKeychainSecret(service) }) ?? new MockProvider()
   const workspaceId = 'workspace-helm'
   const workspaceRoot = process.env.HELM_WORKSPACE_ROOT ?? process.cwd()
   const statePath = process.env.HELM_STATE_DB ?? join(app.getPath('userData'), 'state.sqlite')

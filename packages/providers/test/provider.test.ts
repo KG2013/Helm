@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { OpenAICompatibleProvider, ProviderHttpError, ProviderRequestError } from '../src/index.js'
+import { OpenAICompatibleProvider, ProviderHttpError, ProviderRequestError, createProviderFromEnv, providerConfigFromEnv } from '../src/index.js'
 import type { ProviderRequest } from '@helm/runtime'
 
 function request(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
@@ -24,6 +24,19 @@ function request(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
     ...overrides,
   }
 }
+
+test('provider catalog resolves DeepSeek, Zhipu, and Kimi without exposing credentials', () => {
+  for (const [id, expected] of [['deepseek', 'deepseek-chat'], ['zhipu', 'glm-4-flash'], ['kimi', 'kimi-for-coding']] as const) {
+    const config = providerConfigFromEnv({ HELM_PROVIDER: id })
+    assert.equal(config?.entry.id, id)
+    assert.equal(config?.model, expected)
+    assert.equal(config?.keychainService.includes('provider.'), true)
+  }
+  assert.equal(providerConfigFromEnv({ HELM_PROVIDER: 'unknown' }), undefined)
+  const provider = createProviderFromEnv({ env: { HELM_PROVIDER: 'deepseek' }, getApiKey: () => 'secret-value' })
+  assert.equal(provider?.id, 'deepseek')
+  assert.equal(provider?.model, 'deepseek-chat')
+})
 
 test('OpenAI-compatible provider maps final response, structured context, usage, cost and IDs', async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = []
