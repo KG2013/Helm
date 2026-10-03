@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   MockProvider,
   RuntimeFacade,
@@ -23,6 +26,25 @@ async function withDatabase<T>(callback: (filename: string) => Promise<T>): Prom
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+function runReopenProcess(filename: string, runId: string): Promise<{ state?: string; checkpointRunId?: string; eventCount: number; jsonlLines: number }> {
+  const require = createRequire(import.meta.url);
+  const loader = require.resolve('tsx/esm');
+  const fixture = fileURLToPath(new URL('./fixtures/reopen-run.ts', import.meta.url));
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', loader, fixture, filename, runId], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code !== 0) return reject(new Error(`reopen process exited with ${code}: ${stderr}`));
+      try { resolve(JSON.parse(stdout) as { state?: string; checkpointRunId?: string; eventCount: number; jsonlLines: number }); }
+      catch (error) { reject(new Error(`invalid reopen output: ${stdout}; ${String(error)}`)); }
+    });
+  });
 }
 
 test('native SQLite migrates, serializes concurrent appends, projects facts, and exports redacted JSONL', async () => {
@@ -151,6 +173,26 @@ test('a second Runtime reopens a completed run without calling the provider agai
     assert.equal(providerCalls, 0);
     assert.equal(recovered.checkpoint?.runId, run.id);
     await second.store.close();
+  });
+});
+
+test('a separate Runtime process rehydrates the same Run, checkpoint, and JSONL history', async () => {
+  await withDatabase(async (filename) => {
+    const first = openSqliteEventStore(filename);
+    const runtime = new RuntimeFacade({ store: first.store, provider: new MockProvider([{ kind: 'final', content: 'reopened' }]) });
+    const task = await runtime.createTask({ goal: 'process reopen', workspaceId: 'workspace-1' });
+    const session = await runtime.createSession({ taskId: task.id });
+    const created = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+    const completed = await runtime.run(created.id);
+    assert.equal(completed.state, 'completed');
+    const expectedEvents = (await first.store.list(created.id)).length;
+    await first.store.close();
+
+    const reopened = await runReopenProcess(filename, created.id);
+    assert.equal(reopened.state, 'completed');
+    assert.equal(reopened.checkpointRunId, created.id);
+    assert.equal(reopened.eventCount, expectedEvents);
+    assert.equal(reopened.jsonlLines, expectedEvents);
   });
 });
 
