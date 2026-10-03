@@ -29,7 +29,7 @@ Keychain、受限 shell、真实工件存储、Office Runtime verifier、Experie
 | 检查 | 已验证结果 | 实际覆盖 |
 |---|---|---|
 | `pnpm build` | 通过 | Runtime、Provider、CLI 输出及桌面 TypeScript/Vite/esbuild 构建 |
-| `pnpm test` | 待本轮全仓复跑 | 当前 Runtime 30 项、Provider 7 项、Desktop IPC 6 项；SQLite、Provider 和 Coding 合同使用本地 fixture，Kimi 真实请求单独记录 |
+| `pnpm test` | 通过 | Runtime 30 项、Provider 7 项、Desktop IPC 6 项；SQLite、Provider 和 Coding 合同使用本地 fixture，Kimi 真实请求单独记录 |
 | `pnpm typecheck` | 通过 | Runtime、Provider、CLI；桌面检查在 build 中 |
 | Worker health / inspect | 返回成功结构化回执 | inspect 仅验证文件元数据 |
 | 桌面开发预览 | 前序已启动 Vite/Electron 并预览界面 | 预览本身不证明 IPC；真实模型、审批、工件或打包版本端到端测试待后续 |
