@@ -83,6 +83,18 @@ test('provider context enforces its byte budget and redacts tool errors', () => 
     assert.equal(context.messages.some((message) => message.toolCalls?.some((call) => JSON.stringify(call.arguments).includes('secret-value'))), false)
 })
 
+test('context compaction keeps assistant tool calls paired with tool results', () => {
+  const task = { id: 'task-1', goal: 'compact', workspaceId: 'workspace', createdAt: 'now', budget: { maxSteps: 2, maxDurationMs: 1000, maxReviewerRounds: 0 } }
+  const events = [
+    { id: 'call', sequence: 1, type: 'tool.call' as const, timestamp: 'now', runId: 'run-1', taskId: 'task-1', sessionId: 'session-1', payload: { id: 'tool-1', name: 'workspace.edit', arguments: { content: 'x'.repeat(20_000) } } },
+    { id: 'receipt', sequence: 2, type: 'tool.receipt' as const, timestamp: 'now', runId: 'run-1', taskId: 'task-1', sessionId: 'session-1', payload: { toolCallId: 'tool-1', name: 'workspace.edit', ok: true, output: 'done' } },
+  ]
+  const { context } = buildProviderContext(task, events, 1_024)
+  const assistants = context.messages.filter((message) => message.role === 'assistant' && message.toolCalls?.some((call) => call.id === 'tool-1')).length
+  const tools = context.messages.filter((message) => message.role === 'tool' && message.toolCallId === 'tool-1').length
+  assert.equal(assistants, tools)
+})
+
 test('a provider-driven inspect Run receives Tool schema and structured ToolResult through the Runtime Facade', async () => {
   const root = await mkdtemp('/tmp/helm-inspect-provider-')
   try {

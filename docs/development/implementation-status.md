@@ -29,7 +29,7 @@ Keychain、受限 shell、真实工件存储、Office Runtime verifier、Experie
 | 检查 | 已验证结果 | 实际覆盖 |
 |---|---|---|
 | `pnpm build` | 通过 | Runtime、Provider、CLI 输出及桌面 TypeScript/Vite/esbuild 构建 |
-| `pnpm test` | 待本轮全仓复跑 | 当前 Runtime 28 项、Provider 7 项、Desktop IPC 6 项；SQLite、Provider 和 Coding 合同使用本地 fixture，Kimi 真实请求单独记录 |
+| `pnpm test` | 待本轮全仓复跑 | 当前 Runtime 30 项、Provider 7 项、Desktop IPC 6 项；SQLite、Provider 和 Coding 合同使用本地 fixture，Kimi 真实请求单独记录 |
 | `pnpm typecheck` | 通过 | Runtime、Provider、CLI；桌面检查在 build 中 |
 | Worker health / inspect | 返回成功结构化回执 | inspect 仅验证文件元数据 |
 | 桌面开发预览 | 前序已启动 Vite/Electron 并预览界面 | 预览本身不证明 IPC；真实模型、审批、工件或打包版本端到端测试待后续 |
@@ -38,6 +38,6 @@ Keychain、受限 shell、真实工件存储、Office Runtime verifier、Experie
 | CLI 源码及构建产物启动 | Mock Run 返回 completed；`inspect .` 返回 completed、inspect verification passed、结构化 Artifact receipt | 不代表执行了用户目标中的写入、编码或 Office 操作 |
 | Document Worker contract | 3 项 Python tests 通过；DOCX zip 可打开、XLSX 指定单元格读写、越界路径拒绝、无文本层 PDF 返回 UNKNOWN | Worker 尚未由 Runtime/CLI/Desktop 统一调度；不代表完整 OCR、渲染或 Office 交付 |
 
-Runtime 的 28 项测试覆盖状态机、SQLite migration/事务/跨实例序号、重启 replay、checkpoint、approval hydrate、known/unknown receipt recovery、owner/lease shutdown、Provider-driven inspect Context/ToolResult、UsageLedger/release gate、Token budget、Coding read/edit/test/diff、sandbox fail-closed、在途取消，以及 inspect 安全边界。Provider 的 7 项测试覆盖三家 capability fixture、结构化请求、usage/cost、HTTP 分类、取消/超时、预取消和 normalized stream chunks。Desktop IPC 的 6 项测试覆盖公开 handler 的控制、inspect artifact、审批和失败/未知分支；Electron production smoke 还验证真实窗口边界。Kimi Code CLI 与 Electron 请求均使用 Keychain 中的用户凭据并成功返回，但这只证明文本请求连通性，不代表 Office 或完整编码任务验收。
+Runtime 的 30 项测试覆盖状态机、SQLite migration/事务/跨实例序号、重启 replay、checkpoint、approval hydrate、known/unknown receipt recovery、owner/lease shutdown、Provider-driven inspect Context/ToolResult、UsageLedger/release gate、Token budget、Experience Candidate、成对 Context compaction、Coding read/edit/test/diff、sandbox fail-closed、在途取消，以及 inspect 安全边界。Provider 的 7 项测试覆盖三家 capability fixture、结构化请求、usage/cost、HTTP 分类、取消/超时、预取消和 normalized stream chunks。Desktop IPC 的 6 项测试覆盖公开 handler 的控制、inspect artifact、审批和失败/未知分支；Electron production smoke 还验证真实窗口边界。Kimi Code CLI 与 Electron 请求均使用 Keychain 中的用户凭据并成功返回，但这只证明文本请求连通性，不代表 Office 或完整编码任务验收。
 
 后续测试目标见 [公共测试接口](../design/test-seams.md)，实施顺序见 [下一步计划](next-steps.md)。

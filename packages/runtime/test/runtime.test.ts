@@ -8,6 +8,9 @@ import {
   transitionRunState,
   buildEpisode,
   evaluateReleaseGate,
+  canPromoteExperienceCandidate,
+  createExperienceCandidate,
+  reviewExperienceCandidate,
   type ProviderResponse,
   type ToolRegistry,
 } from '../src/index.js';
@@ -114,6 +117,14 @@ test('Runtime ownership blocks stale controls and releases safely on shutdown', 
   await first.shutdown();
   const resumed = await second.resumeRun(run.id);
   assert.equal(resumed.state, 'deciding');
+});
+
+test('Experience Candidate remains pending until explicit validation and approval', () => {
+  const candidate = createExperienceCandidate({ id: 'candidate-1', sourceEpisodeId: 'episode-1', summary: 'avoid repeated patch mismatch', applicability: ['coding'], costChecks: { tokenBudgetOk: true, costBudgetOk: true }, createdAt: 'now' });
+  assert.equal(canPromoteExperienceCandidate(candidate), false);
+  const reviewed = reviewExperienceCandidate(candidate, { validation: 'validated', approval: 'approved' });
+  assert.equal(canPromoteExperienceCandidate(reviewed), true);
+  assert.equal(candidate.approvalState, 'pending');
 });
 
 test('tool calls are executed through the injected executor and remain auditable', async () => {
