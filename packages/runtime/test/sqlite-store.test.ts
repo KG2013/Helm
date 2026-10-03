@@ -47,6 +47,25 @@ function runReopenProcess(filename: string, runId: string): Promise<{ state?: st
   });
 }
 
+function runReconnectApprovalProcess(filename: string, runId: string, approvalId: string): Promise<{ state: string; ownerId?: string; hasDecision: boolean; hasReceipt: boolean; hasCheckpoint: boolean }> {
+  const require = createRequire(import.meta.url);
+  const loader = require.resolve('tsx/esm');
+  const fixture = fileURLToPath(new URL('./fixtures/reconnect-approval.ts', import.meta.url));
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', loader, fixture, filename, runId, approvalId], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code !== 0) return reject(new Error(`reconnect process exited with ${code}: ${stderr}`));
+      try { resolve(JSON.parse(stdout) as { state: string; ownerId?: string; hasDecision: boolean; hasReceipt: boolean; hasCheckpoint: boolean }); }
+      catch (error) { reject(new Error(`invalid reconnect output: ${stdout}; ${String(error)}`)); }
+    });
+  });
+}
+
 test('native SQLite migrates, serializes concurrent appends, projects facts, and exports redacted JSONL', async () => {
   await withDatabase(async (filename) => {
     const first = openSqliteEventStore(filename);
@@ -226,6 +245,36 @@ test('a pending approval is hydrated and resolved after Runtime restart', async 
     const result = await secondRuntime.resolveApproval(run.id, requested.payload.approvalId as string, 'approve', 'workspace-1');
     assert.equal(result.state, 'completed');
     await second.store.close();
+  });
+});
+
+test('an independent Runtime process reconnects, claims ownership, and resolves an approval', async () => {
+  await withDatabase(async (filename) => {
+    const first = openSqliteEventStore(filename);
+    const firstRuntime = new RuntimeFacade({
+      store: first.store,
+      ownerId: 'desktop-owner',
+      provider: new MockProvider([{ kind: 'tool_call', name: 'write_file', arguments: { path: 'report.md' } }]),
+      toolRegistry: registry,
+      policy: { decide: () => ({ decision: 'ask' as const, reason: 'approval required' }) },
+      executor: async () => ({ ok: true, output: 'written', receipt: { sideEffect: 'known' } }),
+    });
+    const task = await firstRuntime.createTask({ goal: 'reconnect approval', workspaceId: 'workspace-1' });
+    const session = await firstRuntime.createSession({ taskId: task.id });
+    const run = await firstRuntime.startRun({ taskId: task.id, sessionId: session.id });
+    const paused = await firstRuntime.run(run.id);
+    const requested = (await firstRuntime.getEvents(run.id)).find((event) => event.type === 'approval.requested');
+    assert.equal(paused.state, 'paused');
+    assert.ok(requested);
+    await firstRuntime.shutdown('process disconnect');
+    await first.store.close();
+
+    const reconnect = await runReconnectApprovalProcess(filename, run.id, requested.payload.approvalId as string);
+    assert.equal(reconnect.state, 'completed');
+    assert.equal(reconnect.ownerId, 'reconnected-process');
+    assert.equal(reconnect.hasDecision, true);
+    assert.equal(reconnect.hasReceipt, true);
+    assert.equal(reconnect.hasCheckpoint, true);
   });
 });
 
