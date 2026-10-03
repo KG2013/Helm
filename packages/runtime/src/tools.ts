@@ -19,10 +19,14 @@ import type {
 } from './types.js';
 
 export interface CodingSandbox {
-  run(command: string, args: string[], cwd: string): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  readonly backend?: string;
+  run(command: string, args: string[], cwd: string, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<{ exitCode: number; stdout: string; stderr: string }>;
   /** Mutations must be performed by the sandbox backend; host write fallback is forbidden. */
-  writeFile?(path: string, content: string): Promise<void>;
+  writeFile?(path: string, content: string, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void>;
+  describe?(): Record<string, unknown>;
 }
+
+export { DockerCodingSandbox, DockerSandboxError, createDockerCodingSandboxFromEnv } from './sandbox.js';
 
 export const workspaceInspectProfile: ToolProfile = {
   id: 'workspace.inspect',
@@ -179,9 +183,9 @@ export function createCodingExecutor(options: { roots: Readonly<Record<string, s
       if (call.name === 'workspace.test' && typeof command !== 'string') return failedCoding('Test command is required.');
       if (call.name === 'workspace.test' && !isAllowedTestCommand(command as string)) return failedCoding('Test command is outside the bounded Coding profile.');
       const args = Array.isArray(call.arguments.args) && call.arguments.args.every((arg) => typeof arg === 'string') ? call.arguments.args as string[] : [];
-      const result = await options.sandbox.run(call.name === 'workspace.diff' ? 'git' : command as string, call.name === 'workspace.diff' ? ['diff', '--no-ext-diff', ...(typeof call.arguments.path === 'string' ? ['--', call.arguments.path] : [])] : args, await realpath(rootPath));
+      const result = await options.sandbox.run(call.name === 'workspace.diff' ? 'git' : command as string, call.name === 'workspace.diff' ? ['diff', '--no-ext-diff', ...(typeof call.arguments.path === 'string' ? ['--', call.arguments.path] : [])] : args, await realpath(rootPath), { signal: request.signal, timeoutMs: request.timeoutMs });
       const output = `${result.stdout}${result.stderr ? `\n${result.stderr}` : ''}`.slice(0, 64_000);
-      return { ok: result.exitCode === 0, output, error: result.exitCode === 0 ? undefined : `Command exited with ${result.exitCode}.`, receipt: { tool: call.name, profile: `${call.name}@v1`, sideEffect: 'known', exitCode: result.exitCode, artifact: codingArtifact(call, output, request.run.id) } };
+      return { ok: result.exitCode === 0, output, error: result.exitCode === 0 ? undefined : `Command exited with ${result.exitCode}.`, receipt: { tool: call.name, profile: `${call.name}@v1`, sideEffect: 'known', exitCode: result.exitCode, sandbox: options.sandbox.describe?.(), artifact: codingArtifact(call, output, request.run.id) } };
     }
     const pathValue = call.arguments.path;
     if (typeof pathValue !== 'string' || pathValue.includes('\0') || isAbsolute(pathValue)) return failedCoding('Coding path must stay inside the workspace.');
@@ -203,10 +207,10 @@ export function createCodingExecutor(options: { roots: Readonly<Record<string, s
     if (Buffer.byteLength(after, 'utf8') > 64_000) return failedCoding('Edited file exceeds the bounded limit.');
     const targetBeforeWrite = await resolveCodingPath(rootPath, pathValue, true);
     if (targetBeforeWrite !== target) return failedCoding('Workspace path changed during coding edit.');
-    await options.sandbox.writeFile(target, after);
+    await options.sandbox.writeFile(target, after, { signal: request.signal, timeoutMs: request.timeoutMs });
     const actual = await readFile(target, 'utf8').catch(() => undefined);
     if (actual !== after) return failedCoding('Sandbox write result could not be verified.');
-    return { ok: true, output: `Updated ${pathValue}.`, receipt: { tool: call.name, profile: `${call.name}@v1`, sideEffect: 'known', path: pathValue, beforeHash: sha256(before), afterHash: sha256(after), artifact: codingArtifact(call, after, request.run.id) } };
+    return { ok: true, output: `Updated ${pathValue}.`, receipt: { tool: call.name, profile: `${call.name}@v1`, sideEffect: 'known', sandbox: options.sandbox.describe?.(), path: pathValue, beforeHash: sha256(before), afterHash: sha256(after), artifact: codingArtifact(call, after, request.run.id) } };
   };
 }
 

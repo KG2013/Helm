@@ -17,6 +17,7 @@ import {
 import { openSqliteEventStore } from '@helm/runtime/sqlite-node'
 import {
   createCodingRuntime,
+  createDockerCodingSandboxFromEnv,
   createWorkspaceInspectionRuntime,
 } from '@helm/runtime/tools'
 import { createProviderFromEnv } from '@helm/providers'
@@ -120,6 +121,7 @@ async function createPersistedRuntime(store: EventStore, workspaceId: string): P
       provider: new MockProvider(),
       workspaceId,
       root,
+      sandbox: createDockerCodingSandboxFromEnv(process.env, root),
       ownerId: process.env.HELM_RUNTIME_OWNER ?? `cli-${process.pid}`,
       artifactStore: createCliArtifactStore(),
     })
@@ -195,6 +197,7 @@ async function run(goal: string): Promise<void> {
           provider,
           workspaceId,
           root: workspaceRoot,
+          sandbox: createDockerCodingSandboxFromEnv(process.env, workspaceRoot),
           ownerId: process.env.HELM_RUNTIME_OWNER ?? `cli-${process.pid}`,
           artifactStore,
         })

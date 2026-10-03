@@ -8,7 +8,7 @@ import {
   type RuntimeFacade,
 } from '@helm/runtime'
 import { openSqliteEventStore } from '@helm/runtime/sqlite-node'
-import { createCodingRuntime, createWorkspaceInspectionRuntime } from '@helm/runtime/tools'
+import { createCodingRuntime, createDockerCodingSandboxFromEnv, createWorkspaceInspectionRuntime } from '@helm/runtime/tools'
 import { createProviderFromEnv } from '@helm/providers'
 import { registerRuntimeIpcHandlers } from './runtime-bridge.js'
 import { readKeychainSecret } from './keychain.js'
@@ -81,6 +81,7 @@ app.whenReady().then(() => {
           provider: baseProvider,
           workspaceId,
           root: workspaceRoot,
+          sandbox: createDockerCodingSandboxFromEnv(process.env, workspaceRoot),
           ownerId,
           artifactStore,
         })
