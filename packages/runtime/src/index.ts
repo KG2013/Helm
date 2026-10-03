@@ -9,3 +9,4 @@ export * from './context.js';
 export * from './trace.js';
 export * from './experience.js';
 export * from './projection.js';
+export * from './office.js';

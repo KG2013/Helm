@@ -29,3 +29,11 @@ payloads may contain task input, tool output, or receipts, so hosts must use
 the redacted export path before sharing event logs.
 
 Tool proposals are denied unless the host injects a `ToolPolicy` that returns `allow`; an unknown tool side effect is recorded as `needs_reconciliation`. The coding fixture exports versioned `workspace.read`, `workspace.edit`, `workspace.patch`, `workspace.test`, and `workspace.diff` profiles. File mutation and test execution require an injected sandbox; `CodingVerifier` only passes when read, edit/patch, passing test, diff, and artifact receipts are all present.
+
+Office delivery uses the same Runtime seams through `office.docx.create`,
+`office.xlsx.read_range`, `office.xlsx.write_range`, and `office.pdf.extract`.
+`createOfficeRuntime` accepts an injected JSONL `OfficeWorkerClient`; the
+policy validates workspace paths and asks for approval before artifact writes,
+while `OfficeVerifier` requires an artifact hash, source Run, and
+operation-specific evidence checks. Missing rendering, OCR, page coverage, or
+workbook-scope evidence remains `unknown` and pauses delivery.

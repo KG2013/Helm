@@ -29,6 +29,9 @@ class WorkerTest(unittest.TestCase):
         created = worker.handle({"id": "d", "operation": "docx_create", "path": "report.docx", "paragraphs": ["Hello"], "runId": "run-1"})
         self.assertTrue(created["ok"])
         self.assertEqual(created["receipt"]["artifact"]["sourceRunId"], "run-1")
+        self.assertEqual(created["receipt"]["checks"]["structure"], "passed")
+        self.assertEqual(created["receipt"]["checks"]["content"], "passed")
+        self.assertEqual(created["receipt"]["checks"]["rendering"], "unknown")
         self.assertTrue(zipfile.is_zipfile(Path(self.temp.name) / "report.docx"))
         inspected = worker.handle({"id": "i", "operation": "inspect", "path": "report.docx"})
         self.assertEqual(inspected["result"]["path"], "report.docx")
@@ -40,8 +43,11 @@ class WorkerTest(unittest.TestCase):
         workbook.save(path)
         written = worker.handle({"id": "w", "operation": "xlsx_write_range", "path": "book.xlsx", "sheet": "Data", "cell": "B2", "value": "ok"})
         self.assertTrue(written["ok"])
+        self.assertEqual(written["result"]["checks"], {"target": "passed", "scope": "passed"})
+        self.assertEqual(written["receipt"]["target"]["cells"], ["B2"])
         read = worker.handle({"id": "r", "operation": "xlsx_read_range", "path": "book.xlsx", "sheet": "Data", "cell": "B2"})
         self.assertEqual(read["result"]["value"], "ok")
+        self.assertEqual(read["receipt"]["checks"]["target"], "passed")
         self.assertEqual(load_workbook(path, data_only=True)["Data"]["B2"].value, "ok")
 
     def test_path_escape_and_unknown_pdf_text_are_explicit(self):
@@ -56,6 +62,8 @@ class WorkerTest(unittest.TestCase):
         result = worker.handle({"id": "p", "operation": "pdf_extract", "path": "blank.pdf"})
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "unknown_text_layer")
+        self.assertEqual(result["receipt"]["checks"]["coverage"], "unknown")
+        self.assertEqual(result["receipt"]["artifact"]["path"], "blank.pdf")
 
 
 if __name__ == "__main__":

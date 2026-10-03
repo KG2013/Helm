@@ -2,7 +2,7 @@
 
 Helm 是个人本地 LLM Harness，目标是连接 DeepSeek、智谱、Kimi，完成本地编码与 DOCX、XLSX、PDF 任务。首发平台为 macOS Apple Silicon，提供 Electron 桌面端和 CLI，由同一个 TypeScript Runtime 管理任务、权限、执行和验收。
 
-**当前阶段：架构已确认，#1–#4 的 Desktop IPC → Runtime 骨架、#6 的安全只读工作区检查、#7 的 SQLite 恢复、#8 的 Provider-neutral Context/Tool 合同、#9 的 Coding 核心工具与验收、#13 的 Episode/UsageLedger 核心以及 #14 的 Runtime owner/lease 核心已完成。** Kimi Code 已提供可选的 Keychain-backed 真实文本请求冒烟路径；CLI/Desktop 的 Coding/Office 工作台投影、真实 OCR、跨进程 owner arbitration、真实流式传输和三家真实 API 联调仍待后续切片。
+**当前阶段：架构已确认，#1–#4 的 Desktop IPC → Runtime 骨架、#6 的安全只读工作区检查、#7 的 SQLite 恢复、#8 的 Provider-neutral Context/Tool 合同、#9 的 Coding 核心工具与验收、#10–#12 的 Office Worker/Runtime 核心接线、#13 的 Episode/UsageLedger 核心以及 #14 的 Runtime owner/lease 核心已完成。** Kimi Code 已提供可选的 Keychain-backed 真实文本请求冒烟路径；CLI/Desktop 的 Coding/Office 工作台投影、真实 OCR、DOCX 视觉渲染、跨进程 owner arbitration、真实流式传输和三家真实 API 联调仍待后续切片。
 
 ## 快速开始
 
@@ -70,7 +70,7 @@ HELM_PROVIDER=kimi pnpm --filter @helm/desktop start
 | `apps/cli` | 调用 Runtime 的 Mock 演示和安全 `inspect` 命令；可选 Kimi Code Keychain-backed Provider |
 | `packages/runtime` | Task/Session/Run、内存和原生 SQLite 事件账本、checkpoint/recovery、Tool Registry、只读 workspace inspect、Provider Context/Tool 合同、Policy/Executor/Verifier 接口 |
 | `packages/providers` | OpenAI-compatible HTTP 适配器、结构化 Context/Tool/ToolResult、request/attempt/trace 元数据、取消/超时/错误分类与三家 fixture；Kimi Code 真实路径仍是文本冒烟 |
-| `workers/document-worker` | JSONL 协议骨架，仅实现 health 和文件元数据 inspect |
+| `workers/document-worker` | 受限 JSONL worker：DOCX package/content 检查、XLSX 单元格/范围读写与 scope snapshot、PDF text-layer 分页来源和 coverage；OCR/视觉渲染仍未接入 |
 | `docs/design`、`docs/adr` | 已确认架构、决策记录、来源归属 |
 | `docs/development` | 实现状态、验证记录和后续任务 |
 
