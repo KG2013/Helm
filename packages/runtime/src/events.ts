@@ -69,6 +69,9 @@ export function reduceRunEvents(events: readonly DomainEvent[], runId?: string):
         };
         run.updatedAt = event.timestamp;
         break;
+      case 'usage.recorded':
+        run.updatedAt = event.timestamp;
+        break;
       default:
         break;
     }

@@ -390,7 +390,35 @@ export type EventType =
   | 'step.observation'
   | 'step.completed'
   | 'verification.result'
-  | 'run.checkpoint';
+  | 'run.checkpoint'
+  | 'usage.recorded';
+
+export interface UsageRecord {
+  requestId?: ID;
+  provider: string;
+  model: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
+  latencyMs?: number;
+  failureCode?: ProviderFailureCode;
+}
+
+export interface Episode {
+  runId: ID;
+  taskId?: ID;
+  sessionId?: ID;
+  events: DomainEvent[];
+  usage: UsageRecord[];
+  redactedJsonl: string;
+}
+
+export interface ReleaseGateResult {
+  result: 'passed' | 'blocked';
+  reasons: string[];
+  runIds: ID[];
+}
 
 export interface DomainEvent<TPayload = Record<string, unknown>> {
   id: ID;

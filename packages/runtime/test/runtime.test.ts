@@ -6,6 +6,8 @@ import {
   RuntimeFacade,
   RunStateError,
   transitionRunState,
+  buildEpisode,
+  evaluateReleaseGate,
   type ProviderResponse,
   type ToolRegistry,
 } from '../src/index.js';
@@ -69,6 +71,36 @@ test('mock provider and facade complete a final response with evidence', async (
   assert.equal(result.steps, 1);
   assert.equal(result.verification?.result, 'passed');
   assert.equal((await runtime.getEvents(run.id)).filter((event) => event.type === 'step.completed').length, 1);
+});
+
+test('usage ledger deduplicates request ids and release gate accepts a passed Episode', async () => {
+  const store = new InMemoryEventStore();
+  const runtime = new RuntimeFacade({
+    store,
+    provider: new MockProvider([{ kind: 'final', content: 'verified', usage: { requestId: 'request-1', totalTokens: 2, costUsd: 0.01 } }]),
+  });
+  const task = await runtime.createTask({ goal: 'trace a run', workspaceId: 'workspace-1' });
+  const session = await runtime.createSession({ taskId: task.id });
+  const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  await runtime.run(run.id);
+  const episode = await buildEpisode(store, run.id);
+  assert.equal(episode.usage.length, 1);
+  assert.equal(evaluateReleaseGate([episode]).result, 'passed');
+  assert.equal((await store.list(run.id)).filter((event) => event.type === 'usage.recorded').length, 1);
+});
+
+test('token budget hard-stops a response before delivery', async () => {
+  const runtime = new RuntimeFacade({
+    store: new InMemoryEventStore(),
+    provider: new MockProvider([{ kind: 'final', content: 'too expensive', usage: { totalTokens: 3 } }]),
+  });
+  const task = await runtime.createTask({ goal: 'bounded run', workspaceId: 'workspace-1', budget: { maxTokens: 2 } });
+  const session = await runtime.createSession({ taskId: task.id });
+  const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  const result = await runtime.run(run.id);
+  assert.equal(result.state, 'paused');
+  assert.match(result.pauseReason ?? '', /budget/i);
+  assert.equal(result.finalOutput, undefined);
 });
 
 test('tool calls are executed through the injected executor and remain auditable', async () => {

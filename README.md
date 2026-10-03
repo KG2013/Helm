@@ -2,7 +2,7 @@
 
 Helm 是个人本地 LLM Harness，目标是连接 DeepSeek、智谱、Kimi，完成本地编码与 DOCX、XLSX、PDF 任务。首发平台为 macOS Apple Silicon，提供 Electron 桌面端和 CLI，由同一个 TypeScript Runtime 管理任务、权限、执行和验收。
 
-**当前阶段：架构已确认，#1–#4 的 Desktop IPC → Runtime 骨架、#6 的安全只读工作区检查、#7 的 SQLite 恢复、#8 的 Provider-neutral Context/Tool 合同以及 #9 的 Coding 核心工具与验收已完成。** Kimi Code 已提供可选的 Keychain-backed 真实文本请求冒烟路径；CLI/Desktop 的 Coding 工作台投影、Office 交付、真实流式传输和三家真实 API 联调仍待后续切片。
+**当前阶段：架构已确认，#1–#4 的 Desktop IPC → Runtime 骨架、#6 的安全只读工作区检查、#7 的 SQLite 恢复、#8 的 Provider-neutral Context/Tool 合同、#9 的 Coding 核心工具与验收以及 #13 的 Episode/UsageLedger 核心已完成。** Kimi Code 已提供可选的 Keychain-backed 真实文本请求冒烟路径；CLI/Desktop 的 Coding/Office 工作台投影、真实 OCR、跨客户端 ownership、真实流式传输和三家真实 API 联调仍待后续切片。
 
 ## 快速开始
 

@@ -343,7 +343,7 @@ function rowToEvent(row: SqliteEventRow): DomainEvent {
 }
 
 const KNOWN_EVENT_TYPES = new Set<DomainEvent['type']>([
-  'task.created', 'session.created', 'run.created', 'run.started', 'run.state_changed', 'run.paused', 'run.resumed', 'run.completed', 'run.failed', 'run.cancelled', 'run.needs_reconciliation', 'step.started', 'step.proposal', 'policy.decision', 'approval.requested', 'approval.decided', 'tool.call', 'tool.receipt', 'step.observation', 'step.completed', 'verification.result', 'run.checkpoint',
+  'task.created', 'session.created', 'run.created', 'run.started', 'run.state_changed', 'run.paused', 'run.resumed', 'run.completed', 'run.failed', 'run.cancelled', 'run.needs_reconciliation', 'step.started', 'step.proposal', 'policy.decision', 'approval.requested', 'approval.decided', 'tool.call', 'tool.receipt', 'step.observation', 'step.completed', 'verification.result', 'run.checkpoint', 'usage.recorded',
 ]);
 
 const REDACTED_KEY = /api[-_]?key|authorization|cookie|secret|password|token/i;

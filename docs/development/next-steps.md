@@ -39,7 +39,7 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 受限 JSONL worker 已提供 DOCX 最小生成、XLSX 指定单元格读写和 PDF text-layer 提取，并返回 hash、source Run、worker Receipt 与 limitations。Runtime 仍需为这些操作注册 Tool Profile、Policy/Approval、Artifact ownership 和 Office Verifier；扫描 PDF 需接入 OCR 后才可交付页码/置信度证据。
 
-随后补跨恢复预算、重试/限流分类、诊断导出、故障注入与 Experience Candidate。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化等维持 P0 范围约束。
+随后补跨恢复预算、重试/限流分类、诊断导出、故障注入与 Experience Candidate；UsageLedger、Episode 和 release gate 核心已建立，仍需接入固定 Coding/Office dev/holdout 三轮运行。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化等维持 P0 范围约束。
 
 ## 与原架构阶段的关系
 

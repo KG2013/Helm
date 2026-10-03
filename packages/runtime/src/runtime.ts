@@ -217,6 +217,12 @@ export class RuntimeFacade {
       }
       run = await this.requireRun(run.id);
       if (isTerminalRunState(run.state) || run.state === 'paused') break;
+      await this.recordUsage(run, response, context);
+      if (this.usageBudgetExceeded(run, context, response.usage)) {
+        await this.transition(run.id, 'budget_exceeded', { reason: 'token or cost budget exceeded', usage: response.usage });
+        run = await this.requireRun(run.id);
+        break;
+      }
       const proposal: Proposal = response.kind === 'tool_call'
         ? { kind: 'tool_call', name: response.name, arguments: response.arguments }
         : response.kind === 'wait_for_input'
@@ -588,6 +594,37 @@ export class RuntimeFacade {
       runId,
       payload: { stepId, state: run.state },
     });
+  }
+
+  private async recordUsage(run: Run, response: { provider?: string; model?: string; usage?: import('./types.js').TokenUsage }, events: DomainEvent[]): Promise<void> {
+    const usage = response.usage;
+    if (!usage) return;
+    const requestId = usage.requestId;
+    if (requestId && events.some((event) => event.type === 'usage.recorded' && event.payload.requestId === requestId)) return;
+    await this.append({
+      type: 'usage.recorded',
+      taskId: run.taskId,
+      sessionId: run.sessionId,
+      runId: run.id,
+      payload: {
+        requestId,
+        provider: response.provider ?? this.provider.id,
+        model: response.model ?? this.provider.model,
+        ...usage,
+      },
+    });
+  }
+
+  private usageBudgetExceeded(run: Run, events: DomainEvent[], current: import('./types.js').TokenUsage | undefined): boolean {
+    if (!current) return false;
+    const prior = events.filter((event) => event.type === 'usage.recorded').reduce((total, event) => {
+      const usage = event.payload as { totalTokens?: number; costUsd?: number };
+      return { tokens: total.tokens + (usage.totalTokens ?? 0), cost: total.cost + (usage.costUsd ?? 0) };
+    }, { tokens: 0, cost: 0 });
+    const tokens = prior.tokens + (current.totalTokens ?? (current.inputTokens ?? 0) + (current.outputTokens ?? 0));
+    const cost = prior.cost + (current.costUsd ?? 0);
+    return (run.budget.maxTokens !== undefined && tokens > run.budget.maxTokens)
+      || (run.budget.maxCostUsd !== undefined && cost > run.budget.maxCostUsd);
   }
 
   private timestamp(): string {
