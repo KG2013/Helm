@@ -18,9 +18,9 @@
 | CLI | Runtime → JSON 汇总；`inspect [path]` 走同一 Runtime Tool Registry/Policy/Executor/Verifier 语义；`HELM_STATE_DB` 接入 SQLite；`HELM_PROVIDER=kimi` 读取 Keychain 并调用 Kimi Code | 没有真实文件写入、人类输出/JSONL 事件模式、运行控制子命令；其他厂商未真实接入 |
 | Desktop | 三栏对话优先 UI；Renderer 通过 typed preload/IPC 提交、控制和审批 Run；Main 默认打开 userData SQLite，按事件与快照投影消息、Approval、Verification 和 Trace；真实 Provider inspect 保留同一工具合同 | Runtime 独立 owner、真实写工具和完整 Diff/Artifact 仍未实现 |
 | IPC | runtime-info、run-start、run-snapshot、run-control、run-approval、run-event；Main 做来源/请求/workspace 校验并转发带 runId/sequence 的脱敏事件 | 事件账本仍仅进程内；跨窗口/跨进程所有权和持久重连待实现 |
-| Python worker | stdio JSONL health、inspect(path) 返回后缀/大小 | 当前只是协议骨架，尚未连接 Runtime；未实现 workspace path guard、sandbox、文档读写、OCR 或文件内容校验 |
+| Python worker | stdio JSONL health/inspect；bounded DOCX 生成、XLSX 单元格读写、PDF text-layer 提取；Artifact hash、source Run、worker version、limitations 和 workspace path guard | 尚未由 Runtime Facade 接入；扫描 PDF 只返回 `unknown_text_layer`，OCR、渲染检查和 Office Artifact/Verifier 接线待补 |
 
-Keychain、受限 shell、真实工件存储、Coding/Office verifier、Experience Candidate 均为后续实现。Electron 的 renderer sandbox 也不等于工具执行 sandbox。
+Keychain、受限 shell、真实工件存储、Office Runtime verifier、Experience Candidate 均为后续实现；Coding core verifier 已在 Runtime fixture 接入。Electron 的 renderer sandbox 也不等于工具执行 sandbox。
 
 ## 验证记录
 
@@ -36,6 +36,7 @@ Keychain、受限 shell、真实工件存储、Coding/Office verifier、Experien
 | Desktop IPC handler tests | 6 项通过 | 通过 public Main IPC handler composition 验证控制、inspect artifact、重连/回放、审批 allow/approve/deny、脱敏 provider failure、budget、UNKNOWN 与 needs_reconciliation |
 | Electron production smoke | 通过（Mock）+ Kimi Code real request 通过 | 构建后的真实 Electron Main/Preload/Renderer 验证 API allowlist、安全开关、连续 Run、事件序号、消息与 Verification；另以 `HELM_PROVIDER=kimi` 验证 Keychain-backed 真实请求 |
 | CLI 源码及构建产物启动 | Mock Run 返回 completed；`inspect .` 返回 completed、inspect verification passed、结构化 Artifact receipt | 不代表执行了用户目标中的写入、编码或 Office 操作 |
+| Document Worker contract | 3 项 Python tests 通过；DOCX zip 可打开、XLSX 指定单元格读写、越界路径拒绝、无文本层 PDF 返回 UNKNOWN | Worker 尚未由 Runtime/CLI/Desktop 统一调度；不代表完整 OCR、渲染或 Office 交付 |
 
 Runtime 的 25 项测试覆盖状态机、SQLite migration/事务/跨实例序号、重启 replay、checkpoint、approval hydrate、known/unknown receipt recovery、Provider-driven inspect Context/ToolResult、Coding read/edit/test/diff、sandbox fail-closed、在途取消，以及 inspect 安全边界。Provider 的 7 项测试覆盖三家 capability fixture、结构化请求、usage/cost、HTTP 分类、取消/超时、预取消和 normalized stream chunks。Desktop IPC 的 6 项测试覆盖公开 handler 的控制、inspect artifact、审批和失败/未知分支；Electron production smoke 还验证真实窗口边界。Kimi Code CLI 与 Electron 请求均使用 Keychain 中的用户凭据并成功返回，但这只证明文本请求连通性，不代表 Office 或完整编码任务验收。
 

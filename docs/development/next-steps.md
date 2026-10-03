@@ -35,9 +35,9 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 原生 SQLite contract tests 已覆盖迁移、事务、序列、projection 和恢复核心；跨客户端 Runtime ownership、lease、stale client 拒绝和同一 Run 的显式互斥仍属于后续 T9/#14，因此 #7 的跨客户端部分暂不宣称完成。
 
-## 5. Office 与稳定性
+## 5. Office Worker 核心已建立，Runtime 交付仍待接线
 
-在受限 worker 中接入 DOCX 报告、XLSX 指定范围修改与校验、PDF 文本提取/OCR；Runtime 持有审批、产物元数据和验收权。分别验证文件能打开、目标内容/区域、页码来源与未授权区域。
+受限 JSONL worker 已提供 DOCX 最小生成、XLSX 指定单元格读写和 PDF text-layer 提取，并返回 hash、source Run、worker Receipt 与 limitations。Runtime 仍需为这些操作注册 Tool Profile、Policy/Approval、Artifact ownership 和 Office Verifier；扫描 PDF 需接入 OCR 后才可交付页码/置信度证据。
 
 随后补跨恢复预算、重试/限流分类、诊断导出、故障注入与 Experience Candidate。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化等维持 P0 范围约束。
 
