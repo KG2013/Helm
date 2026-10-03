@@ -7,12 +7,14 @@ import {
   MockProvider,
   RuntimeFacade,
   WorkspaceInspectVerifier,
+  buildProviderContext,
 } from '../src/index.js'
 import {
   StaticToolRegistry,
   createReadOnlyWorkspacePolicy,
   createWorkspaceInspectionExecutor,
   workspaceInspectProfile,
+  createWorkspaceInspectionRuntime,
 } from '../src/tools.js'
 
 async function createInspectionRuntime(root: string, responses: ConstructorParameters<typeof MockProvider>[0]) {
@@ -60,6 +62,49 @@ test('workspace inspection returns a bounded artifact and passes structured veri
     const decision = events.find((event) => event.type === 'policy.decision')
     assert.equal((decision?.payload.toolProfile as { version?: string }).version, 'v1')
     assert.ok(events.some((event) => event.type === 'verification.result'))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('provider context enforces its byte budget and redacts tool errors', () => {
+  const task = { id: 'task-1', goal: `goal ${'x'.repeat(100_000)} authorization=Bearer secret-value`, workspaceId: 'workspace', createdAt: 'now', budget: { maxSteps: 2, maxDurationMs: 1000, maxReviewerRounds: 0 } }
+  const { context } = buildProviderContext(task, [{
+    id: 'event-1', sequence: 1, type: 'tool.receipt', timestamp: 'now', runId: 'run-1', taskId: 'task-1', sessionId: 'session-1',
+    payload: { toolCallId: 'tool-1', name: 'read', ok: false, error: 'Authorization: Bearer secret-value', output: 'private output' },
+  }], 1024)
+  assert.ok(context.bytes <= 1024)
+  assert.equal(JSON.stringify(context).includes('secret-value'), false)
+})
+
+test('a provider-driven inspect Run receives Tool schema and structured ToolResult through the Runtime Facade', async () => {
+  const root = await mkdtemp('/tmp/helm-inspect-provider-')
+  try {
+    await writeFile(join(root, 'README.md'), '# provider contract')
+    const requests: import('../src/types.js').ProviderRequest[] = []
+    const provider = {
+      id: 'fixture-provider',
+      model: 'fixture-model',
+      capabilities: new MockProvider().capabilities,
+      complete: async (request: import('../src/types.js').ProviderRequest) => {
+        requests.push(request)
+        return requests.length === 1
+          ? { kind: 'tool_call' as const, name: 'workspace.inspect', arguments: { path: 'README.md' }, provider: 'fixture-provider', model: 'fixture-model' }
+          : { kind: 'final' as const, content: 'provider inspect complete', provider: 'fixture-provider', model: 'fixture-model' }
+      },
+    }
+    const runtime = createWorkspaceInspectionRuntime({ store: new InMemoryEventStore(), provider, workspaceId: 'workspace-provider', root })
+    const task = await runtime.createTask({ goal: 'inspect README.md', workspaceId: 'workspace-provider' })
+    const session = await runtime.createSession({ taskId: task.id })
+    const run = await runtime.startRun({ taskId: task.id, sessionId: session.id })
+    const result = await runtime.run(run.id)
+    assert.equal(result.state, 'completed')
+    assert.equal(requests.length, 2)
+    assert.equal(requests[0]?.tools?.[0]?.name, 'workspace.inspect')
+    assert.equal(requests[0]?.contextEnvelope?.version, 'v1')
+    assert.equal(requests[1]?.toolResults?.length, 1)
+    assert.equal(requests[1]?.toolResults?.[0]?.name, 'workspace.inspect')
+    assert.equal(requests[1]?.messages?.filter((message) => message.role === 'tool').length, 1)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

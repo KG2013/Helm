@@ -4,6 +4,7 @@ import {
   RuntimeFacade,
   type ProviderResponse,
 } from '@helm/runtime'
+import { openSqliteEventStore } from '@helm/runtime/sqlite-node'
 import {
   createWorkspaceInspectionRuntime,
 } from '@helm/runtime/tools'
@@ -47,24 +48,36 @@ async function run(goal: string): Promise<void> {
       })
     : new MockProvider([{ kind: 'final', content: `Completed local task: ${goal}` } satisfies ProviderResponse])
   const workspaceId = 'workspace-cli'
-  await printRun(createWorkspaceInspectionRuntime({
-    store: new InMemoryEventStore(),
-    provider,
-    workspaceId,
-    root: process.cwd(),
-  }), goal, workspaceId)
+  const database = process.env.HELM_STATE_DB ? openSqliteEventStore(process.env.HELM_STATE_DB) : undefined
+  const store = database?.store ?? new InMemoryEventStore()
+  try {
+    await printRun(createWorkspaceInspectionRuntime({
+      store,
+      provider,
+      workspaceId,
+      root: process.cwd(),
+    }), goal, workspaceId)
+  } finally {
+    await store.close?.()
+  }
 }
 
 async function inspect(path = '.'): Promise<void> {
   const workspaceId = 'workspace-cli'
   const workspaceRoot = process.cwd()
+  const database = process.env.HELM_STATE_DB ? openSqliteEventStore(process.env.HELM_STATE_DB) : undefined
+  const store = database?.store ?? new InMemoryEventStore()
   const runtime = createWorkspaceInspectionRuntime({
-    store: new InMemoryEventStore(),
+    store,
     provider: new MockProvider(),
     workspaceId,
     root: workspaceRoot,
   })
-  await printRun(runtime, `inspect ${path}`, workspaceId)
+  try {
+    await printRun(runtime, `inspect ${path}`, workspaceId)
+  } finally {
+    await store.close?.()
+  }
 }
 
 const [command, ...args] = process.argv.slice(2).filter((argument) => argument !== '--')

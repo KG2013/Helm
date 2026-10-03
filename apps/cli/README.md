@@ -1,6 +1,6 @@
 # Helm CLI
 
-CLI 与桌面端共用 `@helm/runtime`。默认命令使用 `MockProvider` 和 `InMemoryEventStore` 验证 Task → Session → Run → Event Ledger → Verification；设置 `HELM_PROVIDER=kimi` 后会从 macOS Keychain 读取 Kimi Code Key，并通过 `OpenAICompatibleProvider` 发起真实请求。
+CLI 与桌面端共用 `@helm/runtime`。默认命令使用 `MockProvider` 验证 Task → Session → Run → Event Ledger → Verification；设置 `HELM_STATE_DB=/absolute/path/state.sqlite` 可启用原生 SQLite 重启账本。设置 `HELM_PROVIDER=kimi` 后会从 macOS Keychain 读取 Kimi Code Key，并通过 `OpenAICompatibleProvider` 发起真实请求。
 
 ```bash
 pnpm --filter @helm/cli dev -- run "inspect the Helm workspace"

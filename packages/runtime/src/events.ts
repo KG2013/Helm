@@ -58,6 +58,17 @@ export function reduceRunEvents(events: readonly DomainEvent[], runId?: string):
         if (payload.verification && typeof payload.verification === 'object') run.verification = payload.verification as Run['verification'];
         run.updatedAt = event.timestamp;
         break;
+      case 'run.checkpoint':
+        if (payload.checkpoint && typeof payload.checkpoint === 'object') run.checkpoint = payload.checkpoint as Run['checkpoint'];
+        else run.checkpoint = {
+          runId: run.id,
+          stepId: typeof payload.stepId === 'string' ? payload.stepId : undefined,
+          sequence: event.sequence,
+          state: run.state,
+          createdAt: event.timestamp,
+        };
+        run.updatedAt = event.timestamp;
+        break;
       default:
         break;
     }

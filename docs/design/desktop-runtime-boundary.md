@@ -18,7 +18,7 @@ flowchart TD
     Runtime -. 待联调 .-> Adapter[Provider Adapter]
     Adapter -. HTTPS .-> LLM[DeepSeek / 智谱 / Kimi]
     Main -. Kimi Code 已接入；其他厂商待实现 .-> Keychain[macOS Keychain]
-    Runtime -. 原生绑定待接入 .-> SQLite[SQLite 事件账本]
+    Runtime --> SQLite[SQLite 事件账本：Node 原生适配器]
     Runtime -. 待接线 .-> Worker[Python Document Worker]
     Runtime -. 待实现 .-> Execution[路径守卫 / 工具 / Sandbox]
 ```
@@ -42,7 +42,7 @@ flowchart TD
 - 右栏展示当前 Run 对应的 Artifact、Diff、Approval 和 Verification。
 - 终端和原始 Trace 可进入底部抽屉；这部分目前仍是规划。
 
-当前 UI 已改为由 Runtime 事件和快照驱动的消息流、输入框、执行卡片、Approval 和 Verification。Renderer 只调用 preload 暴露的 start/snapshot/control/approval 方法；主进程将 Runtime 事件按 runId/sequence 转发并做脱敏。默认使用 InMemoryEventStore 与 MockProvider；设置 `HELM_PROVIDER=kimi` 时，Main 从 macOS Keychain 读取 Kimi Code 凭据并调用真实 Provider。UI 冒烟和 Kimi 文本请求分别证明本地 IPC 边界与 Provider 连通性，不代表真实文件工具或应用退出后的恢复。
+当前 UI 已改为由 Runtime 事件和快照驱动的消息流、输入框、执行卡片、Approval 和 Verification。Renderer 只调用 preload 暴露的 start/snapshot/control/approval 方法；主进程将 Runtime 事件按 runId/sequence 转发并做脱敏。Desktop 默认使用用户数据目录中的 Node SQLite 事件账本与 MockProvider；CLI 可通过 `HELM_STATE_DB` 指定同一账本；设置 `HELM_PROVIDER=kimi` 时，Main 从 macOS Keychain 读取 Kimi Code 凭据并调用真实 Provider。SQLite 重启恢复、checkpoint、approval、receipt 和 JSONL 脱敏导出已有 contract test；这不代表真实文件工具、跨客户端 owner/lease 或完整编码任务验收。
 
 ## 下一步的调用流程
 
@@ -51,12 +51,12 @@ flowchart TD
 3. Runtime 在事件写入成功后发布带 Run id 和序号的事件；Main 转发给对应窗口。
 4. Renderer 根据事件和查询快照更新消息、执行卡片和验收状态；重连时去重、补齐遗漏事件。
 5. 暂停/恢复/取消由 Runtime 处理。审批提交绑定的动作标识及决定，不能靠 UI 布尔值或模型文字放行。
-6. Provider 流式输出、实际文件工具和持久恢复逐步接入；最初用 Mock 跑通相同控制路径。
+6. Provider 结构化 Context/Tool/ToolResult 合同和 SQLite 持久恢复已接入；真实 SSE 流式、实际文件工具和跨客户端 owner/lease 逐步接入。
 
 上述 Task → Session → Run → 事件 → 快照路径已在 #1–#4 的骨架中实现；持久化、真实 Provider、工具执行和跨进程恢复仍是后续切片。
 
 ## 进程与部署边界
 
-桌面 app 和 CLI 复用代码，不代表它们已经共享同一个运行进程或内存。当前 CLI 每次启动创建独立内存账本；跨进程查看/恢复同一个 Run，需要后续持久化、所有权和并发协议。
+桌面 app 和 CLI 复用代码，不代表它们共享同一个运行进程或内存。Desktop 默认打开用户数据目录 SQLite，CLI 设置 `HELM_STATE_DB` 后也可打开指定账本；跨客户端同时推进同一个 Run 仍需要应用级 owner/lease 和 stale-client 拒绝协议。
 
 Node Runtime 首先以 package 形式嵌入。将来若长任务需要脱离窗口持续运行，可以移到本地独立进程；无需现在引入网络服务、账号或多租户部署。

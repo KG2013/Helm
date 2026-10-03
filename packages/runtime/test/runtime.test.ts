@@ -50,7 +50,7 @@ test('event ledger can replay a run projection after pause and resume', async ()
   const events = await store.list(run.id);
   assert.ok(events.some((event) => event.type === 'run.paused'));
   assert.ok(events.some((event) => event.type === 'run.resumed'));
-  const replayed = store.replayRun(run.id);
+  const replayed = await store.replayRun(run.id);
   assert.equal(replayed.state, 'deciding');
 });
 
@@ -224,13 +224,31 @@ test('unknown tool side effects require reconciliation instead of a normal failu
   assert.ok((await runtime.getEvents(run.id)).some((event) => event.type === 'run.needs_reconciliation'));
 });
 
+test('successful tool results with unknown side effects still require reconciliation', async () => {
+  const runtime = new RuntimeFacade({
+    store: new InMemoryEventStore(),
+    provider: new MockProvider([{ kind: 'tool_call', name: 'write_file', arguments: { path: 'report.md' } }]),
+    toolRegistry: registeredTestTools,
+    policy: allowToolPolicy,
+    executor: async () => ({ ok: true, output: 'reported success', receipt: { sideEffect: 'unknown' } }),
+  });
+  const task = await runtime.createTask({ goal: 'write a report', workspaceId: 'workspace-1' });
+  const session = await runtime.createSession({ taskId: task.id });
+  const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  const result = await runtime.run(run.id);
+
+  assert.equal(result.state, 'needs_reconciliation');
+  assert.equal(result.verification, undefined);
+});
+
 test('cancelling while the provider is in flight prevents a late proposal or tool action', async () => {
   let release!: (response: ProviderResponse) => void;
+  let providerSignal: AbortSignal | undefined;
   const provider = {
     id: 'deferred',
     model: 'deferred-model',
     capabilities: new MockProvider().capabilities,
-    complete: async () => new Promise<ProviderResponse>((resolve) => { release = resolve; }),
+    complete: async (request: import('../src/types.js').ProviderRequest) => new Promise<ProviderResponse>((resolve) => { providerSignal = request.signal; release = resolve; }),
   };
   const store = new InMemoryEventStore();
   const runtime = new RuntimeFacade({ store, provider });
@@ -244,6 +262,7 @@ test('cancelling while the provider is in flight prevents a late proposal or too
     poll();
   });
   await runtime.cancelRun(run.id);
+  assert.equal(providerSignal?.aborted, true);
   release({ kind: 'tool_call', name: 'write_file', arguments: { path: 'late.md' } });
   const result = await running;
 

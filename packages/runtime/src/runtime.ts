@@ -1,5 +1,6 @@
 import { transitionRunState, isTerminalRunState, RunStateError } from './state-machine.js';
 import { TextOutputVerifier } from './verifier.js';
+import { buildProviderContext, toolProfileToSchema } from './context.js';
 import type {
   Budget,
   DomainEvent,
@@ -23,6 +24,7 @@ import type {
   ToolExecutor,
   ToolPolicy,
   ToolRegistry,
+  ContextAssembler,
   Verification,
   Verifier,
 } from './types.js';
@@ -84,6 +86,7 @@ export class RuntimeFacade {
   private readonly policy: ToolPolicy;
   private readonly toolRegistry: ToolRegistry;
   private readonly verifier: Verifier;
+  private readonly contextAssembler: ContextAssembler;
   private readonly clock: RuntimeClock;
   private readonly ids: RuntimeIdFactory;
   private readonly defaultBudget: Budget;
@@ -91,6 +94,7 @@ export class RuntimeFacade {
   private readonly tasks = new Map<ID, Task>();
   private readonly sessions = new Map<ID, Session>();
   private readonly pendingApprovals = new Map<ID, PendingApproval>();
+  private readonly runControllers = new Map<ID, AbortController>();
 
   constructor(options: RuntimeOptions) {
     this.store = options.store;
@@ -99,6 +103,7 @@ export class RuntimeFacade {
     this.policy = options.policy ?? defaultPolicy;
     this.toolRegistry = options.toolRegistry ?? emptyToolRegistry;
     this.verifier = options.verifier ?? new TextOutputVerifier();
+    this.contextAssembler = options.contextAssembler ?? { assemble: ({ task, events }) => buildProviderContext(task, events) };
     this.clock = options.clock ?? new SystemClock();
     this.ids = options.ids ?? new DefaultIdFactory();
     this.defaultBudget = { ...DEFAULT_BUDGET, ...options.defaultBudget };
@@ -154,11 +159,13 @@ export class RuntimeFacade {
   }
 
   async run(runId: ID): Promise<RunResult> {
-    let run = await this.requireRun(runId);
+    let run = await this.recoverRun(runId);
     if (isTerminalRunState(run.state) || run.state === 'paused') return run;
     const task = await this.requireTask(run.taskId);
     const session = await this.requireSession(run.sessionId);
     const startedAt = this.clock.now().getTime();
+    const controller = this.runControllers.get(run.id) ?? new AbortController();
+    this.runControllers.set(run.id, controller);
 
     while (!isTerminalRunState(run.state) && run.state !== 'paused') {
       if (run.steps >= run.budget.maxSteps || this.clock.now().getTime() - startedAt >= run.budget.maxDurationMs) {
@@ -172,7 +179,25 @@ export class RuntimeFacade {
       const index = run.steps + 1;
       await this.append({ type: 'step.started', taskId: task.id, sessionId: session.id, runId: run.id, payload: { stepId, index } });
       const context = await this.store.list(run.id);
-      const request: ProviderRequest = { runId: run.id, stepId, task, session, run, context };
+      const projected = this.contextAssembler.assemble({ task, session, run, events: context });
+      const remainingMs = Math.max(1, run.budget.maxDurationMs - (this.clock.now().getTime() - startedAt));
+      const request: ProviderRequest = {
+        runId: run.id,
+        stepId,
+        task,
+        session,
+        run,
+        context,
+        contextEnvelope: projected.context,
+        messages: projected.context.messages,
+        tools: this.toolRegistry.list?.().map(toolProfileToSchema),
+        toolResults: projected.toolResults,
+        requestId: this.ids.next('request'),
+        attemptId: this.ids.next('attempt'),
+        traceId: run.id,
+        signal: controller.signal,
+        timeoutMs: remainingMs,
+      };
       let response;
       try {
         response = await this.provider.complete(request);
@@ -195,7 +220,17 @@ export class RuntimeFacade {
         taskId: task.id,
         sessionId: session.id,
         runId: run.id,
-        payload: { stepId, index, proposal, provider: response.provider ?? this.provider.id, model: response.model ?? this.provider.model, usage: response.usage },
+        payload: {
+          stepId,
+          index,
+          proposal,
+          provider: response.provider ?? this.provider.id,
+          model: response.model ?? this.provider.model,
+          usage: response.usage,
+          requestId: response.requestId ?? request.requestId,
+          attemptId: response.attemptId ?? request.attemptId,
+          traceId: response.traceId ?? request.traceId,
+        },
       });
 
       if (response.kind === 'wait_for_input') {
@@ -264,6 +299,7 @@ export class RuntimeFacade {
       if (verification.result === 'passed') await this.transition(run.id, 'verification_passed', { output: response.content, verification });
       else if (verification.result === 'unknown') await this.transition(run.id, 'verification_unknown', { reason: verification.message ?? 'Verification is inconclusive', verification });
       else await this.transition(run.id, 'verification_failed', { reason: verification.message ?? 'Verification failed', verification });
+      await this.appendCheckpoint(run.id, stepId);
       run = await this.requireRun(run.id);
     }
     return run;
@@ -288,6 +324,7 @@ export class RuntimeFacade {
   async cancelRun(runId: ID, reason = 'cancelled by user'): Promise<Run> {
     const run = await this.requireRun(runId);
     if (isTerminalRunState(run.state)) return run;
+    this.runControllers.get(runId)?.abort();
     for (const [approvalId, pending] of this.pendingApprovals) {
       if (pending.call.runId === runId) this.pendingApprovals.delete(approvalId);
     }
@@ -297,7 +334,8 @@ export class RuntimeFacade {
 
   async resolveApproval(runId: ID, approvalId: ID, decision: 'approve' | 'deny', workspaceId?: ID): Promise<Run> {
     const run = await this.requireRun(runId);
-    const pending = this.pendingApprovals.get(approvalId);
+    let pending = this.pendingApprovals.get(approvalId);
+    if (!pending) pending = await this.hydratePendingApproval(runId, approvalId);
     if (!pending) {
       const prior = (await this.store.list(runId)).reverse().find((event) => event.type === 'approval.decided' && event.payload.approvalId === approvalId);
       if (prior && prior.payload.decision === decision) return run;
@@ -327,8 +365,112 @@ export class RuntimeFacade {
     return this.run(runId);
   }
 
+  private async hydratePendingApproval(runId: ID, approvalId: ID): Promise<PendingApproval | undefined> {
+    const events = await this.store.list(runId);
+    const requested = [...events].reverse().find((event) => event.type === 'approval.requested' && event.payload.approvalId === approvalId);
+    if (!requested) return undefined;
+    const decided = events.find((event) => event.type === 'approval.decided' && event.payload.approvalId === approvalId);
+    if (decided) return undefined;
+    const run = await this.requireRun(runId);
+    const task = await this.requireTask(run.taskId);
+    const session = await this.requireSession(run.sessionId);
+    const call = requested.payload.call as ToolCall | undefined;
+    if (!call || call.runId !== runId) return undefined;
+    const step = events.find((event) => event.type === 'step.started' && event.payload.stepId === call.stepId);
+    const index = typeof step?.payload.index === 'number' ? step.payload.index : run.steps;
+    const pending: PendingApproval = {
+      approvalId,
+      task,
+      session,
+      request: {
+        runId,
+        stepId: call.stepId,
+        task,
+        session,
+        run,
+        context: events,
+      },
+      call,
+      index,
+      reason: typeof requested.payload.reason === 'string' ? requested.payload.reason : 'approval required',
+    };
+    this.pendingApprovals.set(approvalId, pending);
+    return pending;
+  }
+
   async getRun(runId: ID): Promise<Run | undefined> {
     return this.store.getRun(runId);
+  }
+
+  /** Reconcile a process restart before allowing a Run to request new work. */
+  async recoverRun(runId: ID): Promise<Run> {
+    let run = await this.requireRun(runId);
+    if (isTerminalRunState(run.state)) return run;
+    const events = await this.store.list(runId);
+    const calls = new Map<string, DomainEvent>();
+    const receipts = new Map<string, DomainEvent>();
+    for (const event of events) {
+      if (event.type === 'tool.call' && typeof event.payload.id === 'string') calls.set(event.payload.id, event);
+      if (event.type === 'tool.receipt' && typeof event.payload.toolCallId === 'string') receipts.set(event.payload.toolCallId, event);
+    }
+    const latestCall = [...calls.values()].sort((a, b) => a.sequence - b.sequence).at(-1);
+    if (latestCall) {
+      const receipt = receipts.get(String(latestCall.payload.id));
+      const completed = events.some((event) => event.type === 'step.completed'
+        && event.payload.stepId === latestCall.payload.stepId
+        && event.sequence > latestCall.sequence);
+      if (receipt && !completed) {
+        const receiptPayload = receipt.payload as Record<string, unknown>;
+        const observation: Observation = {
+          ok: receiptPayload.ok === true,
+          output: receiptPayload.output,
+          error: typeof receiptPayload.error === 'string' ? receiptPayload.error : undefined,
+          receipt: receiptPayload.receipt as Record<string, unknown> | undefined,
+        };
+        if (!events.some((event) => event.type === 'step.observation' && event.payload.stepId === latestCall.payload.stepId && event.sequence > receipt.sequence)) {
+          await this.append({ type: 'step.observation', taskId: run.taskId, sessionId: run.sessionId, runId, payload: { stepId: latestCall.payload.stepId, observation } });
+        }
+        run = await this.requireRun(runId);
+        if (observation.receipt?.sideEffect === 'unknown') {
+          if (run.state === 'executing') await this.transition(runId, 'side_effect_unknown', { reason: observation.error ?? 'Tool side effect is unknown' });
+        } else if (observation.ok) {
+          if (run.state === 'executing') await this.transition(runId, 'observation', { stepId: latestCall.payload.stepId });
+          run = await this.requireRun(runId);
+          if (run.state === 'reducing') await this.transition(runId, 'continue', { stepId: latestCall.payload.stepId });
+        } else if (!isTerminalRunState(run.state)) {
+          await this.failRun(runId, observation.error ?? 'Tool execution failed during recovery');
+        }
+        run = await this.requireRun(runId);
+        if (!isTerminalRunState(run.state) && run.state !== 'paused') {
+          await this.append({ type: 'step.completed', taskId: run.taskId, sessionId: run.sessionId, runId, payload: { stepId: latestCall.payload.stepId, index: run.steps } });
+          await this.appendCheckpoint(runId, String(latestCall.payload.stepId));
+        }
+        return this.requireRun(runId);
+      }
+      if (!receipt) {
+        const alreadyReconciled = events.some((event) => event.type === 'run.needs_reconciliation'
+          && event.payload.toolCallId === latestCall.payload.id);
+        if (alreadyReconciled) return this.requireRun(runId);
+        const reason = 'Run recovered with an unresolved tool call; side effect requires reconciliation.';
+        await this.append({
+          type: 'run.needs_reconciliation',
+          taskId: run.taskId,
+          sessionId: run.sessionId,
+          runId,
+          payload: { state: 'needs_reconciliation', reason, toolCallId: latestCall.payload.id },
+        });
+        return this.requireRun(runId);
+      }
+    }
+
+    const latestVerification = [...events].reverse().find((event) => event.type === 'verification.result');
+    if (latestVerification && (run.state === 'verifying' || run.state === 'reducing')) {
+      const verification = latestVerification.payload.verification as Verification | undefined;
+      if (verification?.result === 'passed') await this.transition(runId, 'verification_passed', { verification });
+      else if (verification?.result === 'unknown') await this.transition(runId, 'verification_unknown', { verification, reason: verification.message ?? 'Verification is inconclusive' });
+      else if (verification) await this.transition(runId, 'verification_failed', { verification, reason: verification.message ?? 'Verification failed' });
+    }
+    return this.requireRun(runId);
   }
 
   async getEvents(runId: ID): Promise<DomainEvent[]> {
@@ -390,27 +532,55 @@ export class RuntimeFacade {
     await this.append({ type: 'tool.call', taskId: pending.task.id, sessionId: pending.session.id, runId: run.id, payload: pending.call as unknown as Record<string, unknown> });
     let observation: Observation;
     try {
-      const result = await this.executor(pending.call, { ...pending.request, run: await this.requireRun(run.id), context: await this.store.list(run.id) });
+      const latestRun = await this.requireRun(run.id);
+      const latestContext = await this.store.list(run.id);
+      const projected = this.contextAssembler.assemble({ task: pending.task, session: pending.session, run: latestRun, events: latestContext });
+      const result = await this.executor(pending.call, {
+        ...pending.request,
+        run: latestRun,
+        context: latestContext,
+        contextEnvelope: projected.context,
+        messages: projected.context.messages,
+        tools: this.toolRegistry.list?.().map(toolProfileToSchema),
+        toolResults: projected.toolResults,
+      });
       observation = { ok: result.ok, output: result.output, error: result.error, receipt: result.receipt };
     } catch (error) {
       observation = { ok: false, error: sanitizeDiagnostic(error), receipt: { executorError: true } };
     }
     let current = await this.requireRun(run.id);
-    await this.append({ type: 'tool.receipt', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, toolCallId: pending.call.id, ...observation } });
+    await this.append({ type: 'tool.receipt', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, toolCallId: pending.call.id, name: pending.call.name, ...observation } });
     await this.append({ type: 'step.observation', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, observation } });
     current = await this.requireRun(run.id);
     if (isTerminalRunState(current.state) || current.state === 'paused') return current;
-    if (!observation.ok) {
-      await this.append({ type: 'step.completed', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, index: pending.index } });
-      const sideEffectUnknown = observation.receipt?.sideEffect === 'unknown';
-      if (sideEffectUnknown) await this.transition(current.id, 'side_effect_unknown', { reason: observation.error ?? 'Tool side effect is unknown' });
-      else await this.failRun(current.id, observation.error ?? 'Tool execution failed');
-      return this.requireRun(current.id);
+      if (observation.receipt?.sideEffect === 'unknown') {
+        await this.append({ type: 'step.completed', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, index: pending.index } });
+        await this.transition(current.id, 'side_effect_unknown', { reason: observation.error ?? 'Tool side effect is unknown' });
+        await this.appendCheckpoint(current.id, pending.call.stepId);
+        return this.requireRun(current.id);
+      }
+      if (!observation.ok) {
+        await this.append({ type: 'step.completed', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, index: pending.index } });
+        await this.failRun(current.id, observation.error ?? 'Tool execution failed');
+        await this.appendCheckpoint(current.id, pending.call.stepId);
+        return this.requireRun(current.id);
     }
     await this.transition(current.id, 'observation', { stepId: pending.call.stepId });
     await this.transition(current.id, 'continue', { stepId: pending.call.stepId });
     await this.append({ type: 'step.completed', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, index: pending.index } });
+    await this.appendCheckpoint(current.id, pending.call.stepId);
     return this.requireRun(current.id);
+  }
+
+  private async appendCheckpoint(runId: ID, stepId: ID): Promise<void> {
+    const run = await this.requireRun(runId);
+    await this.append({
+      type: 'run.checkpoint',
+      taskId: run.taskId,
+      sessionId: run.sessionId,
+      runId,
+      payload: { stepId, state: run.state },
+    });
   }
 
   private timestamp(): string {

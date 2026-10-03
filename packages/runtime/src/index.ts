@@ -5,3 +5,4 @@ export * from './store.js';
 export * from './mock-provider.js';
 export * from './verifier.js';
 export * from './runtime.js';
+export * from './context.js';

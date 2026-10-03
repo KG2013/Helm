@@ -16,6 +16,11 @@ export class MockProvider implements Provider {
     structuredOutput: true,
     vision: false,
     reasoning: false,
+    context: true,
+    toolResults: true,
+    cancellation: true,
+    timeout: true,
+    cost: true,
   };
   readonly requests: ProviderRequest[] = [];
   private readonly queue: ProviderResponse[];

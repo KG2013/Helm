@@ -1,6 +1,6 @@
 # Helm Providers
 
-`@helm/providers` 提供一个无厂商锁定的非流式 OpenAI-compatible HTTP transport seam，并登记 DeepSeek、智谱 GLM、Kimi 三个稳定的 Helm provider id。当前使用 fake fetch 做契约测试；三家真实 API、stream、工具 schema、上下文历史、Keychain 和 Runtime 接线尚未完成。
+`@helm/providers` 提供一个无厂商锁定的 OpenAI-compatible HTTP transport seam，并登记 DeepSeek、智谱 GLM、Kimi 三个稳定的 Helm provider id。适配器接收 Runtime 的结构化消息、Context、Tool schema 和 ToolResult，记录 request/attempt/trace、usage/cost，并把 HTTP、取消、超时和传输错误归一为可重试分类。当前测试使用 fake fetch；三家真实 API fixture 已分开于 Kimi 的文本 Keychain 冒烟，真实流式 SSE 仍未接入。
 
 ```ts
 import { OpenAICompatibleProvider } from '@helm/providers'

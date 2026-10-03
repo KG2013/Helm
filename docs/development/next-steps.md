@@ -1,6 +1,6 @@
 # 下一步实施计划
 
-更新日期：2026-09-30。架构已确认；#1–#4 的桌面 Runtime 骨架已完成，以下拆分从受限工具和真实 Provider 接入继续。当前能力参见 [实现状态](implementation-status.md)。
+更新日期：2026-10-03。架构已确认；#1–#4、T1/#6、T2/#7 的 SQLite 核心与 T3/#8 的 Provider 合同已完成，跨客户端 ownership、真实流式和执行能力仍按后续切片推进。当前能力参见 [实现状态](implementation-status.md)。
 
 ## 1. 对话界面接入 Runtime：已完成（#1–#4）
 
@@ -15,7 +15,7 @@
 
 完成条件已由 #1–#4 验证：桌面提交可追踪到 Task/Session/Run；运行状态、验收与 CLI 复用 Runtime；取消后不追加新的执行动作；拒绝审批不调用 executor；approve 续行同一 proposal；快照可重建 Main 中仍存活的 Run。此阶段不宣称应用退出后的恢复。
 
-## 2. 受限 Coding 流程
+## 2. 受限 Coding 流程（下一切片，#9）
 
 目标链路：inspect → read → proposal → policy/approval → edit → test → diff → verification。
 
@@ -23,17 +23,17 @@
 
 完成条件：一次小修改有可审阅 diff、测试退出码、目标行为证据；越界路径、拒绝授权和未知副作用分别进入明确结果。Coding verifier 不能以非空文本替代代码与测试验收。
 
-## 3. 真实 Provider 与凭据
+## 3. 真实 Provider 与凭据（#8 已完成合同，真实联调待补）
 
-Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证；下一步联调 DeepSeek 和智谱，并补各厂商的工具/流式协议、上下文与工具结果回传、schema 校验、超时/取消、usage 和错误分类。凭据由主进程/CLI 通过 Keychain resolver 取得，数据库只存引用。
+Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证；Provider-neutral Context/Tool/ToolResult、request/attempt/trace、超时/取消、usage/cost 和错误分类已有 fixture 合同。下一步联调 DeepSeek 和智谱，并补真实流式协议。凭据由主进程/CLI 通过 Keychain resolver 取得，数据库只存引用。
 
 完成条件：每家至少一个可重复文本/工具任务通过；配置与事件不含密钥；中止和失败不会把未知执行结果当成成功。测试 fixture 通过和真实厂商调用成功要分别记录。
 
-## 4. SQLite 持久化与恢复
+## 4. SQLite 持久化与恢复（核心已完成，#7）
 
-补原生 SQLite adapter、迁移、事务、事件序号与写入所有权，再实现 checkpoint、pending approval/receipt 恢复和 JSONL 导出。这是架构 Phase 0 的未完成部分，可以与界面接线并行推进。
+原生 Node SQLite adapter 已提供版本化迁移、WAL/事务、append-only sequence、durable projections、checkpoint、pending approval/receipt 恢复、未知工具对账和 JSONL 脱敏导出。CLI 通过 `HELM_STATE_DB` 接入，Desktop 主进程默认使用用户数据目录数据库。
 
-完成条件：进程退出后重新打开能重建 Task/Session/Run；有回执的副作用不重复执行，未知结果进入对账；CLI/桌面访问同一数据时有明确互斥协议。仅复用同一个内存 store 不算通过。
+原生 SQLite contract tests 已覆盖迁移、事务、序列、projection 和恢复核心；跨客户端 Runtime ownership、lease、stale client 拒绝和同一 Run 的显式互斥仍属于后续 T9/#14，因此 #7 的跨客户端部分暂不宣称完成。
 
 ## 5. Office 与稳定性
 

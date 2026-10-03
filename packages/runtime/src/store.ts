@@ -32,14 +32,29 @@ export class InMemoryEventStore implements EventStore {
     return [...this.events];
   }
 
-  replayRun(runId: ID): Run {
-    return reduceRunEvents(this.byRun.get(runId) ?? [], runId);
+  async replayRun(runId: ID): Promise<Run> {
+    const events = this.byRun.get(runId) ?? [];
+    if (!events.length) throw new Error(`No run events found for ${runId}`);
+    return reduceRunEvents(events, runId);
+  }
+
+  async replayRunAsync(runId: ID): Promise<Run> {
+    return this.replayRun(runId);
   }
 
   async getRun(runId: ID): Promise<Run | undefined> {
     const events = this.byRun.get(runId);
     if (!events?.length) return undefined;
     return reduceRunEvents(events, runId);
+  }
+
+  async exportJsonl(runId?: ID): Promise<string> {
+    const events = runId ? await this.list(runId) : await this.listAll();
+    return events.map((event) => JSON.stringify(redactExportEvent(event))).join('\n');
+  }
+
+  close(): void {
+    // In-memory store has no external resource.
   }
 }
 
@@ -48,6 +63,8 @@ export interface SqliteDatabase {
   exec(sql: string): void | Promise<void>;
   run(sql: string, params?: readonly unknown[]): void | Promise<void>;
   all<T>(sql: string, params?: readonly unknown[]): T[] | Promise<T[]>;
+  transaction<T>(fn: () => T | Promise<T>): T | Promise<T>;
+  close?(): void | Promise<void>;
 }
 
 /**
@@ -59,12 +76,23 @@ export class SqliteEventStore implements EventStore {
   private sequence = 0;
   private eventId = 0;
   private initialized = false;
+  private initialization?: Promise<void>;
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly db: SqliteDatabase) {}
 
   async init(): Promise<void> {
     if (this.initialized) return;
-    await this.db.exec(`
+    if (this.initialization) return this.initialization;
+    this.initialization = (async () => {
+      if (!this.db.transaction) throw new Error('SQLite adapter must provide transactions.');
+      await this.db.exec(`
+      CREATE TABLE IF NOT EXISTS helm_schema (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      );
+      INSERT OR IGNORE INTO helm_schema (version, applied_at)
+        SELECT 1, '${new Date().toISOString()}' WHERE NOT EXISTS (SELECT 1 FROM helm_schema WHERE version = 1);
       CREATE TABLE IF NOT EXISTS helm_events (
         id TEXT PRIMARY KEY,
         sequence INTEGER NOT NULL,
@@ -73,34 +101,169 @@ export class SqliteEventStore implements EventStore {
         session_id TEXT,
         run_id TEXT,
         timestamp TEXT NOT NULL,
-        payload_json TEXT NOT NULL
+        payload_json TEXT NOT NULL,
+        UNIQUE(sequence)
       );
       CREATE INDEX IF NOT EXISTS idx_helm_events_run_sequence ON helm_events(run_id, sequence);
-    `);
-    const rows = await this.db.all<{ max_sequence: number | null }>('SELECT MAX(sequence) AS max_sequence FROM helm_events');
-    this.sequence = Number(rows[0]?.max_sequence ?? 0);
-    this.initialized = true;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_helm_events_sequence ON helm_events(sequence);
+      CREATE TABLE IF NOT EXISTS helm_tasks (
+        task_id TEXT PRIMARY KEY,
+        payload_json TEXT NOT NULL,
+        sequence INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS helm_sessions (
+        session_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        sequence INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS helm_runs (
+        run_id TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        sequence INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS helm_checkpoints (
+        run_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, sequence)
+      );
+      CREATE TABLE IF NOT EXISTS helm_receipts (
+        run_id TEXT NOT NULL,
+        step_id TEXT,
+        tool_call_id TEXT,
+        sequence INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, sequence)
+      );
+      CREATE TABLE IF NOT EXISTS helm_verifications (
+        run_id TEXT NOT NULL,
+        step_id TEXT,
+        sequence INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, sequence)
+      );
+      `);
+      const schemaRows = await this.db.all<{ version: number }>('SELECT version FROM helm_schema ORDER BY version ASC');
+      if (schemaRows.some((row) => Number(row.version) > 1)) throw new Error('Unsupported Helm SQLite schema version.');
+      const legacyEvents = await this.db.all<SqliteEventRow>('SELECT id, sequence, type, task_id, session_id, run_id, timestamp, payload_json FROM helm_events ORDER BY sequence ASC');
+      // Backfill projections when opening the append-only ledger created by an
+      // earlier schema. Projection tables are derived facts, so rebuilding is
+      // safe and keeps replay semantics stable across upgrades.
+      await this.db.transaction(async () => {
+        for (const row of legacyEvents) await this.project(rowToEvent(row));
+        await this.db.run("INSERT OR IGNORE INTO helm_schema (version, applied_at) VALUES (1, ?)", [new Date().toISOString()]);
+      });
+      const rows = await this.db.all<{ max_sequence: number | null }>('SELECT MAX(sequence) AS max_sequence FROM helm_events');
+      this.sequence = Number(rows[0]?.max_sequence ?? 0);
+      this.initialized = true;
+    })();
+    try {
+      await this.initialization;
+    } catch (error) {
+      this.initialization = undefined;
+      throw error;
+    }
   }
 
   async append(input: NewDomainEvent): Promise<DomainEvent> {
     await this.init();
-    const event = makeEvent(`evt-${Date.now()}-${++this.eventId}`, ++this.sequence, input, new Date().toISOString());
+    return this.enqueue(async () => {
+      const event = await this.db.transaction(() => this.appendUnsafe(input));
+      this.cacheEvent(event);
+      return event;
+    });
+  }
+
+  private async appendUnsafe(input: NewDomainEvent): Promise<DomainEvent> {
+    const rows = await this.db.all<{ max_sequence: number | null }>('SELECT MAX(sequence) AS max_sequence FROM helm_events');
+    this.sequence = Number(rows[0]?.max_sequence ?? this.sequence);
+    const sequence = ++this.sequence;
+    const event = makeEvent(`evt-${Date.now()}-${sequence}-${++this.eventId}`, sequence, input, new Date().toISOString());
     await this.db.run(
       `INSERT INTO helm_events (id, sequence, type, task_id, session_id, run_id, timestamp, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [event.id, event.sequence, event.type, event.taskId ?? null, event.sessionId ?? null, event.runId ?? null, event.timestamp, JSON.stringify(event.payload)],
     );
-    if (event.runId) {
-      const events = this.cache.get(event.runId) ?? [];
-      events.push(event);
-      this.cache.set(event.runId, events);
-    }
+    await this.project(event);
     return event;
   }
 
   async appendMany(inputs: NewDomainEvent[]): Promise<DomainEvent[]> {
-    const result: DomainEvent[] = [];
-    for (const input of inputs) result.push(await this.append(input));
+    await this.init();
+    return this.enqueue(async () => {
+      const write = async () => {
+        const result: DomainEvent[] = [];
+        for (const input of inputs) result.push(await this.appendUnsafe(input));
+        return result;
+      };
+      const result = await this.db.transaction(write);
+      for (const event of result) this.cacheEvent(event);
+      return result;
+    });
+  }
+
+  private cacheEvent(event: DomainEvent): void {
+    if (!event.runId) return;
+    const events = this.cache.get(event.runId) ?? [];
+    events.push(event);
+    this.cache.set(event.runId, events);
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.writeQueue.then(operation, operation);
+    this.writeQueue = result.then(() => undefined, () => undefined);
     return result;
+  }
+
+  private async project(event: DomainEvent): Promise<void> {
+    const payload = event.payload as Record<string, unknown>;
+    if (event.type === 'task.created' && event.taskId) {
+      await this.db.run(
+        'INSERT INTO helm_tasks (task_id, payload_json, sequence) VALUES (?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET payload_json=excluded.payload_json, sequence=excluded.sequence',
+        [event.taskId, JSON.stringify(payload), event.sequence],
+      );
+    }
+    if (event.type === 'session.created' && event.sessionId && event.taskId) {
+      await this.db.run(
+        'INSERT INTO helm_sessions (session_id, task_id, payload_json, sequence) VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET payload_json=excluded.payload_json, sequence=excluded.sequence',
+        [event.sessionId, event.taskId, JSON.stringify(payload), event.sequence],
+      );
+    }
+    if (event.runId && ['run.created', 'run.started', 'run.resumed', 'run.state_changed', 'run.paused', 'run.completed', 'run.failed', 'run.cancelled', 'run.needs_reconciliation'].includes(event.type)) {
+      const state = typeof payload.state === 'string'
+        ? payload.state
+        : event.type === 'run.completed' ? 'completed'
+          : event.type === 'run.failed' ? 'failed'
+            : event.type === 'run.cancelled' ? 'cancelled'
+              : event.type === 'run.needs_reconciliation' ? 'needs_reconciliation'
+                : 'ready';
+      const existing = await this.db.all<{ payload_json: string }>('SELECT payload_json FROM helm_runs WHERE run_id = ?', [event.runId]);
+      const priorPayload = existing[0]?.payload_json ? JSON.parse(existing[0].payload_json) as Record<string, unknown> : {};
+      const runPayload = { ...priorPayload, ...payload, state };
+      await this.db.run(
+        'INSERT INTO helm_runs (run_id, state, payload_json, sequence) VALUES (?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET state=excluded.state, payload_json=excluded.payload_json, sequence=excluded.sequence',
+        [event.runId, state, JSON.stringify(runPayload), event.sequence],
+      );
+    }
+    if (event.type === 'run.checkpoint' && event.runId) {
+      await this.db.run(
+        'INSERT OR IGNORE INTO helm_checkpoints (run_id, sequence, payload_json) VALUES (?, ?, ?)',
+        [event.runId, event.sequence, JSON.stringify(payload)],
+      );
+    }
+    if (event.type === 'tool.receipt' && event.runId) {
+      await this.db.run(
+        'INSERT OR IGNORE INTO helm_receipts (run_id, step_id, tool_call_id, sequence, payload_json) VALUES (?, ?, ?, ?, ?)',
+        [event.runId, typeof payload.stepId === 'string' ? payload.stepId : null, typeof payload.toolCallId === 'string' ? payload.toolCallId : null, event.sequence, JSON.stringify(payload)],
+      );
+    }
+    if (event.type === 'verification.result' && event.runId) {
+      await this.db.run(
+        'INSERT OR IGNORE INTO helm_verifications (run_id, step_id, sequence, payload_json) VALUES (?, ?, ?, ?)',
+        [event.runId, typeof payload.stepId === 'string' ? payload.stepId : null, event.sequence, JSON.stringify(payload)],
+      );
+    }
   }
 
   async list(runId: ID): Promise<DomainEvent[]> {
@@ -122,13 +285,30 @@ export class SqliteEventStore implements EventStore {
     return rows.map(rowToEvent);
   }
 
-  replayRun(runId: ID): Run {
-    return reduceRunEvents(this.cache.get(runId) ?? [], runId);
+  async replayRun(runId: ID): Promise<Run> {
+    const events = await this.list(runId);
+    if (!events.length) throw new Error(`No run events found for ${runId}`);
+    return reduceRunEvents(events, runId);
+  }
+
+  async replayRunAsync(runId: ID): Promise<Run> {
+    const events = await this.list(runId);
+    if (!events.length) throw new Error(`No run events found for ${runId}`);
+    return reduceRunEvents(events, runId);
   }
 
   async getRun(runId: ID): Promise<Run | undefined> {
     const events = await this.list(runId);
     return events.length ? reduceRunEvents(events, runId) : undefined;
+  }
+
+  async exportJsonl(runId?: ID): Promise<string> {
+    const events = runId ? await this.list(runId) : await this.listAll();
+    return events.map((event) => JSON.stringify(redactExportEvent(event))).join('\n');
+  }
+
+  async close(): Promise<void> {
+    await this.db.close?.();
   }
 }
 
@@ -144,6 +324,7 @@ interface SqliteEventRow {
 }
 
 function rowToEvent(row: SqliteEventRow): DomainEvent {
+  if (!KNOWN_EVENT_TYPES.has(row.type)) throw new Error(`Unsupported Helm event type: ${String(row.type)}`);
   return {
     id: row.id,
     sequence: Number(row.sequence),
@@ -154,4 +335,25 @@ function rowToEvent(row: SqliteEventRow): DomainEvent {
     timestamp: row.timestamp,
     payload: JSON.parse(row.payload_json) as Record<string, unknown>,
   };
+}
+
+const KNOWN_EVENT_TYPES = new Set<DomainEvent['type']>([
+  'task.created', 'session.created', 'run.created', 'run.started', 'run.state_changed', 'run.paused', 'run.resumed', 'run.completed', 'run.failed', 'run.cancelled', 'run.needs_reconciliation', 'step.started', 'step.proposal', 'policy.decision', 'approval.requested', 'approval.decided', 'tool.call', 'tool.receipt', 'step.observation', 'step.completed', 'verification.result', 'run.checkpoint',
+]);
+
+const REDACTED_KEY = /api[-_]?key|authorization|cookie|secret|password|token/i;
+const PRIVATE_VALUE_KEY = /^(content|output|body|diff|fileContent|privateFile)$/i;
+
+function redactExportEvent(event: DomainEvent): DomainEvent {
+  return { ...event, payload: redactExportValue(event.payload) as Record<string, unknown> };
+}
+
+function redactExportValue(value: unknown, depth = 0): unknown {
+  if (depth > 6) return '[truncated]';
+  if (Array.isArray(value)) return value.slice(0, 100).map((item) => redactExportValue(item, depth + 1));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).slice(0, 100).map(([key, item]) => [
+    key,
+    REDACTED_KEY.test(key) || PRIVATE_VALUE_KEY.test(key) ? '[redacted]' : redactExportValue(item, depth + 1),
+  ]));
 }

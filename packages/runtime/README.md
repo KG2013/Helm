@@ -15,8 +15,17 @@ const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
 const result = await runtime.run(run.id);
 ```
 
-`SqliteEventStore` receives a small injected `SqliteDatabase` binding. This
-keeps native SQLite selection in the host process and means the runtime package
-can be tested without native dependencies. Provider credentials are not created by this package; provider adapters should resolve credential references at request time. Runtime payloads may contain task input, tool output, or receipts, so hosts must redact sensitive values before exporting diagnostics or sharing event logs.
+`SqliteEventStore` receives an injected `SqliteDatabase` binding. Node hosts can
+use `@helm/runtime/sqlite-node` to open the built-in Node 22 `node:sqlite`
+adapter. The adapter applies a versioned migration, WAL/transaction settings,
+append-only sequences, durable projections, restart recovery, and redacted
+JSONL export. Renderer bundles must keep using the browser-safe root export;
+the SQLite adapter is Node-only.
+
+Provider credentials are not created by this package; provider adapters should
+resolve credential references at request time. Runtime builds a bounded,
+redacted Context envelope with Tool schemas and structured ToolResults. Runtime
+payloads may contain task input, tool output, or receipts, so hosts must use
+the redacted export path before sharing event logs.
 
 Tool proposals are denied unless the host injects a `ToolPolicy` that returns `allow`; an unknown tool side effect is recorded as `needs_reconciliation`.

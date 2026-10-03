@@ -83,6 +83,7 @@ export interface Run {
   pauseReason?: string;
   verification?: Verification;
   finalOutput?: string;
+  checkpoint?: Checkpoint;
 }
 
 export interface Turn {
@@ -103,6 +104,14 @@ export interface Step {
   model?: string;
   proposal?: Proposal;
   observation?: Observation;
+}
+
+export interface Checkpoint {
+  runId: ID;
+  stepId?: ID;
+  sequence: number;
+  state: RunState;
+  createdAt: string;
 }
 
 export type Proposal =
@@ -145,7 +154,84 @@ export interface ProviderCapabilities {
   structuredOutput: boolean;
   vision: boolean;
   reasoning: boolean;
+  context?: boolean;
+  toolResults?: boolean;
+  cancellation?: boolean;
+  timeout?: boolean;
+  cost?: boolean;
 }
+
+export type ProviderMessageRole = 'system' | 'user' | 'assistant' | 'tool';
+
+export interface ProviderMessage {
+  role: ProviderMessageRole;
+  content: string;
+  name?: string;
+  toolCallId?: ID;
+}
+
+export interface ContextItem {
+  source: 'pinned' | 'recent' | 'cold';
+  version: string;
+  content: string;
+  gap?: string;
+}
+
+export interface ProviderContext {
+  version: string;
+  items: ContextItem[];
+  messages: ProviderMessage[];
+  gaps: string[];
+  bytes: number;
+  truncated: boolean;
+}
+
+export interface ToolSchema {
+  id: string;
+  version: string;
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+  readOnly: boolean;
+  scope: 'workspace';
+}
+
+export interface ToolResult {
+  toolCallId: ID;
+  name: string;
+  ok: boolean;
+  output?: unknown;
+  error?: string;
+  receipt?: Record<string, unknown>;
+}
+
+export type ProviderFailureCode =
+  | 'timeout'
+  | 'aborted'
+  | 'auth'
+  | 'rate_limit'
+  | 'context_window'
+  | 'invalid_request'
+  | 'empty_response'
+  | 'unavailable'
+  | 'transport'
+  | 'unknown';
+
+export interface ProviderFailure {
+  code: ProviderFailureCode;
+  message: string;
+  retryable: boolean;
+  status?: number;
+  retryAfterMs?: number;
+  requestId?: ID;
+}
+
+export type ProviderChunk =
+  | { kind: 'text_delta'; content: string }
+  | { kind: 'tool_call_delta'; id: ID; name?: string; argumentsDelta?: string }
+  | { kind: 'usage'; usage: TokenUsage }
+  | { kind: 'done'; finishReason?: string }
+  | { kind: 'error'; failure: ProviderFailure };
 
 export interface ProviderRequest {
   runId: ID;
@@ -154,6 +240,15 @@ export interface ProviderRequest {
   session: Session;
   run: Run;
   context: Array<DomainEvent>;
+  contextEnvelope?: ProviderContext;
+  messages?: ProviderMessage[];
+  tools?: ToolSchema[];
+  toolResults?: ToolResult[];
+  requestId?: ID;
+  attemptId?: ID;
+  traceId?: ID;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export type ProviderResponse =
@@ -164,6 +259,9 @@ export type ProviderResponse =
       provider?: string;
       model?: string;
       usage?: TokenUsage;
+      requestId?: ID;
+      attemptId?: ID;
+      traceId?: ID;
     }
   | {
       kind: 'final';
@@ -171,6 +269,9 @@ export type ProviderResponse =
       provider?: string;
       model?: string;
       usage?: TokenUsage;
+      requestId?: ID;
+      attemptId?: ID;
+      traceId?: ID;
     }
   | {
       kind: 'wait_for_input';
@@ -178,6 +279,9 @@ export type ProviderResponse =
       provider?: string;
       model?: string;
       usage?: TokenUsage;
+      requestId?: ID;
+      attemptId?: ID;
+      traceId?: ID;
     };
 
 export interface TokenUsage {
@@ -185,6 +289,9 @@ export interface TokenUsage {
   outputTokens?: number;
   totalTokens?: number;
   costUsd?: number;
+  cachedInputTokens?: number;
+  latencyMs?: number;
+  requestId?: ID;
 }
 
 export interface Provider {
@@ -192,6 +299,7 @@ export interface Provider {
   readonly model: string;
   readonly capabilities: ProviderCapabilities;
   complete(request: ProviderRequest): Promise<ProviderResponse>;
+  stream?(request: ProviderRequest): AsyncIterable<ProviderChunk>;
 }
 
 export type ToolPolicyDecision = 'allow' | 'deny' | 'ask';
@@ -220,10 +328,20 @@ export interface ToolProfile {
   scope: 'workspace';
   network: 'none';
   maxOutputBytes: number;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
 }
 
 export interface ToolRegistry {
   get(id: string): ToolProfile | undefined;
+  list?(): ToolProfile[];
+}
+
+export interface ContextAssembler {
+  assemble(input: { task: Task; session: Session; run: Run; events: DomainEvent[] }): {
+    context: ProviderContext;
+    toolResults: ToolResult[];
+  };
 }
 
 export interface ToolExecutorResult {
@@ -306,8 +424,11 @@ export interface EventStore {
   appendMany(events: NewDomainEvent[]): Promise<DomainEvent[]>;
   list(runId: ID): Promise<DomainEvent[]>;
   listAll(): Promise<DomainEvent[]>;
-  replayRun(runId: ID): Run;
+  replayRun(runId: ID): Promise<Run>;
+  replayRunAsync?(runId: ID): Promise<Run>;
   getRun(runId: ID): Promise<Run | undefined>;
+  exportJsonl?(runId?: ID): Promise<string>;
+  close?(): Promise<void> | void;
 }
 
 export interface RuntimeOptions {
@@ -317,6 +438,7 @@ export interface RuntimeOptions {
   policy?: ToolPolicy;
   toolRegistry?: ToolRegistry;
   verifier?: Verifier;
+  contextAssembler?: ContextAssembler;
   clock?: RuntimeClock;
   ids?: RuntimeIdFactory;
   defaultBudget?: Partial<Budget>;

@@ -13,6 +13,10 @@
     "./tools": {
       "types": "./dist/tools.d.ts",
       "import": "./dist/tools.js"
+    },
+    "./sqlite-node": {
+      "types": "./dist/sqlite-node.d.ts",
+      "import": "./dist/sqlite-node.js"
     }
   },
   "scripts": {

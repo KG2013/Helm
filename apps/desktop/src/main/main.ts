@@ -1,9 +1,9 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'node:path'
 import {
-  InMemoryEventStore,
   MockProvider,
 } from '@helm/runtime'
+import { openSqliteEventStore } from '@helm/runtime/sqlite-node'
 import { createWorkspaceInspectionRuntime } from '@helm/runtime/tools'
 import { OpenAICompatibleProvider } from '@helm/providers'
 import { registerRuntimeIpcHandlers } from './runtime-bridge.js'
@@ -57,8 +57,10 @@ app.whenReady().then(() => {
     : new MockProvider()
   const workspaceId = 'workspace-helm'
   const workspaceRoot = process.env.HELM_WORKSPACE_ROOT ?? process.cwd()
+  const statePath = process.env.HELM_STATE_DB ?? join(app.getPath('userData'), 'state.sqlite')
+  const sqlite = openSqliteEventStore(statePath)
   const runtime = createWorkspaceInspectionRuntime({
-    store: new InMemoryEventStore(),
+    store: sqlite.store,
     provider: baseProvider,
     workspaceId,
     root: workspaceRoot,
@@ -82,6 +84,10 @@ app.whenReady().then(() => {
     emit: (event) => {
       if (mainWindow && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('helm:run-event', event)
     },
+  })
+
+  app.once('before-quit', () => {
+    void sqlite.store.close()
   })
 
   createWindow()

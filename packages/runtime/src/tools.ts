@@ -25,6 +25,12 @@ export const workspaceInspectProfile: ToolProfile = {
   scope: 'workspace',
   network: 'none',
   maxOutputBytes: 32_000,
+  description: 'Inspect bounded metadata for a path inside the trusted workspace.',
+  inputSchema: {
+    type: 'object',
+    properties: { path: { type: 'string', description: 'Relative workspace path.' } },
+    additionalProperties: false,
+  },
 };
 
 export class StaticToolRegistry implements ToolRegistry {
@@ -37,6 +43,10 @@ export class StaticToolRegistry implements ToolRegistry {
   get(id: string): ToolProfile | undefined {
     return this.profiles.get(id);
   }
+
+  list(): ToolProfile[] {
+    return [...this.profiles.values()];
+  }
 }
 
 export function isWorkspaceInspectionGoal(goal: string): boolean {
@@ -44,6 +54,7 @@ export function isWorkspaceInspectionGoal(goal: string): boolean {
 }
 
 export function createInspectionAwareProvider(delegate: Provider): Provider {
+  if (delegate.id !== 'mock') return delegate;
   const inspectionProvider = new MockProvider([], workspaceInspectionMockResponse);
   return {
     id: delegate.id,
