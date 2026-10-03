@@ -25,6 +25,7 @@ from typing import Any
 MAX_BYTES = 1_000_000
 VERSION = "0.3.0"
 MAX_XLSX_CELLS = 1_000
+MAX_PDF_PAGES = 100
 MAX_RENDER_SECONDS = 15
 MAX_OCR_SECONDS = 20
 MIN_OCR_CONFIDENCE = 0.5
@@ -173,8 +174,10 @@ def handle_pdf(request: dict[str, Any], request_id: str) -> dict[str, Any]:
 
     path = safe_path(request.get("path"), must_exist=True)
     reader = PdfReader(str(path))
+    total_pages = len(reader.pages)
+    page_bound_exceeded = total_pages > MAX_PDF_PAGES
     pages: list[dict[str, Any]] = []
-    for index, page in enumerate(reader.pages[:100]):
+    for index, page in enumerate(reader.pages[:MAX_PDF_PAGES]):
         text = (page.extract_text() or "").strip()
         pages.append({"page": index + 1, "text": text[:10_000], "hasTextLayer": bool(text), "extraction": "text-layer" if text else "unknown", "confidence": 1.0 if text else None, "source": {"path": path.relative_to(workspace_root()).as_posix(), "page": index + 1, "extraction": "text-layer" if text else "unknown"}})
     missing_pages = [page["page"] for page in pages if not page["hasTextLayer"]]
@@ -188,13 +191,19 @@ def handle_pdf(request: dict[str, Any], request_id: str) -> dict[str, Any]:
                 replacement = ocr_pages.get(page["page"])
                 if replacement is not None:
                     page.update(replacement)
-    complete = bool(pages) and all(bool(page.get("text")) and (page.get("hasTextLayer") or (page.get("extraction") == "ocr" and isinstance(page.get("confidence"), (int, float)) and page["confidence"] >= MIN_OCR_CONFIDENCE)) for page in pages)
+    complete = not page_bound_exceeded and bool(pages) and all(bool(page.get("text")) and (page.get("hasTextLayer") or (page.get("extraction") == "ocr" and isinstance(page.get("confidence"), (int, float)) and page["confidence"] >= MIN_OCR_CONFIDENCE)) for page in pages)
     sources_complete = bool(pages) and all(isinstance(page.get("source"), dict) and isinstance(page["source"].get("page"), int) for page in pages)
     checks = {"coverage": "passed" if complete else "unknown", "sources": "passed" if sources_complete else "unknown"}
-    limitations = ocr_limitations if not complete else []
-    pdf_receipt = receipt(path, operation="pdf_extract", request=request, side_effect="none", limitations=limitations, checks=checks, target={"pages": [page["page"] for page in pages]})
+    limitations = list(ocr_limitations)
+    if page_bound_exceeded:
+        limitations.append(f"PDF has {total_pages} pages; the worker is bounded to {MAX_PDF_PAGES} pages and coverage is unknown.")
+    if not complete and not limitations:
+        limitations.append("PDF page coverage or source evidence is incomplete.")
+    if complete:
+        limitations = []
+    pdf_receipt = receipt(path, operation="pdf_extract", request=request, side_effect="none", limitations=limitations, checks=checks, target={"pages": [page["page"] for page in pages], "totalPages": total_pages, "bounded": not page_bound_exceeded})
     pdf_receipt["ocr"] = ocr_metadata
-    result = {"pages": pages, "extraction": "text-layer" if not missing_pages else "text-layer+ocr", "checks": checks, "ocr": ocr_metadata}
+    result = {"pages": pages, "totalPages": total_pages, "extraction": "text-layer" if not missing_pages else "text-layer+ocr", "checks": checks, "ocr": ocr_metadata}
     if not complete:
         pdf_receipt["verification"] = "unknown"
         return response(request_id, ok=False, result=result, error="ocr_unavailable" if missing_pages and ocr_metadata.get("status") != "passed" else "unknown_text_layer", receipt=pdf_receipt)

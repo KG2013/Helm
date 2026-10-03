@@ -124,6 +124,20 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(result["result"]["pages"][0]["source"]["extraction"], "ocr")
         self.assertAlmostEqual(result["result"]["pages"][0]["confidence"], 0.96)
 
+    def test_pdf_page_bound_cannot_be_reported_as_complete_coverage(self):
+        pdf = Path(self.temp.name) / "large.pdf"
+        writer = PdfWriter()
+        for _ in range(worker.MAX_PDF_PAGES + 1):
+            writer.add_blank_page(width=100, height=100)
+        with pdf.open("wb") as stream:
+            writer.write(stream)
+        result = worker.handle({"id": "p", "operation": "pdf_extract", "path": "large.pdf"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["receipt"]["checks"]["coverage"], "unknown")
+        self.assertEqual(result["receipt"]["target"]["totalPages"], worker.MAX_PDF_PAGES + 1)
+        self.assertFalse(result["receipt"]["target"]["bounded"])
+        self.assertTrue(any("bounded" in item for item in result["receipt"]["artifact"]["limitations"]))
+
 
 if __name__ == "__main__":
     unittest.main()
