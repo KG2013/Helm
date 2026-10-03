@@ -208,7 +208,8 @@ def handle_pdf(request: dict[str, Any], request_id: str) -> dict[str, Any]:
     pages: list[dict[str, Any]] = []
     for index, page in enumerate(reader.pages[:MAX_PDF_PAGES]):
         text = (page.extract_text() or "").strip()
-        pages.append({"page": index + 1, "text": text[:10_000], "hasTextLayer": bool(text), "extraction": "text-layer" if text else "unknown", "confidence": 1.0 if text else None, "source": {"path": path.relative_to(workspace_root()).as_posix(), "page": index + 1, "extraction": "text-layer" if text else "unknown"}})
+        extraction = "text-layer" if text else "unknown"
+        pages.append({"page": index + 1, "text": text[:10_000], "hasTextLayer": bool(text), "extraction": extraction, "confidence": 1.0 if text else None, "source": page_source(path, index + 1, extraction, text)})
     missing_pages = [page["page"] for page in pages if not page["hasTextLayer"]]
     ocr_limitations: list[str] = []
     ocr_metadata: dict[str, Any] = {"requestedPages": missing_pages, "status": "not_needed" if not missing_pages else "unknown", "limitations": []}
@@ -332,13 +333,28 @@ def ocr_missing_pages(path: Path, page_numbers: list[int]) -> tuple[dict[int, di
                 limitations.append(f"OCR page {page_number} recognition failed or timed out.")
                 continue
             text, confidence = parse_tesseract_tsv(recognized.stdout if recognized.returncode == 0 else "")
-            pages[page_number] = {"text": text[:10_000], "hasTextLayer": False, "extraction": "ocr", "confidence": confidence, "source": {"path": path.relative_to(workspace_root()).as_posix(), "page": page_number, "extraction": "ocr", "confidence": confidence}}
+            pages[page_number] = {"text": text[:10_000], "hasTextLayer": False, "extraction": "ocr", "confidence": confidence, "source": page_source(path, page_number, "ocr", text, confidence=confidence, engine="tesseract")}
             if not text or confidence is None:
                 limitations.append(f"OCR page {page_number} returned no text or confidence.")
             elif confidence < MIN_OCR_CONFIDENCE:
                 limitations.append(f"OCR page {page_number} confidence is below the delivery threshold.")
     status = "passed" if pages and all(page_number in pages and pages[page_number].get("confidence") is not None and pages[page_number].get("confidence", 0) >= MIN_OCR_CONFIDENCE for page_number in page_numbers) else "unknown"
-    return pages, {"status": status, "engine": "tesseract", "requestedPages": page_numbers, "processedPages": sorted(pages), "limitations": limitations}, limitations
+    return pages, {"status": status, "engine": "tesseract", "workerVersion": VERSION, "requestedPages": page_numbers, "processedPages": sorted(pages), "limitations": limitations}, limitations
+
+
+def page_source(path: Path, page: int, extraction: str, text: str, *, confidence: float | None = None, engine: str | None = None) -> dict[str, Any]:
+    source: dict[str, Any] = {
+        "path": path.relative_to(workspace_root()).as_posix(),
+        "page": page,
+        "extraction": extraction,
+        "textHash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "workerVersion": VERSION,
+    }
+    if confidence is not None:
+        source["confidence"] = confidence
+    if engine is not None:
+        source["engine"] = engine
+    return source
 
 
 def parse_tesseract_tsv(value: str) -> tuple[str, float | None]:

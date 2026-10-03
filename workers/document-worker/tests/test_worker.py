@@ -1,3 +1,4 @@
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -110,6 +111,8 @@ class WorkerTest(unittest.TestCase):
         self.assertIn(result["receipt"]["ocr"]["status"], {"unavailable", "unknown"})
         self.assertIn("limitations", result["receipt"]["ocr"])
         self.assertEqual(result["result"]["pages"][0]["source"]["page"], 1)
+        self.assertEqual(result["result"]["pages"][0]["source"]["extraction"], "unknown")
+        self.assertEqual(result["result"]["pages"][0]["source"]["textHash"], hashlib.sha256(b"").hexdigest())
         self.assertEqual(result["receipt"]["artifact"]["path"], "blank.pdf")
 
     def test_pdf_ocr_failure_keeps_page_unknown_with_limitation(self):
@@ -151,6 +154,9 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(result["receipt"]["ocr"]["limitations"], [])
         self.assertEqual(result["result"]["pages"][0]["extraction"], "ocr")
         self.assertEqual(result["result"]["pages"][0]["source"]["extraction"], "ocr")
+        self.assertEqual(result["result"]["pages"][0]["source"]["engine"], "tesseract")
+        self.assertEqual(result["result"]["pages"][0]["source"]["textHash"], hashlib.sha256(b"Scanned").hexdigest())
+        self.assertEqual(result["receipt"]["ocr"]["workerVersion"], worker.VERSION)
         self.assertAlmostEqual(result["result"]["pages"][0]["confidence"], 0.96)
 
     def test_pdf_page_bound_cannot_be_reported_as_complete_coverage(self):
