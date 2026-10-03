@@ -223,6 +223,24 @@ test('Experience Candidate remains pending until explicit validation and approva
   assert.equal(candidate.approvalState, 'pending');
 });
 
+test('Experience Candidates persist for review and obey the reviewer round budget', async () => {
+  const runtime = new RuntimeFacade({ store: new InMemoryEventStore(), provider: new MockProvider(), defaultBudget: { maxReviewerRounds: 1 } });
+  const candidate = await runtime.createExperienceCandidate({
+    id: 'candidate-persisted',
+    sourceEpisodeId: 'episode-1',
+    sourceTraceId: 'trace-1',
+    summary: 'retain a validated failure pattern',
+    applicability: ['coding'],
+    costChecks: { tokenBudgetOk: true, costBudgetOk: true },
+    createdAt: 'now',
+  });
+  assert.deepEqual((await runtime.listExperienceCandidates()).map((item) => item.id), [candidate.id]);
+  const reviewed = await runtime.reviewExperienceCandidateById(candidate.id, { validation: 'validated', approval: 'approved', reviewerId: 'reviewer-1' });
+  assert.equal(reviewed.approvalState, 'approved');
+  assert.equal((await runtime.listExperienceCandidates())[0]?.validationState, 'validated');
+  await assert.rejects(() => runtime.reviewExperienceCandidateById(candidate.id, { validation: 'validated', approval: 'approved' }), /reviewer round budget/i);
+})
+
 test('tool calls are executed through the injected executor and remain auditable', async () => {
   const store = new InMemoryEventStore();
   const provider = new MockProvider([

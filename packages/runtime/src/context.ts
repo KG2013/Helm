@@ -6,10 +6,20 @@ import type {
   ToolProfile,
   ToolResult,
 } from './types.js';
+import { redactRunEvent } from './projection.js';
 
 export interface ProviderContextProjection {
   context: ProviderContext;
   toolResults: ToolResult[];
+}
+
+/** Bound and redact ledger events before exposing the legacy ProviderRequest.context field. */
+export function boundProviderEvents(events: readonly DomainEvent[], maxEvents = 80, maxBytes = 24_000): DomainEvent[] {
+  const redacted = events.map(redactRunEvent);
+  let candidate = redacted.slice(-maxEvents);
+  while (candidate.length > 1 && byteLength(candidate) > maxBytes) candidate = candidate.slice(1);
+  if (byteLength(candidate) > maxBytes) return [];
+  return candidate;
 }
 
 /** Re-apply the Runtime's redaction and budget boundary to custom projectors. */
@@ -139,24 +149,29 @@ function fitContext(input: ProviderContext, maxBytes: number): ProviderContext {
     }
 
     if (candidate.messages.length > 1) {
+      const before = candidate.messages.length;
       candidate.messages = dropLastMessagePair(candidate.messages);
+      if (candidate.messages.length < before) candidate.gaps = addGap(candidate.gaps, 'compaction dropped a complete ToolCall/ToolResult pair');
       continue;
     }
     if (candidate.items.length > 1) {
       candidate.items = candidate.items.slice(0, -1);
+      candidate.gaps = addGap(candidate.gaps, 'compaction dropped the oldest context item');
       continue;
     }
     const message = candidate.messages[0];
     if (message?.content) {
       candidate.messages = [{ ...message, content: shorten(message.content) }];
+      candidate.gaps = addGap(candidate.gaps, 'compaction shortened the pinned message');
       continue;
     }
     const item = candidate.items[0];
     if (item?.content) {
       candidate.items = [{ ...item, content: shorten(item.content) }];
+      candidate.gaps = addGap(candidate.gaps, 'compaction shortened the pinned context item');
       continue;
     }
-    candidate.gaps = [];
+    candidate.gaps = addGap(candidate.gaps, 'compaction removed context after the bounded budget was reached');
     candidate.messages = [];
     candidate.items = [];
   }
@@ -178,6 +193,10 @@ function dropLastMessagePair(messages: ProviderMessage[]): ProviderMessage[] {
     return messages.slice(0, -1);
   }
   return messages.slice(0, -1);
+}
+
+function addGap(gaps: string[], message: string): string[] {
+  return gaps.includes(message) ? gaps : [...gaps, message].slice(-16);
 }
 
 function shorten(value: string): string {

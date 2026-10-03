@@ -8,6 +8,7 @@ import {
   RuntimeFacade,
   WorkspaceInspectVerifier,
   buildProviderContext,
+  boundProviderEvents,
 } from '../src/index.js'
 import {
   StaticToolRegistry,
@@ -89,10 +90,27 @@ test('context compaction keeps assistant tool calls paired with tool results', (
     { id: 'call', sequence: 1, type: 'tool.call' as const, timestamp: 'now', runId: 'run-1', taskId: 'task-1', sessionId: 'session-1', payload: { id: 'tool-1', name: 'workspace.edit', arguments: { content: 'x'.repeat(20_000) } } },
     { id: 'receipt', sequence: 2, type: 'tool.receipt' as const, timestamp: 'now', runId: 'run-1', taskId: 'task-1', sessionId: 'session-1', payload: { toolCallId: 'tool-1', name: 'workspace.edit', ok: true, output: 'done' } },
   ]
-  const { context } = buildProviderContext(task, events, 1_024)
+  const { context } = buildProviderContext(task, events, 350)
   const assistants = context.messages.filter((message) => message.role === 'assistant' && message.toolCalls?.some((call) => call.id === 'tool-1')).length
   const tools = context.messages.filter((message) => message.role === 'tool' && message.toolCallId === 'tool-1').length
   assert.equal(assistants, tools)
+  assert.ok(context.gaps.some((gap) => gap.includes('compaction')))
+})
+
+test('ProviderRequest legacy context is bounded and redacted before provider access', () => {
+  const events = Array.from({ length: 120 }, (_, index) => ({
+    id: `event-${index}`,
+    sequence: index + 1,
+    type: 'step.observation' as const,
+    timestamp: 'now',
+    runId: 'run-1',
+    payload: { output: 'private file content', note: `authorization=Bearer secret-${index}` },
+  }))
+  const bounded = boundProviderEvents(events, 20, 8_000)
+  assert.ok(bounded.length <= 20)
+  assert.ok(new TextEncoder().encode(JSON.stringify(bounded)).byteLength <= 8_000)
+  assert.equal(JSON.stringify(bounded).includes('private file content'), false)
+  assert.equal(JSON.stringify(bounded).includes('secret-119'), false)
 })
 
 test('a provider-driven inspect Run receives Tool schema and structured ToolResult through the Runtime Facade', async () => {
@@ -112,7 +130,7 @@ test('a provider-driven inspect Run receives Tool schema and structured ToolResu
       },
     }
     const runtime = createWorkspaceInspectionRuntime({ store: new InMemoryEventStore(), provider, workspaceId: 'workspace-provider', root })
-    const task = await runtime.createTask({ goal: 'inspect README.md', workspaceId: 'workspace-provider' })
+    const task = await runtime.createTask({ goal: 'inspect README.md authorization=Bearer secret-value', workspaceId: 'workspace-provider' })
     const session = await runtime.createSession({ taskId: task.id })
     const run = await runtime.startRun({ taskId: task.id, sessionId: session.id })
     const result = await runtime.run(run.id)
@@ -120,6 +138,8 @@ test('a provider-driven inspect Run receives Tool schema and structured ToolResu
     assert.equal(requests.length, 2)
     assert.equal(requests[0]?.tools?.[0]?.name, 'workspace.inspect')
     assert.equal(requests[0]?.contextEnvelope?.version, 'v1')
+    assert.equal(JSON.stringify(requests[0]?.context).includes('secret-value'), false)
+    assert.equal(JSON.stringify(requests[0]?.context).includes('private'), false)
     assert.equal(requests[1]?.toolResults?.length, 1)
     assert.equal(requests[1]?.toolResults?.[0]?.name, 'workspace.inspect')
     assert.equal(requests[1]?.messages?.some((message) => message.role === 'assistant' && message.toolCalls?.[0]?.name === 'workspace.inspect'), true)

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { transitionRunState, isTerminalRunState, RunStateError } from './state-machine.js';
 import { TextOutputVerifier } from './verifier.js';
-import { buildProviderContext, normalizeProviderContextProjection, toolProfileToSchema } from './context.js';
+import { boundProviderEvents, buildProviderContext, normalizeProviderContextProjection, toolProfileToSchema } from './context.js';
 import { createExperienceCandidate as createCandidate, reviewExperienceCandidate as reviewCandidate, type ExperienceCandidate } from './experience.js';
 import type {
   Budget,
@@ -222,7 +222,7 @@ export class RuntimeFacade {
         task,
         session,
         run,
-        context,
+        context: boundProviderEvents(context),
         contextEnvelope: projected.context,
         messages: projected.context.messages,
         tools: this.toolRegistry.list?.().map(toolProfileToSchema),
@@ -498,10 +498,39 @@ export class RuntimeFacade {
     return candidate;
   }
 
+  async listExperienceCandidates(): Promise<ExperienceCandidate[]> {
+    const events = await this.store.listAll();
+    const candidates = new Map<ID, ExperienceCandidate>();
+    for (const event of events) {
+      if (event.type !== 'experience.candidate_created' && event.type !== 'experience.candidate_reviewed') continue;
+      const payload = event.payload as unknown as ExperienceCandidate;
+      if (typeof payload.id !== 'string') continue;
+      candidates.set(payload.id, payload);
+    }
+    return [...candidates.values()];
+  }
+
   async reviewExperienceCandidate(candidate: ExperienceCandidate, review: Parameters<typeof reviewCandidate>[1]): Promise<ExperienceCandidate> {
+    const events = await this.store.listAll();
+    const rounds = events.filter((event) => event.type === 'experience.candidate_reviewed' && event.payload.id === candidate.id).length;
+    let maxRounds = this.defaultBudget.maxReviewerRounds;
+    try {
+      const sourceRun = await this.store.getRun(candidate.sourceEpisodeId);
+      if (sourceRun) maxRounds = sourceRun.budget.maxReviewerRounds;
+    } catch {
+      // Candidate review remains bounded by the Runtime default when its source
+      // episode is archived outside the local Run ledger.
+    }
+    if (rounds >= maxRounds) throw new Error(`Experience Candidate reviewer round budget exceeded (${maxRounds}).`);
     const reviewed = reviewCandidate(candidate, review);
     await this.append({ type: 'experience.candidate_reviewed', payload: reviewed as unknown as Record<string, unknown> });
     return reviewed;
+  }
+
+  async reviewExperienceCandidateById(candidateId: ID, review: Parameters<typeof reviewCandidate>[1]): Promise<ExperienceCandidate> {
+    const candidate = (await this.listExperienceCandidates()).find((item) => item.id === candidateId);
+    if (!candidate) throw new Error(`Unknown Experience Candidate: ${candidateId}`);
+    return this.reviewExperienceCandidate(candidate, review);
   }
 
   /** Reconcile a process restart before allowing a Run to request new work. */
@@ -716,7 +745,7 @@ export class RuntimeFacade {
       let result = await this.executor(pending.call, {
         ...pending.request,
         run: latestRun,
-        context: latestContext,
+        context: boundProviderEvents(latestContext),
         contextEnvelope: projected.context,
         messages: projected.context.messages,
         tools: this.toolRegistry.list?.().map(toolProfileToSchema),
