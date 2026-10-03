@@ -64,7 +64,7 @@ export class PythonDocumentWorkerClient implements OfficeWorkerClient {
     return new Promise((resolvePromise, rejectPromise) => {
       const child = spawn(this.options.python, [this.options.scriptPath], {
         cwd: this.options.workspaceRoot,
-        env: { PATH: process.env.PATH, ...this.options.env, HELM_WORKSPACE_ROOT: this.options.workspaceRoot },
+        env: workerEnvironment(this.options.env, this.options.workspaceRoot),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let stdout = '';
@@ -465,4 +465,14 @@ function failedOffice(error: string): { ok: false; error: string; receipt: Recor
 function sanitizeError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/(?:api[-_ ]?key|authorization|cookie|secret|password|token)\s*[:=]\s*[^\s,;]+/gi, '[redacted]').slice(0, 500);
+}
+
+function workerEnvironment(configured: NodeJS.ProcessEnv | undefined, workspaceRoot: string): NodeJS.ProcessEnv {
+  const allowed = new Set(['PATH', 'PYTHONPATH', 'VIRTUAL_ENV', 'LANG', 'LC_ALL', 'PYTHONIOENCODING']);
+  const environment: NodeJS.ProcessEnv = { PATH: process.env.PATH, HELM_WORKSPACE_ROOT: workspaceRoot };
+  for (const [key, value] of Object.entries(configured ?? {})) {
+    if (allowed.has(key) && value !== undefined) environment[key] = value;
+  }
+  environment.PYTHONIOENCODING ??= 'utf-8';
+  return environment;
 }
