@@ -58,12 +58,15 @@ def safe_path(raw_path: Any, *, must_exist: bool = False) -> Path:
 
 
 def artifact(path: Path, *, operation: str, source_run_id: Any = None, limitations: list[str] | None = None) -> dict[str, Any]:
-    data = path.read_bytes()
+    relative_path = path.relative_to(workspace_root()).as_posix()
+    # Re-canonicalize immediately before hashing so a swapped symlink cannot
+    # turn the receipt into an artifact outside the authorized workspace.
+    verified_path = safe_path(relative_path, must_exist=True)
+    data = verified_path.read_bytes()
     if len(data) > MAX_BYTES:
         raise ValueError("artifact_exceeds_bound")
-    relative_path = path.relative_to(workspace_root()).as_posix()
     return {
-        "type": path.suffix.lower().lstrip(".") or "file",
+        "type": verified_path.suffix.lower().lstrip(".") or "file",
         "path": relative_path,
         "hash": hashlib.sha256(data).hexdigest(),
         "bytes": len(data),
