@@ -304,9 +304,17 @@ def main() -> int:
             payload = handle(request)
         except Exception:
             payload = response("unknown", ok=False, error="request_invalid")
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, default=json_default) + "\n")
         sys.stdout.flush()
     return 0
+
+
+def json_default(value: Any) -> str:
+    """Keep valid XLSX date/time values from crashing the JSONL process."""
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return str(isoformat())
+    return str(value)
 
 
 if __name__ == "__main__":
