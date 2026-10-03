@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
   InMemoryEventStore,
@@ -164,6 +164,32 @@ test('Office policy rejects workspace traversal and unsupported XLSX selectors b
   assert.equal(result.state, 'failed');
   assert.equal(worker.requests.length, 0);
   assert.match(result.lastError ?? '', /workspace|path|outside/i);
+});
+
+test('Office executor rejects a symlink escape immediately before worker dispatch', async () => {
+  const root = await mkdtemp('/tmp/helm-office-root-');
+  const outside = await mkdtemp('/tmp/helm-office-outside-');
+  try {
+    await writeFile(`${outside}/secret.xlsx`, 'private');
+    await symlink(`${outside}/secret.xlsx`, `${root}/escape.xlsx`);
+    const worker = workerFor((request) => ({ id: request.id, ok: true, result: {}, receipt: { artifact: passedArtifact(request) } }));
+    const runtime = createOfficeRuntime({
+      store: new InMemoryEventStore(),
+      provider: new MockProvider([{ kind: 'tool_call', name: 'office.xlsx.read_range', arguments: { path: 'escape.xlsx', sheet: 'Sheet1', cell: 'A1' } }]),
+      worker,
+      workspaceId: 'office-workspace',
+      root,
+    });
+    const task = await runtime.createTask({ goal: 'read a workbook', workspaceId: 'office-workspace' });
+    const session = await runtime.createSession({ taskId: task.id });
+    const started = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+    const result = await runtime.run(started.id);
+    assert.equal(result.state, 'failed');
+    assert.equal(worker.requests.length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
 });
 
 test('OfficeVerifier remains fail-closed when artifact evidence is absent', async () => {

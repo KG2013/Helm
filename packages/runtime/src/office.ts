@@ -1,4 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname } from 'node:path';
+import { realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { RuntimeFacade } from './runtime.js';
 import type {
@@ -250,7 +252,7 @@ export function createOfficeExecutor(options: { roots: Readonly<Record<string, s
     const root = options.roots[request.task.workspaceId];
     if (!root) return failedOffice('Workspace is not registered for Office operations.');
     const pathValue = call.arguments.path;
-    if (typeof pathValue !== 'string' || !isSafeWorkspacePath(root, pathValue)) {
+    if (typeof pathValue !== 'string' || !isSafeWorkspacePath(root, pathValue) || !(await isSafeOfficeTarget(root, pathValue))) {
       return failedOffice('Office path must stay inside the workspace.');
     }
     const operation = operationFor(call.name);
@@ -374,6 +376,43 @@ function isSafeWorkspacePath(root: string, pathValue: string): boolean {
   const rootPath = resolve(root);
   const target = resolve(rootPath, pathValue);
   const rel = relative(rootPath, target);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/** Re-check canonical parents immediately before dispatch, including output paths that do not exist yet. */
+async function isSafeOfficeTarget(root: string, pathValue: string): Promise<boolean> {
+  const rootPath = await canonicalPath(root);
+  const candidate = resolve(rootPath, pathValue);
+  let probe = candidate;
+  while (true) {
+    try {
+      const canonicalProbe = await realpath(probe);
+      const canonicalCandidate = resolve(canonicalProbe, relative(probe, candidate));
+      return isWithinRoot(rootPath, canonicalCandidate);
+    } catch {
+      const parent = dirname(probe);
+      if (parent === probe) return false;
+      probe = parent;
+    }
+  }
+}
+
+async function canonicalPath(pathValue: string): Promise<string> {
+  let probe = resolve(pathValue);
+  while (true) {
+    try {
+      const canonicalProbe = await realpath(probe);
+      return resolve(canonicalProbe, relative(probe, resolve(pathValue)));
+    } catch {
+      const parent = dirname(probe);
+      if (parent === probe) return resolve(pathValue);
+      probe = parent;
+    }
+  }
+}
+
+function isWithinRoot(root: string, target: string): boolean {
+  const rel = relative(root, target);
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
