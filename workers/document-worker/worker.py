@@ -179,9 +179,10 @@ def handle_pdf(request: dict[str, Any], request_id: str) -> dict[str, Any]:
         pages.append({"page": index + 1, "text": text[:10_000], "hasTextLayer": bool(text), "extraction": "text-layer" if text else "unknown", "confidence": 1.0 if text else None, "source": {"path": path.relative_to(workspace_root()).as_posix(), "page": index + 1, "extraction": "text-layer" if text else "unknown"}})
     missing_pages = [page["page"] for page in pages if not page["hasTextLayer"]]
     ocr_limitations: list[str] = []
-    ocr_metadata: dict[str, Any] = {"requestedPages": missing_pages, "status": "not_needed" if not missing_pages else "unknown"}
+    ocr_metadata: dict[str, Any] = {"requestedPages": missing_pages, "status": "not_needed" if not missing_pages else "unknown", "limitations": []}
     if missing_pages:
         ocr_pages, ocr_metadata, ocr_limitations = ocr_missing_pages(path, missing_pages)
+        ocr_metadata["limitations"] = ocr_limitations
         if ocr_pages is not None:
             for page in pages:
                 replacement = ocr_pages.get(page["page"])
@@ -232,16 +233,20 @@ def render_docx(path: Path) -> tuple[str, dict[str, Any], str | None]:
         output_dir = Path(temporary)
         command = [renderer, "--headless", "--nologo", "--nodefault", "--nofirststartwizard", "--nolockcheck", "--convert-to", "pdf", "--outdir", str(output_dir), str(path)]
         try:
-            completed = subprocess.run(command, cwd=temporary, env=command_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=MAX_RENDER_SECONDS, check=False)
+            completed = subprocess.run(command, cwd=temporary, env=command_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=MAX_RENDER_SECONDS, check=False)
         except (OSError, subprocess.TimeoutExpired):
             return "unknown", {"status": "failed", "renderer": Path(renderer).name}, "DOCX rendering command failed or exceeded its time bound."
         rendered = output_dir / f"{path.stem}.pdf"
-        if completed.returncode != 0 or not rendered.is_file() or rendered.stat().st_size > MAX_BYTES:
+        try:
+            rendered_bytes = rendered.stat().st_size if rendered.is_file() else None
+        except OSError:
+            rendered_bytes = None
+        if completed.returncode != 0 or rendered_bytes is None or rendered_bytes > MAX_BYTES:
             return "unknown", {"status": "failed", "renderer": Path(renderer).name}, "DOCX renderer did not produce a bounded PDF artifact."
         try:
             from pypdf import PdfReader
             pages = len(PdfReader(str(rendered)).pages)
-        except (ImportError, OSError, ValueError):
+        except Exception:
             return "unknown", {"status": "failed", "renderer": Path(renderer).name}, "Rendered PDF could not be opened for a page-count check."
         if pages < 1:
             return "unknown", {"status": "failed", "renderer": Path(renderer).name}, "Rendered PDF has no pages."
@@ -253,7 +258,8 @@ def ocr_missing_pages(path: Path, page_numbers: list[int]) -> tuple[dict[int, di
     tesseract = shutil.which("tesseract")
     if not pdftoppm or not tesseract:
         missing = [name for name, value in (("pdftoppm", pdftoppm), ("tesseract", tesseract)) if not value]
-        return None, {"status": "unavailable", "missing": missing, "requestedPages": page_numbers}, [f"OCR is unavailable; missing command(s): {', '.join(missing)}."]
+        limitation = f"OCR is unavailable; missing command(s): {', '.join(missing)}."
+        return None, {"status": "unavailable", "missing": missing, "requestedPages": page_numbers, "limitations": [limitation]}, [limitation]
     deadline = time.monotonic() + MAX_OCR_SECONDS
     pages: dict[int, dict[str, Any]] = {}
     limitations: list[str] = []
@@ -264,8 +270,12 @@ def ocr_missing_pages(path: Path, page_numbers: list[int]) -> tuple[dict[int, di
                 limitations.append("OCR exceeded the total time bound before all pages were processed.")
                 break
             image_prefix = output_dir / f"page-{page_number}"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                limitations.append("OCR exceeded the total time bound before all pages were processed.")
+                break
             try:
-                rendered = subprocess.run([pdftoppm, "-f", str(page_number), "-l", str(page_number), "-singlefile", "-png", "-r", "150", str(path), str(image_prefix)], cwd=temporary, env=command_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=max(1, min(10, int(deadline - time.monotonic()))), check=False)
+                rendered = subprocess.run([pdftoppm, "-f", str(page_number), "-l", str(page_number), "-singlefile", "-png", "-r", "150", str(path), str(image_prefix)], cwd=temporary, env=command_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=min(10, remaining), check=False)
             except (OSError, subprocess.TimeoutExpired):
                 limitations.append(f"OCR page {page_number} rendering failed or timed out.")
                 continue
@@ -273,8 +283,12 @@ def ocr_missing_pages(path: Path, page_numbers: list[int]) -> tuple[dict[int, di
             if rendered.returncode != 0 or not image.is_file() or image.stat().st_size > MAX_BYTES:
                 limitations.append(f"OCR page {page_number} image was unavailable or exceeded its bound.")
                 continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                limitations.append("OCR exceeded the total time bound before all pages were processed.")
+                break
             try:
-                recognized = subprocess.run([tesseract, str(image), "stdout", "--psm", "6", "tsv"], cwd=temporary, env=command_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=max(1, min(10, int(deadline - time.monotonic()))), check=False)
+                recognized = subprocess.run([tesseract, str(image), "stdout", "--psm", "6", "tsv"], cwd=temporary, env=command_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=min(10, remaining), check=False)
             except (OSError, subprocess.TimeoutExpired):
                 limitations.append(f"OCR page {page_number} recognition failed or timed out.")
                 continue
@@ -285,7 +299,7 @@ def ocr_missing_pages(path: Path, page_numbers: list[int]) -> tuple[dict[int, di
             elif confidence < MIN_OCR_CONFIDENCE:
                 limitations.append(f"OCR page {page_number} confidence is below the delivery threshold.")
     status = "passed" if pages and all(page_number in pages and pages[page_number].get("confidence") is not None and pages[page_number].get("confidence", 0) >= MIN_OCR_CONFIDENCE for page_number in page_numbers) else "unknown"
-    return pages, {"status": status, "engine": "tesseract", "requestedPages": page_numbers, "processedPages": sorted(pages)}, limitations
+    return pages, {"status": status, "engine": "tesseract", "requestedPages": page_numbers, "processedPages": sorted(pages), "limitations": limitations}, limitations
 
 
 def parse_tesseract_tsv(value: str) -> tuple[str, float | None]:

@@ -79,6 +79,7 @@ class WorkerTest(unittest.TestCase):
         self.assertIn(result["error"], {"unknown_text_layer", "ocr_unavailable"})
         self.assertEqual(result["receipt"]["checks"]["coverage"], "unknown")
         self.assertIn(result["receipt"]["ocr"]["status"], {"unavailable", "unknown"})
+        self.assertIn("limitations", result["receipt"]["ocr"])
         self.assertEqual(result["result"]["pages"][0]["source"]["page"], 1)
         self.assertEqual(result["receipt"]["artifact"]["path"], "blank.pdf")
 
@@ -118,6 +119,7 @@ class WorkerTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["receipt"]["ocr"]["status"], "passed")
         self.assertEqual(result["receipt"]["ocr"]["engine"], "tesseract")
+        self.assertEqual(result["receipt"]["ocr"]["limitations"], [])
         self.assertEqual(result["result"]["pages"][0]["extraction"], "ocr")
         self.assertEqual(result["result"]["pages"][0]["source"]["extraction"], "ocr")
         self.assertAlmostEqual(result["result"]["pages"][0]["confidence"], 0.96)
