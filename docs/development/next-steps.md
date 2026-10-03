@@ -15,13 +15,13 @@
 
 完成条件已由 #1–#4 验证：桌面提交可追踪到 Task/Session/Run；运行状态、验收与 CLI 复用 Runtime；取消后不追加新的执行动作；拒绝审批不调用 executor；approve 续行同一 proposal；快照可重建 Main 中仍存活的 Run。此阶段不宣称应用退出后的恢复。
 
-## 2. 受限 Coding 流程（下一切片，#9）
+## 2. 受限 Coding 流程（核心已完成，#9）
 
 目标链路：inspect → read → proposal → policy/approval → edit → test → diff → verification。
 
-先在临时工作区用确定性 Mock 提案验证，再接真实模型。新增工作区路径守卫、工具 schema、有限读写/patch/search 工具、受控测试命令和可替换 sandbox；sandbox 不可用时拒绝执行。禁止将工作区目录或 Git worktree 当作执行隔离。
+确定性 fixture 已覆盖 read → approval → edit/patch → test → diff → verification；工具已注册 schema、采用 workspace 路径守卫、受控测试命令和可替换 sandbox；sandbox 不可用时拒绝执行。禁止将工作区目录或 Git worktree 当作执行隔离。CLI/Desktop 的同一 Artifact 投影仍待接线。
 
-完成条件：一次小修改有可审阅 diff、测试退出码、目标行为证据；越界路径、拒绝授权和未知副作用分别进入明确结果。Coding verifier 不能以非空文本替代代码与测试验收。
+核心完成条件已由 Runtime fixture 覆盖：一次小修改有可审阅 diff、测试退出码、Coding Artifact 和 Coding Verifier；越界路径、拒绝授权和 sandbox 缺失分别进入明确结果。CLI/Desktop 的同一 Run/Artifact/Verification 结果仍属于后续切片。
 
 ## 3. 真实 Provider 与凭据（#8 已完成合同，真实联调待补）
 

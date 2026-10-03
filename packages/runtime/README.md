@@ -28,4 +28,4 @@ redacted Context envelope with Tool schemas and structured ToolResults. Runtime
 payloads may contain task input, tool output, or receipts, so hosts must use
 the redacted export path before sharing event logs.
 
-Tool proposals are denied unless the host injects a `ToolPolicy` that returns `allow`; an unknown tool side effect is recorded as `needs_reconciliation`.
+Tool proposals are denied unless the host injects a `ToolPolicy` that returns `allow`; an unknown tool side effect is recorded as `needs_reconciliation`. The coding fixture exports versioned `workspace.read`, `workspace.edit`, `workspace.patch`, `workspace.test`, and `workspace.diff` profiles. File mutation and test execution require an injected sandbox; `CodingVerifier` only passes when read, edit/patch, passing test, diff, and artifact receipts are all present.

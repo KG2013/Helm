@@ -15,6 +15,11 @@ import {
   createWorkspaceInspectionExecutor,
   workspaceInspectProfile,
   createWorkspaceInspectionRuntime,
+  codingToolProfiles,
+  CodingVerifier,
+  createCodingExecutor,
+  createCodingPolicy,
+  createCodingRuntime,
 } from '../src/tools.js'
 
 async function createInspectionRuntime(root: string, responses: ConstructorParameters<typeof MockProvider>[0]) {
@@ -193,4 +198,59 @@ test('workspace traversal and symlink escapes fail without mutating the workspac
     await rm(root, { recursive: true, force: true })
     await rm(outside, { recursive: true, force: true })
   }
+})
+
+test('coding edit-test-diff uses registered profiles, approval, sandbox and artifact verification', async () => {
+  const root = await mkdtemp('/tmp/helm-coding-')
+  try {
+    await writeFile(join(root, 'README.md'), 'before\n')
+    const sandbox = {
+      run: async (command: string, args: string[]) => command === 'git'
+        ? { exitCode: 0, stdout: 'diff -- README.md\n+after', stderr: '' }
+        : { exitCode: 0, stdout: `passed ${command} ${args.join(' ')}`, stderr: '' },
+    }
+    const runtime = createCodingRuntime({
+      store: new InMemoryEventStore(),
+      provider: new MockProvider([
+        { kind: 'tool_call', name: 'workspace.read', arguments: { path: 'README.md' } },
+        { kind: 'tool_call', name: 'workspace.edit', arguments: { path: 'README.md', content: 'after\n' } },
+        { kind: 'tool_call', name: 'workspace.test', arguments: { command: 'pnpm', args: ['test'] } },
+        { kind: 'tool_call', name: 'workspace.diff', arguments: { path: 'README.md' } },
+        { kind: 'final', content: 'Coding change verified.' },
+      ]),
+      workspaceId: 'workspace-coding',
+      root,
+      sandbox,
+    })
+    const task = await runtime.createTask({ goal: 'implement a coding fix', workspaceId: 'workspace-coding' })
+    const session = await runtime.createSession({ taskId: task.id })
+    const created = await runtime.startRun({ taskId: task.id, sessionId: session.id })
+    let result = await runtime.run(created.id)
+    while (result.state === 'paused') {
+      const events = await runtime.getEvents(result.id)
+      const decided = new Set(events.filter((event) => event.type === 'approval.decided').map((event) => String(event.payload.approvalId)))
+      const requested = [...events].reverse().find((event) => event.type === 'approval.requested' && !decided.has(String(event.payload.approvalId)))
+      assert.ok(requested)
+      result = await runtime.resolveApproval(result.id, requested.payload.approvalId as string, 'approve')
+    }
+    assert.equal(result.state, 'completed')
+    assert.equal(result.verification?.verifier, 'coding-v1')
+    assert.equal(result.verification?.result, 'passed')
+    assert.equal(await import('node:fs/promises').then(({ readFile: read }) => read(join(root, 'README.md'), 'utf8')), 'after\n')
+    assert.equal((await runtime.getEvents(result.id)).filter((event) => event.type === 'approval.requested').length, 2)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('coding policy and executor fail closed when sandbox is unavailable', async () => {
+  const registry = new StaticToolRegistry(codingToolProfiles)
+  const policy = createCodingPolicy(registry, { roots: { workspace: '/tmp' }, sandboxAvailable: false })
+  const denied = await policy.decide({ task: { id: 't', goal: 'edit', workspaceId: 'workspace', createdAt: 'now', budget: { maxSteps: 1, maxDurationMs: 100, maxReviewerRounds: 0 } }, session: { id: 's', taskId: 't', createdAt: 'now', status: 'active' }, run: {} as never, call: { id: 'c', runId: 'r', stepId: 's', name: 'workspace.edit', arguments: { path: 'README.md', content: 'x' } } })
+  assert.equal(denied.decision, 'deny')
+  const executor = createCodingExecutor({ roots: { workspace: '/tmp' } })
+  const result = await executor({ id: 'c', runId: 'r', stepId: 's', name: 'workspace.edit', arguments: { path: 'README.md', content: 'x' } }, { task: { workspaceId: 'workspace' } } as never)
+  assert.equal(result.ok, false)
+  assert.match(result.error ?? '', /sandbox/i)
+  assert.equal(new CodingVerifier().id, 'coding-v1')
 })
