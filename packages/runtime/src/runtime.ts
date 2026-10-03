@@ -739,24 +739,30 @@ export class RuntimeFacade {
     await this.append({ type: 'tool.receipt', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, toolCallId: pending.call.id, name: pending.call.name, ...observation } });
     await this.append({ type: 'step.observation', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, observation } });
     current = await this.requireRun(run.id);
-    await this.append({
-      type: 'usage.recorded',
-      taskId: pending.task.id,
-      sessionId: pending.session.id,
-      runId: current.id,
-      payload: {
-        kind: 'tool',
-        requestId: pending.call.id,
-        provider: 'tool-executor',
-        model: pending.call.name,
-        operation: pending.call.name,
-        latencyMs: Math.max(0, this.clock.now().getTime() - startedAt),
-        retries: 0,
-        cacheHit: false,
-        failureCode: observation.ok ? undefined : observation.receipt?.sideEffect === 'unknown' ? 'unknown' : 'unavailable',
-      },
-    });
-    const usageEvents = await this.store.list(current.id);
+    let usageEvents = await this.store.list(current.id);
+    // Recovery or an idempotent approval retry may reach this point more than
+    // once. The tool call id is the durable request key, so never double
+    // charge the UsageLedger for the same action.
+    if (!usageEvents.some((event) => event.type === 'usage.recorded' && event.payload.requestId === pending.call.id)) {
+      await this.append({
+        type: 'usage.recorded',
+        taskId: pending.task.id,
+        sessionId: pending.session.id,
+        runId: current.id,
+        payload: {
+          kind: 'tool',
+          requestId: pending.call.id,
+          provider: 'tool-executor',
+          model: pending.call.name,
+          operation: pending.call.name,
+          latencyMs: Math.max(0, this.clock.now().getTime() - startedAt),
+          retries: 0,
+          cacheHit: false,
+          failureCode: observation.ok ? undefined : observation.receipt?.sideEffect === 'unknown' ? 'unknown' : 'unavailable',
+        },
+      });
+      usageEvents = await this.store.list(current.id);
+    }
     if (this.usageBudgetExceeded(current, usageEvents)) {
       await this.append({ type: 'step.completed', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, index: pending.index } });
       await this.transition(current.id, 'needs_input', { reason: 'usage budget exceeded' });

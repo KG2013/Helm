@@ -8,6 +8,7 @@ import {
   transitionRunState,
   buildEpisode,
   evaluateReleaseGate,
+  runFixedEvaluationMatrix,
   canPromoteExperienceCandidate,
   createExperienceCandidate,
   reviewExperienceCandidate,
@@ -133,6 +134,7 @@ test('Episodes retain redacted trace links and release gates require dev and hol
   const episode = await buildEpisode(store, run.id);
   assert.deepEqual(episode.trace.providerIds, ['mock', 'mock-model']);
   assert.ok(episode.trace.verifierIds.includes('text-output-v1'));
+  assert.ok(episode.trace.stepIds.length >= 1);
   assert.doesNotMatch(episode.redactedJsonl, /api[-_ ]?key|authorization/i);
 
   const incomplete = { ...episode, evaluationCase: 'coding-basic', evaluationSplit: 'dev' as const, evaluationAttempt: 1 };
@@ -146,6 +148,31 @@ test('Episodes retain redacted trace links and release gates require dev and hol
     evaluationAttempt: attempt,
   }));
   assert.equal(evaluateReleaseGate([...repeated('dev'), ...repeated('holdout')]).result, 'passed');
+});
+
+test('fixed coding and office dev/holdout cases run three times before release', async () => {
+  const base = {
+    runId: 'fixed-run',
+    taskId: 'fixed-task',
+    sessionId: 'fixed-session',
+    events: [
+      { type: 'run.completed', payload: { verification: { result: 'passed' } } },
+      { type: 'verification.result', payload: { verification: { result: 'passed' } } },
+    ],
+    usage: [],
+    redactedJsonl: '{"result":"passed"}',
+    trace: { providerIds: [], toolProfiles: [], toolProfileVersions: [], policyVersions: [], stepIds: [], approvalIds: [], artifactUris: [], verifierIds: [], requestIds: [], traceIds: [] },
+  } as const;
+  const matrix = await runFixedEvaluationMatrix([
+    ...(['coding', 'office'] as const).flatMap((id) => (['dev', 'holdout'] as const).map((split) => ({
+      id,
+      split,
+      run: async (attempt: number) => ({ ...base, runId: `${id}-${split}-${attempt}`, evaluationCase: id, evaluationSplit: split, evaluationAttempt: attempt }),
+    }))),
+  ]);
+  assert.equal(matrix.episodes.length, 12);
+  assert.equal(matrix.gate.result, 'passed');
+  await assert.rejects(() => runFixedEvaluationMatrix([{ id: 'coding', split: 'dev', run: async (attempt: number) => ({ ...base, evaluationCase: 'wrong', evaluationSplit: 'dev' as const, evaluationAttempt: attempt }) }]));
 });
 
 test('token budget hard-stops a response before delivery', async () => {

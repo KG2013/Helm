@@ -469,6 +469,9 @@ export interface Episode {
     sessionId?: ID;
     providerIds: string[];
     toolProfiles: string[];
+    toolProfileVersions: string[];
+    policyVersions: string[];
+    stepIds: ID[];
     approvalIds: ID[];
     artifactUris: string[];
     verifierIds: string[];

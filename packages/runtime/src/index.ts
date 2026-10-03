@@ -12,3 +12,4 @@ export * from './projection.js';
 export * from './office.js';
 export * from './artifacts.js';
 export * from './sandbox.js';
+export * from './evaluation.js';

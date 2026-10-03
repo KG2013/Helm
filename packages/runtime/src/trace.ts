@@ -16,6 +16,22 @@ export async function buildEpisode(store: { list(runId: ID): Promise<DomainEvent
     sessionId: first.sessionId,
     providerIds: uniqueStrings(events.flatMap((event) => [event.payload.provider, event.payload.model]).filter((value): value is string => typeof value === 'string')),
     toolProfiles: uniqueStrings(events.flatMap((event) => [event.payload.toolProfile, event.payload.profile, (event.payload.receipt as Record<string, unknown> | undefined)?.profile]).filter((value): value is string => typeof value === 'string')),
+    toolProfileVersions: uniqueStrings(events.flatMap((event) => {
+      const profile = event.payload.toolProfile ?? event.payload.profile ?? (event.payload.receipt as Record<string, unknown> | undefined)?.profile;
+      if (typeof profile === 'string') return [profile];
+      if (profile && typeof profile === 'object') {
+        const value = profile as Record<string, unknown>;
+        return typeof value.id === 'string' && typeof value.version === 'string' ? [`${value.id}@${value.version}`] : [];
+      }
+      return [];
+    })),
+    policyVersions: uniqueStrings(events.flatMap((event) => {
+      const binding = event.payload.binding;
+      const direct = event.payload.policyVersion;
+      const bound = binding && typeof binding === 'object' ? (binding as Record<string, unknown>).policyVersion : undefined;
+      return [direct, bound].filter((value): value is string => typeof value === 'string');
+    })),
+    stepIds: uniqueStrings(events.map((event) => event.payload.stepId).filter((value): value is string => typeof value === 'string')),
     approvalIds: uniqueStrings(events.map((event) => event.payload.approvalId).filter((value): value is string => typeof value === 'string')),
     artifactUris: uniqueStrings(events.flatMap((event) => [
       (event.payload.receipt as Record<string, unknown> | undefined)?.artifact,
@@ -33,9 +49,19 @@ export async function buildEpisode(store: { list(runId: ID): Promise<DomainEvent
   return { runId, taskId: first.taskId, sessionId: first.sessionId, events: redactedEvents, usage, redactedJsonl, trace, ...evaluation };
 }
 
+export interface ReleaseGateOptions {
+  /** Require a complete critical dev/holdout matrix instead of allowing a single episode. */
+  requireFixedMatrix?: boolean;
+  /** Case IDs that must each appear in both dev and holdout splits. */
+  criticalCaseIds?: readonly string[];
+  repetitions?: number;
+}
+
 /** Deterministic release gate for fixed Run evidence. */
-export function evaluateReleaseGate(episodes: readonly Episode[]): ReleaseGateResult {
+export function evaluateReleaseGate(episodes: readonly Episode[], options: ReleaseGateOptions = {}): ReleaseGateResult {
   const reasons: string[] = [];
+  const repetitions = options.repetitions ?? 3;
+  if (options.requireFixedMatrix && repetitions < 3) reasons.push('Critical evaluation matrix must run at least three repetitions.');
   const runIds = episodes.map((episode) => episode.runId);
   if (!episodes.length) reasons.push('No evaluation episodes were supplied.');
   for (const episode of episodes) {
@@ -49,12 +75,14 @@ export function evaluateReleaseGate(episodes: readonly Episode[]): ReleaseGateRe
   }
   const evaluated = episodes.filter((episode) => episode.evaluationCase);
   const cases = new Set(evaluated.map((episode) => episode.evaluationCase).filter((value): value is string => Boolean(value)));
-  for (const evaluationCase of cases) {
+  const requiredCases = options.criticalCaseIds ? new Set(options.criticalCaseIds) : cases;
+  if (options.requireFixedMatrix && !requiredCases.size) reasons.push('No fixed evaluation cases were supplied.');
+  for (const evaluationCase of requiredCases) {
     for (const split of ['dev', 'holdout'] as const) {
       const group = evaluated.filter((episode) => episode.evaluationCase === evaluationCase && episode.evaluationSplit === split);
-      if (group.length < 3) reasons.push(`${split}:${evaluationCase}: critical evaluation case requires three repeated runs.`);
+      if (group.length < repetitions) reasons.push(`${split}:${evaluationCase}: critical evaluation case requires ${repetitions} repeated runs.`);
       const attempts = new Set(group.map((episode) => episode.evaluationAttempt).filter((value): value is number => typeof value === 'number'));
-      if (attempts.size > 0 && attempts.size < 3) reasons.push(`${split}:${evaluationCase}: repeated runs must contain three distinct attempts.`);
+      if (attempts.size < repetitions) reasons.push(`${split}:${evaluationCase}: repeated runs must contain ${repetitions} distinct attempts.`);
     }
   }
   return { result: reasons.length ? 'blocked' : 'passed', reasons, runIds };
