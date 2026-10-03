@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildRunProjection } from '../src/projection.js'
+import { buildRunProjection, redactRunJsonl } from '../src/projection.js'
 import type { DomainEvent } from '../src/types.js'
 
 function event(input: Partial<DomainEvent> & Pick<DomainEvent, 'type' | 'sequence' | 'payload'>): DomainEvent {
@@ -34,4 +34,10 @@ test('Run projection derives coding artifacts, approvals, and verification from 
   assert.match(projection.artifacts[2]?.diff?.text ?? '', /diff -- src\/app\.ts/)
   assert.equal(projection.approvals[0]?.decision, 'approve')
   assert.equal(projection.verification?.result, 'passed')
+})
+
+test('Run export redacts credential markers and private content consistently', () => {
+  const jsonl = redactRunJsonl([event({ sequence: 1, type: 'tool.receipt', payload: { output: 'private source', authorization: 'Bearer sk-super-secret-token', nested: 'token=abc' } })])
+  assert.doesNotMatch(jsonl, /private source|sk-super-secret-token|token=abc/)
+  assert.match(jsonl, /\[redacted\]/)
 })

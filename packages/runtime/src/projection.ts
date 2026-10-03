@@ -53,6 +53,15 @@ export interface RunProjection {
   verification?: Verification;
 }
 
+/** Serialize a Run's public ledger without leaking credentials or private file contents. */
+export function redactRunJsonl(events: readonly DomainEvent[]): string {
+  return events.map((event) => JSON.stringify(redactRunEvent(event))).join('\n');
+}
+
+export function redactRunEvent(event: DomainEvent): DomainEvent {
+  return { ...event, payload: redactRunValue(event.payload) as Record<string, unknown> };
+}
+
 /** Build the same Run/Artifact/Approval/Verification read model for all surfaces. */
 export function buildRunProjection(events: readonly DomainEvent[], run?: Run): RunProjection {
   const projectedRun = run ?? reduceRunEvents(events);
@@ -156,4 +165,25 @@ function isVerification(value: unknown): value is Verification {
   return (record?.result === 'passed' || record?.result === 'failed' || record?.result === 'unknown')
     && typeof record.verifier === 'string'
     && Array.isArray(record.evidence);
+}
+
+const REDACTED_KEY = /api[-_]?key|authorization|cookie|secret|password|token/i;
+const PRIVATE_VALUE_KEY = /^(content|output|body|diff|fileContent|privateFile)$/i;
+
+function redactRunValue(value: unknown, depth = 0): unknown {
+  if (depth > 6) return '[truncated]';
+  if (Array.isArray(value)) return value.slice(0, 100).map((item) => redactRunValue(item, depth + 1));
+  if (typeof value === 'string') return redactRunText(value).slice(0, 2_000);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).slice(0, 100).map(([key, item]) => [
+    key,
+    REDACTED_KEY.test(key) || PRIVATE_VALUE_KEY.test(key) ? '[redacted]' : redactRunValue(item, depth + 1),
+  ]));
+}
+
+function redactRunText(value: string): string {
+  return value
+    .replace(/(?:api[-_ ]?key|authorization|cookie|secret|password|token)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi, '[redacted]')
+    .replace(/\b(?:sk|pk)-[A-Za-z0-9_-]{8,}\b/g, '[redacted]')
+    .replace(/\/(?:Users|private|tmp)\/[^\s]+/g, '[workspace-path]');
 }

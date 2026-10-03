@@ -2,6 +2,7 @@ import {
   buildRunProjection,
   InMemoryEventStore,
   MockProvider,
+  redactRunJsonl,
   RuntimeFacade,
   reduceRunEvents,
   type ProviderResponse,
@@ -55,7 +56,7 @@ async function exportRun(runId: string): Promise<void> {
     if (!events.length) throw new Error(`Unknown run: ${runId}`)
     const run = reduceRunEvents(events, runId)
     const projection = buildRunProjection(events, run)
-    const jsonl = database.store.exportJsonl ? await database.store.exportJsonl(runId) : events.map((event) => JSON.stringify(event)).join('\n')
+    const jsonl = database.store.exportJsonl ? await database.store.exportJsonl(runId) : redactRunJsonl(events)
     console.log(JSON.stringify({ runId, jsonl, projection, artifacts: projection.artifacts }, null, 2))
   } finally {
     await database.store.close()

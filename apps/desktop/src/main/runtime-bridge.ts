@@ -1,4 +1,4 @@
-import { buildRunProjection, reduceRunEvents, type DomainEvent, type RuntimeFacade, type Session, type Task } from '@helm/runtime'
+import { buildRunProjection, redactRunJsonl, reduceRunEvents, type DomainEvent, type RuntimeFacade, type Session, type Task } from '@helm/runtime'
 import {
   IPC_CHANNELS,
   isRunId,
@@ -119,10 +119,9 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     if (!events.length) throw new Error('Unknown run.')
     const run = reduceRunEvents(events, request.runId)
     const projection = buildRunProjection(events, run)
-    const sanitizedEvents = events.map(sanitizeEvent)
     const response: RunExportResponse = {
       runId: request.runId,
-      jsonl: sanitizedEvents.map((event) => JSON.stringify(event)).join('\n'),
+      jsonl: redactRunJsonl(events),
       projection: sanitizeValue(projection) as RunExportResponse['projection'],
     }
     return response
