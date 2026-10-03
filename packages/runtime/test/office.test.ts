@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
   InMemoryEventStore,
@@ -218,6 +218,35 @@ test('PythonDocumentWorkerClient enforces the JSONL process boundary and preserv
     assert.equal(response.receipt?.artifact && (response.receipt.artifact as { sourceRunId?: string }).sourceRunId, 'run-client-1');
     assert.equal((response.receipt?.checks as { structure?: string }).structure, 'passed');
     assert.equal((response.receipt?.checks as { rendering?: string }).rendering, 'unknown');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Runtime plus the real Document Worker keeps missing DOCX rendering evidence UNKNOWN', async () => {
+  const root = await mkdtemp('/tmp/helm-office-e2e-');
+  try {
+    const scriptPath = resolve(fileURLToPath(new URL('../../../workers/document-worker/worker.py', import.meta.url)));
+    const runtime = createOfficeRuntime({
+      store: new InMemoryEventStore(),
+      provider: new MockProvider([
+        { kind: 'tool_call', name: 'office.docx.create', arguments: { path: 'report.docx', paragraphs: ['e2e'] } },
+        { kind: 'final', content: 'Report candidate.' },
+      ]),
+      worker: new PythonDocumentWorkerClient({ scriptPath, workspaceRoot: root, timeoutMs: 10_000 }),
+      workspaceId: 'office-e2e',
+      root,
+    });
+    const task = await runtime.createTask({ goal: 'create a DOCX report', workspaceId: 'office-e2e' });
+    const session = await runtime.createSession({ taskId: task.id });
+    const started = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+    const paused = await runtime.run(started.id);
+    assert.equal(paused.state, 'paused');
+    const result = await approveLatest(runtime, paused.id);
+    assert.equal(result.state, 'paused');
+    assert.equal(result.verification?.result, 'unknown');
+    assert.match(result.verification?.message ?? '', /rendering/i);
+    await access(resolve(root, 'report.docx'));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

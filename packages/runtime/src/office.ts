@@ -321,10 +321,22 @@ export class OfficeVerifier implements Verifier {
     if (!artifact?.uri || !isSha256(artifact.hash) || artifact.sourceRunId !== input.run.id) {
       return unknownOffice('Office artifact receipt is missing a workspace URI, hash, or source Run.');
     }
-    if (office.sideEffect === 'unknown' || office.verification === 'unknown' || hasUnknownCheck(office.checks)) {
-      return unknownOffice('Office evidence is incomplete or has an unknown side effect.', artifact);
-    }
     const operation = String(office.operation);
+    if (office.sideEffect === 'unknown') {
+      return unknownOffice('Office evidence has an unknown side effect.', artifact);
+    }
+    if (office.verification === 'unknown' || hasUnknownCheck(office.checks)) {
+      if (operation === 'docx_create' && (office.checks as Record<string, unknown> | undefined)?.rendering === 'unknown') {
+        return unknownOffice('DOCX rendering evidence is unknown.', artifact);
+      }
+      if (operation === 'pdf_extract' && (office.checks as Record<string, unknown> | undefined)?.coverage === 'unknown') {
+        return unknownOffice('PDF page coverage or OCR evidence is unknown.', artifact);
+      }
+      if (operation === 'xlsx_write_range' && (office.checks as Record<string, unknown> | undefined)?.scope === 'unknown') {
+        return unknownOffice('XLSX unauthorized-scope evidence is unknown.', artifact);
+      }
+      return unknownOffice('Office evidence is incomplete.', artifact);
+    }
     if (operation === 'docx_create' && !allChecksPassed(office.checks, ['structure', 'content', 'rendering'])) {
       return unknownOffice('DOCX requires structure, content, and rendering evidence.', artifact);
     }
