@@ -4,7 +4,7 @@ The worker is a bounded JSONL sidecar. It has no Agent loop, provider credential
 
 Supported operations:
 
-- `health`
+- `health` returns the worker version plus an explicit preflight snapshot for Python dependencies, the Office renderer, `pdftoppm`, and `tesseract`. Missing optional tools are reported as `unknown` capabilities; they never silently become a passing verification.
 - `inspect`
 - `docx_create` with `path` and bounded `paragraphs`. The receipt checks the DOCX package and paragraph content, then invokes `soffice` or `libreoffice` in a temporary directory with a bounded timeout when one is available. The rendering check proves bounded PDF conversion and opening; pixel-level comparison is outside this worker. If no renderer is available, `rendering` is `unknown` and delivery must remain blocked.
 - `xlsx_read_range` / `xlsx_write_range` with `path`, `sheet`, and a single `cell` or bounded `range`. Write receipts include target values and a before/after snapshot comparison; an oversized workbook returns an `unknown` scope check.

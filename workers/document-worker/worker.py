@@ -9,6 +9,7 @@ receipt. Optional DOCX/XLSX/PDF dependencies are detected per operation.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -97,7 +98,7 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
     request_id = str(request.get("id", "unknown"))
     operation = request.get("operation")
     if operation == "health":
-        return response(request_id, ok=True, result={"worker": "document-worker", "version": VERSION})
+        return response(request_id, ok=True, result=health_snapshot())
     try:
         if operation == "inspect":
             path = safe_path(request.get("path"), must_exist=True)
@@ -128,6 +129,33 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
         return response(request_id, ok=False, error=str(exc))
     except Exception:
         return response(request_id, ok=False, error="worker_operation_failed")
+
+
+def health_snapshot() -> dict[str, Any]:
+    renderer = shutil.which("soffice") or shutil.which("libreoffice")
+    pdftoppm = shutil.which("pdftoppm")
+    tesseract = shutil.which("tesseract")
+    return {
+        "worker": "document-worker",
+        "version": VERSION,
+        "tools": {
+            "officeRenderer": {"status": "available", "path": renderer} if renderer else {"status": "unavailable"},
+            "pdftoppm": {"status": "available", "path": pdftoppm} if pdftoppm else {"status": "unavailable"},
+            "tesseract": {"status": "available", "path": tesseract} if tesseract else {"status": "unavailable"},
+        },
+        "python": {
+            name: {"status": "available" if importlib.util.find_spec(name) else "unavailable"}
+            for name in ("openpyxl", "pypdf")
+        },
+        "checks": {
+            "docxRendering": "passed" if renderer else "unknown",
+            "pdfOcr": "passed" if pdftoppm and tesseract else "unknown",
+        },
+        "limitations": [
+            "DOCX rendering is page/openability evidence, not pixel comparison.",
+            "PDF OCR is UNKNOWN until both pdftoppm and tesseract are available.",
+        ],
+    }
 
 
 def handle_xlsx(request: dict[str, Any], request_id: str, operation: str) -> dict[str, Any]:

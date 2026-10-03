@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { InMemoryEventStore, MockProvider, RuntimeFacade, type ProviderResponse } from '@helm/runtime'
+import { InMemoryEventStore, MockProvider, RuntimeFacade, createOfficeRuntime, type OfficeWorkerClient, type OfficeWorkerRequest, type OfficeWorkerResponse, type ProviderResponse } from '@helm/runtime'
 import { createReadOnlyWorkspacePolicy, createWorkspaceInspectionExecutor, StaticToolRegistry, workspaceInspectProfile } from '@helm/runtime/tools'
 import { WorkspaceInspectVerifier } from '@helm/runtime'
 import { IPC_CHANNELS } from '../src/shared/ipc.js'
@@ -116,6 +116,73 @@ test('desktop IPC inspect uses the registered read-only Runtime path and artifac
     assert.equal(exported.projection.artifacts[0]?.sourceRunId, started.run.id)
     assert.equal(exported.episode.runId, started.run.id)
     assert.ok(exported.episode.trace.verifierIds.length > 0)
+    stop()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('desktop IPC exposes the same Office artifact and verification projection after approval', async () => {
+  const root = await mkdtemp('/tmp/helm-desktop-office-')
+  try {
+    const worker: OfficeWorkerClient = {
+      execute: async (request: OfficeWorkerRequest): Promise<OfficeWorkerResponse> => ({
+        id: request.id,
+        ok: true,
+        result: { paragraphs: 1 },
+        receipt: {
+          worker: 'document-worker', workerVersion: '0.3.0', sideEffect: 'known',
+          artifact: { type: 'docx', path: request.path, hash: 'a'.repeat(64), bytes: 128, sourceRunId: request.runId },
+          checks: { structure: 'passed', content: 'passed', rendering: 'passed' },
+        },
+      }),
+    }
+    const runtime = createOfficeRuntime({
+      store: new InMemoryEventStore(),
+      provider: new MockProvider([
+        { kind: 'tool_call', name: 'office.docx.create', arguments: { path: 'report.docx', paragraphs: ['hello'] } },
+        { kind: 'final', content: 'DOCX delivered.' },
+      ]),
+      worker,
+      workspaceId: 'workspace-office',
+      root,
+    })
+    const ipc = new FakeIpcMain()
+    const stop = registerRuntimeIpcHandlers({
+      ipc,
+      runtime,
+      workspaceIds: ['workspace-office'],
+      runtimeInfo: { appVersion: '0.1.0', platform: 'test', isPackaged: false },
+      emit: () => undefined,
+    })
+    const started = await ipc.invoke(IPC_CHANNELS.runStart, { goal: 'create office report', workspaceId: 'workspace-office' }) as { run: { id: string } }
+    await new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + 1_000
+      const poll = () => void runtime.getRun(started.run.id).then((run) => {
+        if (run?.state === 'paused') return resolve()
+        if (Date.now() >= deadline) return reject(new Error(`Office approval did not pause: ${run?.state}`))
+        setTimeout(poll, 5)
+      })
+      poll()
+    })
+    const events = await runtime.getEvents(started.run.id)
+    const approval = events.find((event) => event.type === 'approval.requested')
+    assert.ok(approval)
+    await ipc.invoke(IPC_CHANNELS.runApproval, { runId: started.run.id, approvalId: approval.payload.approvalId, workspaceId: 'workspace-office', decision: 'approve' })
+    await new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + 1_000
+      const poll = () => void runtime.getRun(started.run.id).then((run) => {
+        if (run?.state === 'completed') return resolve()
+        if (Date.now() >= deadline) return reject(new Error(`Office Run did not complete: ${run?.state}`))
+        setTimeout(poll, 5)
+      })
+      poll()
+    })
+    const snapshot = await ipc.invoke(IPC_CHANNELS.runSnapshot, started.run.id) as { projection: { verification?: { result: string }; artifacts: Array<{ type: string; path?: string; sourceRunId?: string }> } }
+    assert.equal(snapshot.projection.verification?.result, 'passed')
+    assert.equal(snapshot.projection.artifacts[0]?.type, 'docx')
+    assert.equal(snapshot.projection.artifacts[0]?.path, 'report.docx')
+    assert.equal(snapshot.projection.artifacts[0]?.sourceRunId, started.run.id)
     stop()
   } finally {
     await rm(root, { recursive: true, force: true })

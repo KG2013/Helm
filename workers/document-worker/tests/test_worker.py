@@ -27,6 +27,15 @@ class WorkerTest(unittest.TestCase):
             os.environ["HELM_WORKSPACE_ROOT"] = self.old_root
         self.temp.cleanup()
 
+    def test_health_reports_optional_render_and_ocr_dependencies(self):
+        with patch.object(worker.shutil, "which", side_effect=lambda command: "/usr/bin/fake" if command == "soffice" else None):
+            health = worker.handle({"id": "h", "operation": "health"})
+        self.assertTrue(health["ok"])
+        self.assertEqual(health["result"]["tools"]["officeRenderer"]["status"], "available")
+        self.assertEqual(health["result"]["tools"]["pdftoppm"]["status"], "unavailable")
+        self.assertEqual(health["result"]["checks"]["docxRendering"], "passed")
+        self.assertEqual(health["result"]["checks"]["pdfOcr"], "unknown")
+
     def test_docx_artifact_and_inspect_are_bounded(self):
         created = worker.handle({"id": "d", "operation": "docx_create", "path": "report.docx", "paragraphs": ["Hello"], "runId": "run-1"})
         self.assertTrue(created["ok"])
