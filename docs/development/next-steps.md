@@ -7,7 +7,7 @@
 目标：用户在中栏提交任务后，能够看到真实 Mock Run 的事件与结果，并能控制 Run、处理审批和识别失败/未知结果。
 
 - 定义 typed IPC 的输入、响应、错误和事件类型，并在主进程校验请求。
-- Main 组装 RuntimeFacade + InMemoryEventStore + MockProvider，Renderer 仅通过 preload 调用。
+- Main 组装 RuntimeFacade + 本地 SQLite 账本 + MockProvider，Renderer 仅通过 preload 调用；内存账本仍用于纯 Runtime fixture。
 - 输入框追加真实用户消息；任务响应和执行卡片由 Runtime 事件驱动，移除定时器模拟进度。
 - 提供 Run 查询、事件转发和重连补齐；用 Run id/sequence 防止消息串到其他会话或重复展示。
 - 接通暂停/恢复/取消，处理重复启动与调用在途时的竞争。

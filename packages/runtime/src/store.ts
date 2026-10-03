@@ -308,7 +308,12 @@ export class SqliteEventStore implements EventStore {
   }
 
   async close(): Promise<void> {
-    await this.db.close?.();
+    try {
+      await this.initialization;
+      await this.writeQueue;
+    } finally {
+      await this.db.close?.();
+    }
   }
 }
 
@@ -351,9 +356,17 @@ function redactExportEvent(event: DomainEvent): DomainEvent {
 function redactExportValue(value: unknown, depth = 0): unknown {
   if (depth > 6) return '[truncated]';
   if (Array.isArray(value)) return value.slice(0, 100).map((item) => redactExportValue(item, depth + 1));
+  if (typeof value === 'string') return redactExportText(value).slice(0, 2_000);
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).slice(0, 100).map(([key, item]) => [
     key,
     REDACTED_KEY.test(key) || PRIVATE_VALUE_KEY.test(key) ? '[redacted]' : redactExportValue(item, depth + 1),
   ]));
+}
+
+function redactExportText(value: string): string {
+  return value
+    .replace(/(?:api[-_ ]?key|authorization|cookie|secret|password|token)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi, '[redacted]')
+    .replace(/\b(?:sk|pk)-[A-Za-z0-9_-]{8,}\b/g, '[redacted]')
+    .replace(/\/(?:Users|private|tmp)\/[^\s]+/g, '[workspace-path]');
 }

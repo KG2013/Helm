@@ -1,6 +1,6 @@
 import { transitionRunState, isTerminalRunState, RunStateError } from './state-machine.js';
 import { TextOutputVerifier } from './verifier.js';
-import { buildProviderContext, toolProfileToSchema } from './context.js';
+import { buildProviderContext, normalizeProviderContextProjection, toolProfileToSchema } from './context.js';
 import type {
   Budget,
   DomainEvent,
@@ -179,7 +179,14 @@ export class RuntimeFacade {
       const index = run.steps + 1;
       await this.append({ type: 'step.started', taskId: task.id, sessionId: session.id, runId: run.id, payload: { stepId, index } });
       const context = await this.store.list(run.id);
-      const projected = this.contextAssembler.assemble({ task, session, run, events: context });
+      let projected: ReturnType<ContextAssembler['assemble']>;
+      try {
+        projected = normalizeProviderContextProjection(this.contextAssembler.assemble({ task, session, run, events: context }));
+      } catch (error) {
+        await this.failRun(run.id, `Provider context rejected: ${sanitizeDiagnostic(error)}`);
+        run = await this.requireRun(run.id);
+        break;
+      }
       const remainingMs = Math.max(1, run.budget.maxDurationMs - (this.clock.now().getTime() - startedAt));
       const request: ProviderRequest = {
         runId: run.id,
@@ -534,7 +541,7 @@ export class RuntimeFacade {
     try {
       const latestRun = await this.requireRun(run.id);
       const latestContext = await this.store.list(run.id);
-      const projected = this.contextAssembler.assemble({ task: pending.task, session: pending.session, run: latestRun, events: latestContext });
+      const projected = normalizeProviderContextProjection(this.contextAssembler.assemble({ task: pending.task, session: pending.session, run: latestRun, events: latestContext }));
       const result = await this.executor(pending.call, {
         ...pending.request,
         run: latestRun,

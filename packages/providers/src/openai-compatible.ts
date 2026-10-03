@@ -88,8 +88,8 @@ export class OpenAICompatibleProvider implements Provider {
   }
 
   async complete(request: ProviderRequest): Promise<ProviderResponse> {
-    const requestId = request.requestId ?? `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     const startedAt = Date.now()
+    const requestId = request.requestId ?? `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     const apiKey = this.getApiKey ? await this.getApiKey() : this.apiKey
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (apiKey) headers.authorization = `Bearer ${apiKey}`
@@ -164,6 +164,7 @@ export class OpenAICompatibleProvider implements Provider {
       yield { kind: 'done', finishReason: response.kind }
       return
     }
+    const startedAt = Date.now()
     const requestId = request.requestId ?? `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     const apiKey = this.getApiKey ? await this.getApiKey() : this.apiKey
     const headers: Record<string, string> = { 'content-type': 'application/json', 'x-request-id': requestId }
@@ -191,9 +192,24 @@ export class OpenAICompatibleProvider implements Provider {
           const delta = chunk.choices?.[0]?.delta
           if (delta?.content) yield { kind: 'text_delta', content: delta.content }
           for (const toolCall of delta?.tool_calls ?? []) yield { kind: 'tool_call_delta', id: toolCall.id ?? requestId, name: toolCall.function?.name, argumentsDelta: toolCall.function?.arguments }
-          if (chunk.usage) yield { kind: 'usage', usage: { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens, totalTokens: chunk.usage.total_tokens, requestId } }
+          if (chunk.usage) yield { kind: 'usage', usage: withCost({ inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens, totalTokens: chunk.usage.total_tokens, latencyMs: Date.now() - startedAt, requestId }, this.inputCostUsdPer1k, this.outputCostUsdPer1k) }
         }
-        if (part.done) break
+        if (part.done) {
+          const trailing = buffer.trim()
+          buffer = ''
+          if (trailing.startsWith('data:')) {
+            const data = trailing.slice(5).trim()
+            if (data === '[DONE]') { yield { kind: 'done', finishReason: 'stop' }; return }
+            try {
+              const chunk = JSON.parse(data) as OpenAIStreamChunk
+              const delta = chunk.choices?.[0]?.delta
+              if (delta?.content) yield { kind: 'text_delta', content: delta.content }
+              for (const toolCall of delta?.tool_calls ?? []) yield { kind: 'tool_call_delta', id: toolCall.id ?? requestId, name: toolCall.function?.name, argumentsDelta: toolCall.function?.arguments }
+              if (chunk.usage) yield { kind: 'usage', usage: withCost({ inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens, totalTokens: chunk.usage.total_tokens, latencyMs: Date.now() - startedAt, requestId }, this.inputCostUsdPer1k, this.outputCostUsdPer1k) }
+            } catch { /* ignore an incomplete trailing SSE frame */ }
+          }
+          break
+        }
       }
       yield { kind: 'done', finishReason: 'stop' }
     } catch (error) {
@@ -219,7 +235,13 @@ function buildMessages(request: ProviderRequest): Array<Record<string, unknown>>
   const messages: ProviderMessage[] = request.messages?.length
     ? request.messages
     : [{ role: 'user', content: buildPrompt(request) }]
-  const result = messages.map((message) => ({ role: message.role, content: redactProviderText(message.content).slice(0, 12_000), ...(message.name ? { name: message.name } : {}), ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}) }))
+  const result = messages.map((message) => ({
+    role: message.role,
+    content: redactProviderText(message.content).slice(0, 12_000),
+    ...(message.name ? { name: message.name } : {}),
+    ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
+    ...(message.toolCalls?.length ? { tool_calls: message.toolCalls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(redactProviderValue(call.arguments)) } })) } : {}),
+  }))
   const existingToolResults = new Set(result.filter((message) => message.role === 'tool' && typeof message.tool_call_id === 'string').map((message) => String(message.tool_call_id)))
   for (const toolResult of request.toolResults ?? []) {
     if (existingToolResults.has(toolResult.toolCallId)) continue

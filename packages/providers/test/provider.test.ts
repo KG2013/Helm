@@ -132,7 +132,7 @@ test('streaming capability parses OpenAI SSE chunks and preserves tool deltas', 
         start(controller) {
           controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"hel"}}]}\n\n'))
           controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"tool_calls":[{"id":"tool-1","function":{"name":"workspace.inspect","arguments":"{\\"path\\":\\"README.md\\"}"}}]}}]}\n\n'))
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+          controller.enqueue(encoder.encode('data: [DONE]'))
           controller.close()
         },
       })

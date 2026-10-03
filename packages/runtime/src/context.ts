@@ -12,6 +12,28 @@ export interface ProviderContextProjection {
   toolResults: ToolResult[];
 }
 
+/** Re-apply the Runtime's redaction and budget boundary to custom projectors. */
+export function normalizeProviderContextProjection(projection: ProviderContextProjection, maxBytes = 24_000): ProviderContextProjection {
+  const context: ProviderContext = {
+    ...projection.context,
+    items: projection.context.items.map((item) => ({ ...item, content: redactText(item.content).slice(0, 12_000), gap: item.gap ? redactText(item.gap).slice(0, 500) : undefined })),
+    messages: projection.context.messages.map((message) => ({
+      ...message,
+      content: redactText(message.content).slice(0, 12_000),
+      toolCalls: message.toolCalls?.map((call) => ({ ...call, arguments: summarizeRecord(call.arguments) ?? {} })),
+    })),
+    gaps: projection.context.gaps.map((gap) => redactText(gap).slice(0, 500)),
+    bytes: 0,
+  };
+  const toolResults = projection.toolResults.map((result) => ({
+    ...result,
+    output: summarizeValue(result.output),
+    error: result.error ? redactText(result.error).slice(0, 500) : undefined,
+    receipt: summarizeRecord(result.receipt),
+  }));
+  return { context: fitContext(context, Math.max(0, maxBytes)), toolResults };
+}
+
 /** Build a bounded, redacted provider context from Runtime-owned ledger facts. */
 export function buildProviderContext(task: Task, events: readonly DomainEvent[], maxBytes = 24_000): ProviderContextProjection {
   const safeGoal = redactText(task.goal).slice(0, 4_000);
@@ -41,13 +63,25 @@ export function buildProviderContext(task: Task, events: readonly DomainEvent[],
       items.push({ source: 'recent', version: String(event.sequence), content: `Step proposal: ${kind}` });
       continue;
     }
+    if (event.type === 'tool.call') {
+      const toolCallId = typeof payload.id === 'string' ? payload.id : `event-${event.sequence}`;
+      messages.push({
+        role: 'assistant',
+        content: '',
+        toolCalls: [{
+          id: toolCallId,
+          name: typeof payload.name === 'string' ? payload.name : 'tool',
+          arguments: payload.arguments && typeof payload.arguments === 'object' ? payload.arguments as Record<string, unknown> : {},
+        }],
+      });
+      continue;
+    }
     if (event.type === 'run.checkpoint') {
       items.push({ source: 'cold', version: String(event.sequence), content: 'Run checkpoint available.' });
     }
   }
 
-  const context = fitContext({ version: 'v1', items, messages, gaps, bytes: 0, truncated: false }, Math.max(0, maxBytes));
-  return { context, toolResults };
+  return normalizeProviderContextProjection({ context: { version: 'v1', items, messages, gaps, bytes: 0, truncated: false }, toolResults }, maxBytes);
 }
 
 export function toolProfileToSchema(profile: ToolProfile): {
@@ -105,7 +139,7 @@ function fitContext(input: ProviderContext, maxBytes: number): ProviderContext {
     }
 
     if (candidate.messages.length > 1) {
-      candidate.messages = candidate.messages.slice(0, -1);
+      candidate.messages = dropLastMessagePair(candidate.messages);
       continue;
     }
     if (candidate.items.length > 1) {
@@ -127,11 +161,23 @@ function fitContext(input: ProviderContext, maxBytes: number): ProviderContext {
     candidate.items = [];
   }
 
-  // The default budget is large enough for the envelope metadata. Keep the
-  // final value internally consistent even when a caller supplies an extreme
-  // budget that cannot hold the fixed JSON envelope.
+  // The default budget is large enough for the envelope metadata. Reject an
+  // impossible budget instead of silently violating the bounded-context contract.
   candidate.bytes = byteLength({ ...candidate, bytes: 0 });
+  if (candidate.bytes > maxBytes) throw new Error('Provider context budget is too small for its envelope.');
   return candidate;
+}
+
+function dropLastMessagePair(messages: ProviderMessage[]): ProviderMessage[] {
+  const last = messages[messages.length - 1];
+  if (last?.role === 'tool' && last.toolCallId) {
+    const assistantIndex = messages.findIndex((message) => message.role === 'assistant' && message.toolCalls?.some((call) => call.id === last.toolCallId));
+    if (assistantIndex >= 0) return messages.filter((_message, index) => index !== assistantIndex && index !== messages.length - 1);
+  }
+  if (last?.role === 'assistant' && last.toolCalls?.length) {
+    return messages.slice(0, -1);
+  }
+  return messages.slice(0, -1);
 }
 
 function shorten(value: string): string {

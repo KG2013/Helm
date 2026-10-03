@@ -36,12 +36,13 @@ test('native SQLite migrates, serializes concurrent appends, projects facts, and
     await first.store.appendMany([
       { type: 'run.created', taskId: 'task-1', sessionId: 'session-1', runId: 'run-1', payload: { id: 'run-1', taskId: 'task-1', sessionId: 'session-1', state: 'ready', createdAt: 'now', updatedAt: 'now', steps: 0, reviewerRounds: 0, budget: { maxSteps: 2, maxDurationMs: 1000, maxReviewerRounds: 0 } } },
       { type: 'run.checkpoint', taskId: 'task-1', sessionId: 'session-1', runId: 'run-1', payload: { stepId: 'step-1', state: 'ready', output: 'private text' } },
-      { type: 'tool.receipt', taskId: 'task-1', sessionId: 'session-1', runId: 'run-1', payload: { stepId: 'step-1', toolCallId: 'tool-1', ok: true, output: 'private text', receipt: { sideEffect: 'none' } } },
+      { type: 'tool.receipt', taskId: 'task-1', sessionId: 'session-1', runId: 'run-1', payload: { stepId: 'step-1', toolCallId: 'tool-1', ok: true, output: 'private text', error: 'Authorization: Bearer secret-value', receipt: { sideEffect: 'none' } } },
       { type: 'verification.result', taskId: 'task-1', sessionId: 'session-1', runId: 'run-1', payload: { stepId: 'step-1', verification: { result: 'passed', verifier: 'test', evidence: [] } } },
     ]);
     const jsonl = await first.store.exportJsonl();
     assert.equal(jsonl.split('\n').length, 6);
     assert.equal(jsonl.includes('sk-secret'), false);
+    assert.equal(jsonl.includes('secret-value'), false);
     assert.equal(jsonl.includes('private text'), false);
     assert.equal(first.store.replayRun ? (await first.store.replayRun('run-1')).id : '', 'run-1');
     const projection = first.database.all<{ count: number }>('SELECT COUNT(*) AS count FROM helm_checkpoints');

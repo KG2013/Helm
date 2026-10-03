@@ -74,7 +74,8 @@ test('provider context enforces its byte budget and redacts tool errors', () => 
     payload: { toolCallId: 'tool-1', name: 'read', ok: false, error: 'Authorization: Bearer secret-value', output: 'private output' },
   }], 1024)
   assert.ok(context.bytes <= 1024)
-  assert.equal(JSON.stringify(context).includes('secret-value'), false)
+    assert.equal(JSON.stringify(context).includes('secret-value'), false)
+    assert.equal(context.messages.some((message) => message.toolCalls?.some((call) => JSON.stringify(call.arguments).includes('secret-value'))), false)
 })
 
 test('a provider-driven inspect Run receives Tool schema and structured ToolResult through the Runtime Facade', async () => {
@@ -104,6 +105,7 @@ test('a provider-driven inspect Run receives Tool schema and structured ToolResu
     assert.equal(requests[0]?.contextEnvelope?.version, 'v1')
     assert.equal(requests[1]?.toolResults?.length, 1)
     assert.equal(requests[1]?.toolResults?.[0]?.name, 'workspace.inspect')
+    assert.equal(requests[1]?.messages?.some((message) => message.role === 'assistant' && message.toolCalls?.[0]?.name === 'workspace.inspect'), true)
     assert.equal(requests[1]?.messages?.filter((message) => message.role === 'tool').length, 1)
   } finally {
     await rm(root, { recursive: true, force: true })

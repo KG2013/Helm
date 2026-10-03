@@ -168,6 +168,7 @@ export interface ProviderMessage {
   content: string;
   name?: string;
   toolCallId?: ID;
+  toolCalls?: Array<{ id: ID; name: string; arguments: Record<string, unknown> }>;
 }
 
 export interface ContextItem {
