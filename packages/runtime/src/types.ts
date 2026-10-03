@@ -45,6 +45,9 @@ export interface Budget {
   maxDurationMs: number;
   maxTokens?: number;
   maxCostUsd?: number;
+  maxLatencyMs?: number;
+  maxRetries?: number;
+  maxCacheMisses?: number;
   maxReviewerRounds: number;
 }
 
@@ -54,6 +57,10 @@ export interface TaskInput {
   input?: unknown;
   budget?: Partial<Budget>;
   completionCriteria?: string[];
+  /** Optional fixed evaluation metadata carried into the replayable Run/Episode. */
+  evaluationCase?: string;
+  evaluationSplit?: 'dev' | 'holdout';
+  evaluationAttempt?: number;
 }
 
 export interface Task extends TaskInput {
@@ -86,6 +93,9 @@ export interface Run {
   checkpoint?: Checkpoint;
   ownerId?: ID;
   leaseExpiresAt?: string;
+  evaluationCase?: string;
+  evaluationSplit?: 'dev' | 'holdout';
+  evaluationAttempt?: number;
 }
 
 export interface Turn {
@@ -148,6 +158,21 @@ export interface Evidence {
   summary: string;
   uri?: string;
   hash?: string;
+}
+
+export interface ArtifactReference {
+  uri: string;
+  type: string;
+  hash: string;
+  bytes: number;
+  sourceRunId: ID;
+  path?: string;
+  limitations?: string[];
+}
+
+export interface ArtifactStore {
+  put(input: { runId: ID; type: string; content: string | Uint8Array; extension?: string; path?: string; limitations?: string[] }): Promise<ArtifactReference>;
+  read(uri: string): Promise<Uint8Array>;
 }
 
 export interface ProviderCapabilities {
@@ -294,6 +319,8 @@ export interface TokenUsage {
   costUsd?: number;
   cachedInputTokens?: number;
   latencyMs?: number;
+  retries?: number;
+  cacheHit?: boolean;
   requestId?: ID;
 }
 
@@ -320,7 +347,22 @@ export interface ToolPolicyResult {
 }
 
 export interface ToolPolicy {
+  /** Stable policy identity/version used when binding approvals. */
+  id?: string;
+  version?: string;
   decide(input: ToolPolicyInput): Promise<ToolPolicyResult> | ToolPolicyResult;
+}
+
+export interface ApprovalBinding {
+  approvalId: ID;
+  nonce: ID;
+  toolProfileId: string;
+  toolProfileVersion: string;
+  actionHash: string;
+  workspaceId: ID;
+  policyVersion: string;
+  principal: ID;
+  expiresAt: string;
 }
 
 export interface ToolProfile {
@@ -395,9 +437,12 @@ export type EventType =
   | 'run.checkpoint'
   | 'usage.recorded'
   | 'run.owner_acquired'
-  | 'run.owner_released';
+  | 'run.owner_released'
+  | 'experience.candidate_created'
+  | 'experience.candidate_reviewed';
 
 export interface UsageRecord {
+  kind?: 'provider' | 'tool' | 'worker';
   requestId?: ID;
   provider: string;
   model: string;
@@ -406,7 +451,10 @@ export interface UsageRecord {
   totalTokens?: number;
   costUsd?: number;
   latencyMs?: number;
+  retries?: number;
+  cacheHit?: boolean;
   failureCode?: ProviderFailureCode;
+  operation?: string;
 }
 
 export interface Episode {
@@ -416,6 +464,20 @@ export interface Episode {
   events: DomainEvent[];
   usage: UsageRecord[];
   redactedJsonl: string;
+  trace: {
+    taskId?: ID;
+    sessionId?: ID;
+    providerIds: string[];
+    toolProfiles: string[];
+    approvalIds: ID[];
+    artifactUris: string[];
+    verifierIds: string[];
+    requestIds: ID[];
+    traceIds: ID[];
+  };
+  evaluationCase?: string;
+  evaluationSplit?: 'dev' | 'holdout';
+  evaluationAttempt?: number;
 }
 
 export interface ReleaseGateResult {
@@ -460,6 +522,8 @@ export interface EventStore {
   replayRun(runId: ID): Promise<Run>;
   replayRunAsync?(runId: ID): Promise<Run>;
   getRun(runId: ID): Promise<Run | undefined>;
+  /** Atomically claim or renew a Run lease when the backing store supports it. */
+  tryAcquireRunLease?(input: { runId: ID; ownerId: ID; leaseExpiresAt: string; now: string }): Promise<DomainEvent | boolean>;
   exportJsonl?(runId?: ID): Promise<string>;
   close?(): Promise<void> | void;
 }
@@ -476,7 +540,11 @@ export interface RuntimeOptions {
   ids?: RuntimeIdFactory;
   defaultBudget?: Partial<Budget>;
   ownerId?: ID;
+  /** Stable local principal used for approval binding across owner reconnects. */
+  principalId?: ID;
   leaseDurationMs?: number;
+  approvalTtlMs?: number;
+  artifactStore?: ArtifactStore;
 }
 
 export type RuntimeEventListener = (event: DomainEvent) => void;

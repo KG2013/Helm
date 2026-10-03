@@ -1,6 +1,6 @@
 # 下一步实施计划
 
-更新日期：2026-10-03。架构已确认；#1–#4、T1/#6、T2/#7 的 SQLite 核心与 T3/#8 的 Provider 合同已完成，跨客户端 ownership、真实流式和执行能力仍按后续切片推进。当前能力参见 [实现状态](implementation-status.md)。
+更新日期：2026-10-03。架构已确认；#1–#4、T1/#6 至 T10/#15 的 Runtime 核心、Office worker、Episode/release gate、ownership/reconnect 和 Experience Candidate 已接入。当前剩余工作集中在真实 coding sandbox、厂商联调、目标环境 Office 依赖和打包重启回归。当前能力参见 [实现状态](implementation-status.md)。
 
 ## 1. 对话界面接入 Runtime：已完成（#1–#4）
 
@@ -15,17 +15,17 @@
 
 完成条件已由 #1–#4 验证：桌面提交可追踪到 Task/Session/Run；运行状态、验收与 CLI 复用 Runtime；取消后不追加新的执行动作；拒绝审批不调用 executor；approve 续行同一 proposal；快照可重建 Main 中仍存活的 Run。此阶段不宣称应用退出后的恢复。
 
-## 2. 受限 Coding 流程（核心已完成，#9）
+## 2. 受限 Coding 流程（Runtime 核心已完成，#9）
 
 目标链路：inspect → read → proposal → policy/approval → edit → test → diff → verification。
 
-确定性 fixture 已覆盖 read → approval → edit/patch → test → diff → verification；工具已注册 schema、采用 workspace 路径守卫、受控测试命令和可替换 sandbox；sandbox 不可用时拒绝执行。禁止将工作区目录或 Git worktree 当作执行隔离。Runtime 的同一 Run/Artifact/Approval/Verification projection 已接入 CLI JSON 与 Desktop snapshot/export；Coding Runtime 的入口调度和 Renderer diff/test 细节展示仍待接线。
+确定性 fixture 已覆盖 read → approval → edit/patch → test → diff → verification；工具已注册 schema、采用 workspace 路径守卫、受控测试命令和可替换 sandbox；sandbox 不可用时拒绝执行。禁止将工作区目录或 Git worktree 当作执行隔离。Runtime 的同一 Run/Artifact/Approval/Verification projection 已接入 CLI JSON、`export` 和 Desktop snapshot/export。生产入口仍要求外部受限 sandbox 注入，Renderer 的 Coding diff/test 细节面板待补。
 
 核心完成条件已由 Runtime fixture 覆盖：一次小修改有可审阅 diff、测试退出码、Coding Artifact 和 Coding Verifier；越界路径、拒绝授权和 sandbox 缺失分别进入明确结果。CLI/Desktop 已读取同一事件投影并提供脱敏导出；Coding 入口调度和完整 UI 交付仍属于后续切片。
 
-## 3. 真实 Provider 与凭据（#8 已完成合同，真实联调待补）
+## 3. 真实 Provider 与凭据（#8 合同已完成）
 
-Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证；Provider-neutral Context/Tool/ToolResult、request/attempt/trace、超时/取消、usage/cost 和错误分类已有 fixture 合同。下一步联调 DeepSeek 和智谱，并补真实流式协议。凭据由主进程/CLI 通过 Keychain resolver 取得，数据库只存引用。
+Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证；Provider-neutral Context/Tool/ToolResult、request/attempt/trace、超时/取消、usage/cost、失败分类和 SSE 解析已有 fixture 合同。DeepSeek 和智谱真实凭据联调仍需在对应账户和环境中执行。凭据由主进程/CLI 通过 Keychain resolver 取得，数据库只存引用。
 
 完成条件：每家至少一个可重复文本/工具任务通过；配置与事件不含密钥；中止和失败不会把未知执行结果当成成功。测试 fixture 通过和真实厂商调用成功要分别记录。
 
@@ -35,13 +35,13 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 原生 SQLite contract tests 已覆盖迁移、事务、序列、projection 和恢复核心；Runtime owner/lease、stale owner 控制拒绝与 shutdown 安全暂停已接入，跨进程 owner arbitration 和完整 reconnect smoke 仍属于后续 T9/#14。
 
-## 5. Office Worker Runtime 核心已接线，桌面交付仍待补
+## 5. Office Worker Runtime 与交付已接线
 
 受限 JSONL worker 已提供 DOCX package/content 与可选有界 `soffice`/`libreoffice` PDF 转换检查、XLSX 指定单元格/范围读写与 target/scope snapshot、PDF text-layer 分页来源与 coverage，并在 `pdftoppm`/`tesseract` 可用时提供带页码和 confidence 的 OCR。所有路径均返回 hash、source Run、worker Receipt、checks 与 limitations；缺渲染、OCR、覆盖率或未授权范围证据时返回 UNKNOWN 并暂停交付。
 
-真实 worker 进程管理和 Runtime E2E 已覆盖；下一步接入 CLI/Desktop 的同一 Artifact/Verification 投影，并在目标环境验证 OCR 工具链。当前 DOCX 检查验证有界转换和可打开的 PDF 页数，不做像素级视觉对比；缺少渲染器或 OCR 命令时保持 UNKNOWN。
+真实 worker 进程管理、Runtime E2E 和 CLI/Desktop 的同一 Artifact/Verification projection 已接入；目标环境仍需确认 OCR 工具链。当前 DOCX 检查验证有界转换和可打开的 PDF 页数，不做像素级视觉对比；缺少渲染器或 OCR 命令时保持 UNKNOWN。
 
-随后补跨恢复预算、重试/限流分类、诊断导出、故障注入与 Experience Candidate review UI；UsageLedger、Episode、release gate 和成对 Context compaction 核心已建立，仍需接入固定 Coding/Office dev/holdout 三轮运行。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化等维持 P0 范围约束。
+随后补真实 coding sandbox 适配、固定 Coding/Office dev/holdout 三轮运行的现场记录、打包应用重启回归和 Experience Candidate review UI；UsageLedger、Episode、release gate 和成对 Context compaction 核心已建立。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化等维持 P0 范围约束。
 
 ## 与原架构阶段的关系
 

@@ -115,7 +115,7 @@ function summarizeRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 30).map(([key, item]) => [
     key,
-    /api[-_]?key|authorization|cookie|secret|password|token|content|body|diff|private/i.test(key) ? '[redacted]' : summarizeValue(item),
+    /api[-_]?key|authorization|cookie|secret|password|token|content|body|diff|private|oldText|newText/i.test(key) ? '[redacted]' : summarizeValue(item),
   ]));
 }
 

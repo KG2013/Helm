@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstat, readFile, realpath, writeFile } from 'node:fs/promises';
+import { lstat, readFile, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { MockProvider } from './mock-provider.js';
 import { RuntimeFacade } from './runtime.js';
@@ -15,10 +15,13 @@ import type {
   ToolProfile,
   ToolRegistry,
   Verifier,
+  ArtifactStore,
 } from './types.js';
 
 export interface CodingSandbox {
   run(command: string, args: string[], cwd: string): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  /** Mutations must be performed by the sandbox backend; host write fallback is forbidden. */
+  writeFile?(path: string, content: string): Promise<void>;
 }
 
 export const workspaceInspectProfile: ToolProfile = {
@@ -108,7 +111,7 @@ export function createTaskAwareVerifier(fallback: Verifier = new TextOutputVerif
   };
 }
 
-export function createWorkspaceInspectionRuntime(options: { store: EventStore; provider: Provider; workspaceId: string; root: string }): RuntimeFacade {
+export function createWorkspaceInspectionRuntime(options: { store: EventStore; provider: Provider; workspaceId: string; root: string; artifactStore?: ArtifactStore; ownerId?: string }): RuntimeFacade {
   const registry = new StaticToolRegistry([workspaceInspectProfile]);
   return new RuntimeFacade({
     store: options.store,
@@ -117,10 +120,12 @@ export function createWorkspaceInspectionRuntime(options: { store: EventStore; p
     policy: createReadOnlyWorkspacePolicy(registry, { roots: { [options.workspaceId]: options.root } }),
     executor: createWorkspaceInspectionExecutor({ roots: { [options.workspaceId]: options.root } }),
     verifier: createTaskAwareVerifier(),
+    artifactStore: options.artifactStore,
+    ownerId: options.ownerId,
   });
 }
 
-export function createCodingRuntime(options: { store: EventStore; provider: Provider; workspaceId: string; root: string; sandbox?: CodingSandbox }): RuntimeFacade {
+export function createCodingRuntime(options: { store: EventStore; provider: Provider; workspaceId: string; root: string; sandbox?: CodingSandbox; artifactStore?: ArtifactStore; ownerId?: string }): RuntimeFacade {
   const registry = new StaticToolRegistry(codingToolProfiles);
   return new RuntimeFacade({
     store: options.store,
@@ -129,17 +134,23 @@ export function createCodingRuntime(options: { store: EventStore; provider: Prov
     policy: createCodingPolicy(registry, { roots: { [options.workspaceId]: options.root }, sandboxAvailable: Boolean(options.sandbox) }),
     executor: createCodingExecutor({ roots: { [options.workspaceId]: options.root }, sandbox: options.sandbox }),
     verifier: new CodingVerifier(),
+    artifactStore: options.artifactStore,
+    ownerId: options.ownerId,
   });
 }
 
 export function createCodingPolicy(registry: ToolRegistry, options: { roots: Readonly<Record<string, string>>; sandboxAvailable: boolean }): ToolPolicy {
   return {
+    id: 'coding-policy',
+    version: 'v1',
     decide: ({ call, task }) => {
       const profile = registry.get(call.name);
       if (!profile) return { decision: 'deny', reason: `Tool ${call.name} is not registered.` };
       if (profile.allowedArguments && Object.keys(call.arguments).some((key) => !profile.allowedArguments?.includes(key))) {
         return { decision: 'deny', reason: 'Coding tool arguments contain an unsupported field.' };
       }
+      const argumentError = validateCodingArguments(call);
+      if (argumentError) return { decision: 'deny', reason: argumentError };
       if (call.name !== 'workspace.read' && call.name !== 'workspace.diff' && !options.sandboxAvailable) {
         return { decision: 'deny', reason: 'Sandbox is unavailable; coding mutation or test execution is rejected.' };
       }
@@ -166,6 +177,7 @@ export function createCodingExecutor(options: { roots: Readonly<Record<string, s
       if (!options.sandbox) return failedCoding('Sandbox is unavailable; host command execution is rejected.');
       const command = call.arguments.command;
       if (call.name === 'workspace.test' && typeof command !== 'string') return failedCoding('Test command is required.');
+      if (call.name === 'workspace.test' && !isAllowedTestCommand(command as string)) return failedCoding('Test command is outside the bounded Coding profile.');
       const args = Array.isArray(call.arguments.args) && call.arguments.args.every((arg) => typeof arg === 'string') ? call.arguments.args as string[] : [];
       const result = await options.sandbox.run(call.name === 'workspace.diff' ? 'git' : command as string, call.name === 'workspace.diff' ? ['diff', '--no-ext-diff', ...(typeof call.arguments.path === 'string' ? ['--', call.arguments.path] : [])] : args, await realpath(rootPath));
       const output = `${result.stdout}${result.stderr ? `\n${result.stderr}` : ''}`.slice(0, 64_000);
@@ -179,7 +191,7 @@ export function createCodingExecutor(options: { roots: Readonly<Record<string, s
       const content = (await readFile(target, 'utf8')).slice(0, 64_000);
       return { ok: true, output: content, receipt: { tool: call.name, profile: `${call.name}@v1`, sideEffect: 'none', path: pathValue, artifact: codingArtifact(call, content, request.run.id) } };
     }
-    if (!options.sandbox) return failedCoding('Sandbox is unavailable; file mutation is rejected.');
+    if (!options.sandbox?.writeFile) return failedCoding('Sandbox write boundary is unavailable; file mutation is rejected.');
     const before = await readFile(target, 'utf8').catch(() => '');
     let after: string;
     if (call.name === 'workspace.edit' && typeof call.arguments.content === 'string') after = call.arguments.content;
@@ -191,7 +203,9 @@ export function createCodingExecutor(options: { roots: Readonly<Record<string, s
     if (Buffer.byteLength(after, 'utf8') > 64_000) return failedCoding('Edited file exceeds the bounded limit.');
     const targetBeforeWrite = await resolveCodingPath(rootPath, pathValue, true);
     if (targetBeforeWrite !== target) return failedCoding('Workspace path changed during coding edit.');
-    await writeFile(target, after, 'utf8');
+    await options.sandbox.writeFile(target, after);
+    const actual = await readFile(target, 'utf8').catch(() => undefined);
+    if (actual !== after) return failedCoding('Sandbox write result could not be verified.');
     return { ok: true, output: `Updated ${pathValue}.`, receipt: { tool: call.name, profile: `${call.name}@v1`, sideEffect: 'known', path: pathValue, beforeHash: sha256(before), afterHash: sha256(after), artifact: codingArtifact(call, after, request.run.id) } };
   };
 }
@@ -206,16 +220,32 @@ export class CodingVerifier implements Verifier {
       ...(receipt.receipt && typeof receipt.receipt === 'object' ? receipt.receipt as Record<string, unknown> : {}),
     }));
     const hasRead = successful.some((receipt) => receipt.name === 'workspace.read' || receipt.tool === 'workspace.read');
-    const hasEdit = successful.some((receipt) => receipt.name === 'workspace.edit' || receipt.name === 'workspace.patch' || receipt.tool === 'workspace.edit' || receipt.tool === 'workspace.patch');
+    const edit = successful.find((receipt) => receipt.name === 'workspace.edit' || receipt.name === 'workspace.patch' || receipt.tool === 'workspace.edit' || receipt.tool === 'workspace.patch');
+    const hasEdit = Boolean(edit);
     const test = successful.find((receipt) => receipt.name === 'workspace.test' || receipt.tool === 'workspace.test');
     const diff = successful.find((receipt) => receipt.name === 'workspace.diff' || receipt.tool === 'workspace.diff');
-    if (!hasRead || !hasEdit || !test || !diff || test.exitCode !== 0 || !diff.artifact) return { result: 'unknown' as const, verifier: this.id, evidence: [], message: 'Coding Delivery requires read, edit/patch, passing test, and diff evidence.' };
-    return { result: 'passed' as const, verifier: this.id, evidence: [{ type: 'coding-artifact', summary: 'Read, edit, test, and diff receipts are present.' }], message: 'Coding artifact is ready for delivery.' };
+    const editArtifact = edit?.artifact && typeof edit.artifact === 'object' ? edit.artifact as Record<string, unknown> : undefined;
+    const diffArtifact = diff?.artifact && typeof diff.artifact === 'object' ? diff.artifact as Record<string, unknown> : undefined;
+    const testArtifact = test?.artifact && typeof test.artifact === 'object' ? test.artifact as Record<string, unknown> : undefined;
+    if (!hasRead || !hasEdit || !test || !diff || test.exitCode !== 0 || !editArtifact?.hash || !testArtifact?.hash || !diffArtifact?.hash || !diffArtifact.path) return { result: 'unknown' as const, verifier: this.id, evidence: [], message: 'Coding Delivery requires read, edit/patch, passing test, diff, changed-file scope, and hashes.' };
+    return {
+      result: 'passed' as const,
+      verifier: this.id,
+      evidence: [
+        { type: 'coding-artifact', summary: 'Read, edit, test, and diff receipts are present with changed-file scope.' },
+        { type: 'changed-file', summary: String(diffArtifact.path), uri: `workspace://${String(diffArtifact.path)}`, hash: String(editArtifact.hash) },
+        { type: 'test', summary: `Test exited with ${String(test.exitCode)}.`, hash: String(testArtifact.hash) },
+        { type: 'diff', summary: 'Reviewable diff receipt is present.', hash: String(diffArtifact.hash) },
+      ],
+      message: 'Coding artifact is ready for delivery.',
+    };
   }
 }
 
 export function createReadOnlyWorkspacePolicy(registry: ToolRegistry, options: { roots?: Readonly<Record<string, string>> } = {}): ToolPolicy {
   return {
+    id: 'workspace-policy',
+    version: 'v1',
     decide: ({ call, task }) => {
       const profile = registry.get(call.name);
       if (!profile) return { decision: 'deny', reason: `Tool ${call.name} is not registered.` };
@@ -305,7 +335,7 @@ export function workspaceInspectionMockResponse(request: ProviderRequest): Provi
 }
 
 function parseWorkspaceInspectionGoal(goal: string): RegExpExecArray | undefined {
-  return /^inspect(?:\s+([^\s]+))?$/i.exec(goal.trim()) ?? undefined;
+  return /^inspect\s+([^\s]+)$/i.exec(goal.trim()) ?? undefined;
 }
 
 function inspectPath(stat: Awaited<ReturnType<typeof lstat>>, requestedPath: string): Record<string, unknown> {
@@ -359,7 +389,28 @@ function sha256(value: string): string {
 }
 
 function codingArtifact(call: ToolCall, content: string, runId: string): Record<string, unknown> {
-  return { type: 'coding', sourceRunId: runId, action: call.name, path: typeof call.arguments.path === 'string' ? call.arguments.path : undefined, hash: sha256(content), bytes: Buffer.byteLength(content, 'utf8') };
+  const path = typeof call.arguments.path === 'string' ? call.arguments.path : undefined;
+  return { type: call.name === 'workspace.diff' ? 'coding-diff' : call.name === 'workspace.test' ? 'coding-test' : 'coding', sourceRunId: runId, action: call.name, path, changedFiles: path ? [path] : [], hash: sha256(content), bytes: Buffer.byteLength(content, 'utf8') };
+}
+
+function isAllowedTestCommand(command: string): boolean {
+  return ['pnpm', 'npm', 'yarn', 'node', 'python', 'python3', 'pytest', 'cargo', 'go'].includes(command)
+    && !/[;&|<>$`\\]/.test(command);
+}
+
+function validateCodingArguments(call: ToolCall): string | undefined {
+  const args = call.arguments;
+  if (call.name === 'workspace.read' || call.name === 'workspace.edit' || call.name === 'workspace.patch') {
+    if (typeof args.path !== 'string' || !args.path) return 'Coding file actions require a path.';
+  }
+  if (call.name === 'workspace.edit' && typeof args.content !== 'string') return 'Coding edit requires string content.';
+  if (call.name === 'workspace.patch' && (typeof args.oldText !== 'string' || typeof args.newText !== 'string')) return 'Coding patch requires oldText and newText.';
+  if (call.name === 'workspace.test') {
+    if (typeof args.command !== 'string' || !isAllowedTestCommand(args.command)) return 'Test command is outside the bounded Coding profile.';
+    if (args.args !== undefined && (!Array.isArray(args.args) || !args.args.every((arg) => typeof arg === 'string'))) return 'Test arguments must be strings.';
+  }
+  if (call.name === 'workspace.diff' && args.path !== undefined && typeof args.path !== 'string') return 'Coding diff path must be a string.';
+  return undefined;
 }
 
 async function resolveCodingPath(rootPath: string, requestedPath: string, forWrite: boolean): Promise<string | undefined> {

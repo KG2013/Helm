@@ -1,4 +1,4 @@
-import type { DomainEvent, Run, RunProjection, Session, Task } from '@helm/runtime'
+import type { DomainEvent, Episode, ReleaseGateResult, Run, RunProjection, Session, Task } from '@helm/runtime'
 
 export const IPC_CHANNELS = {
   runtimeInfo: 'helm:runtime-info',
@@ -43,6 +43,8 @@ export type RunExportResponse = {
   runId: string
   jsonl: string
   projection: RunProjection
+  episode: Episode
+  releaseGate: ReleaseGateResult
 }
 
 export type StartRunResponse = {

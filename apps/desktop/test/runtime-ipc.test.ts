@@ -109,11 +109,13 @@ test('desktop IPC inspect uses the registered read-only Runtime path and artifac
     assert.equal(snapshot.projection.artifacts[0]?.type, 'workspace-inspection')
     assert.equal(snapshot.projection.artifacts[0]?.tool, 'workspace.inspect')
     assert.equal(snapshot.projection.artifacts[0]?.sourceRunId, started.run.id)
-    const exported = await ipc.invoke(IPC_CHANNELS.runExport, { runId: started.run.id }) as { runId: string; jsonl: string; projection: typeof snapshot.projection }
+    const exported = await ipc.invoke(IPC_CHANNELS.runExport, { runId: started.run.id }) as { runId: string; jsonl: string; projection: typeof snapshot.projection; episode: { runId: string; trace: { taskId?: string; verifierIds: string[] } } }
     assert.equal(exported.runId, started.run.id)
     assert.match(exported.jsonl, /"type":"tool\.receipt"/)
     assert.equal(exported.projection.verification?.result, 'passed')
     assert.equal(exported.projection.artifacts[0]?.sourceRunId, started.run.id)
+    assert.equal(exported.episode.runId, started.run.id)
+    assert.ok(exported.episode.trace.verifierIds.length > 0)
     stop()
   } finally {
     await rm(root, { recursive: true, force: true })

@@ -6,19 +6,29 @@ export type CandidateApprovalState = 'pending' | 'approved' | 'rejected';
 export interface ExperienceCandidate {
   id: ID;
   sourceEpisodeId: ID;
+  sourceTraceId?: ID;
+  candidateType?: 'skill' | 'memory' | 'rule' | 'harness';
   summary: string;
   applicability: string[];
   validationState: CandidateValidationState;
   approvalState: CandidateApprovalState;
   costChecks: { tokenBudgetOk: boolean; costBudgetOk: boolean };
+  validationEvidence?: string[];
+  reviewerId?: ID;
+  reviewedAt?: string;
   createdAt: string;
 }
 
 export function createExperienceCandidate(input: Omit<ExperienceCandidate, 'validationState' | 'approvalState'>): ExperienceCandidate {
-  return { ...input, validationState: 'unvalidated', approvalState: 'pending' };
+  return {
+    ...input,
+    sourceTraceId: input.sourceTraceId ?? input.sourceEpisodeId,
+    validationState: 'unvalidated',
+    approvalState: 'pending',
+  };
 }
 
-export function reviewExperienceCandidate(candidate: ExperienceCandidate, review: { validation: Exclude<CandidateValidationState, 'unvalidated'>; approval: CandidateApprovalState; tokenBudgetOk?: boolean; costBudgetOk?: boolean }): ExperienceCandidate {
+export function reviewExperienceCandidate(candidate: ExperienceCandidate, review: { validation: Exclude<CandidateValidationState, 'unvalidated'>; approval: CandidateApprovalState; tokenBudgetOk?: boolean; costBudgetOk?: boolean; validationEvidence?: string[]; reviewerId?: ID; reviewedAt?: string }): ExperienceCandidate {
   return {
     ...candidate,
     validationState: review.validation,
@@ -27,6 +37,9 @@ export function reviewExperienceCandidate(candidate: ExperienceCandidate, review
       tokenBudgetOk: review.tokenBudgetOk ?? candidate.costChecks.tokenBudgetOk,
       costBudgetOk: review.costBudgetOk ?? candidate.costChecks.costBudgetOk,
     },
+    validationEvidence: review.validationEvidence ?? candidate.validationEvidence,
+    reviewerId: review.reviewerId ?? candidate.reviewerId,
+    reviewedAt: review.reviewedAt ?? candidate.reviewedAt,
   };
 }
 

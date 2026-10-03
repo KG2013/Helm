@@ -4,6 +4,7 @@ import { realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { RuntimeFacade } from './runtime.js';
 import type {
+  ArtifactStore,
   Evidence,
   Provider,
   ToolCall,
@@ -198,6 +199,7 @@ export interface OfficeRuntimeOptions {
   workspaceId: string;
   root: string;
   ownerId?: string;
+  artifactStore?: ArtifactStore;
 }
 
 export function createOfficeRuntime(options: OfficeRuntimeOptions): RuntimeFacade {
@@ -210,6 +212,7 @@ export function createOfficeRuntime(options: OfficeRuntimeOptions): RuntimeFacad
     executor: createOfficeExecutor({ roots: { [options.workspaceId]: options.root }, worker: options.worker }),
     verifier: new OfficeVerifier(),
     ownerId: options.ownerId,
+    artifactStore: options.artifactStore,
   });
 }
 

@@ -359,6 +359,6 @@ function redactProviderValue(value: unknown, depth = 0): unknown {
   if (!value || typeof value !== 'object') return value
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 30).map(([key, item]) => [
     key,
-    /api[-_]?key|authorization|cookie|secret|password|token|private|content|body|diff/i.test(key) ? '[redacted]' : redactProviderValue(item, depth + 1),
+    /api[-_]?key|authorization|cookie|secret|password|token|private|content|body|diff|oldText|newText/i.test(key) ? '[redacted]' : redactProviderValue(item, depth + 1),
   ]))
 }

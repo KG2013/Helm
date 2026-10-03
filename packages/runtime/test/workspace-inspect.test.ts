@@ -220,6 +220,7 @@ test('coding edit-test-diff uses registered profiles, approval, sandbox and arti
       run: async (command: string, args: string[]) => command === 'git'
         ? { exitCode: 0, stdout: 'diff -- README.md\n+after', stderr: '' }
         : { exitCode: 0, stdout: `passed ${command} ${args.join(' ')}`, stderr: '' },
+      writeFile: async (path: string, content: string) => { await import('node:fs/promises').then(({ writeFile: write }) => write(path, content, 'utf8')); },
     }
     const runtime = createCodingRuntime({
       store: new InMemoryEventStore(),

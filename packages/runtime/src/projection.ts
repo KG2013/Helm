@@ -214,7 +214,7 @@ function isVerification(value: unknown): value is Verification {
 }
 
 const REDACTED_KEY = /api[-_]?key|authorization|cookie|secret|password|token/i;
-const PRIVATE_VALUE_KEY = /^(content|output|body|diff|fileContent|privateFile)$/i;
+const PRIVATE_VALUE_KEY = /^(content|output|body|diff|fileContent|privateFile|oldText|newText)$/i;
 
 function redactRunValue(value: unknown, depth = 0): unknown {
   if (depth > 6) return '[truncated]';

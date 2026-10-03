@@ -11,6 +11,7 @@ import {
   canPromoteExperienceCandidate,
   createExperienceCandidate,
   reviewExperienceCandidate,
+  MemoryArtifactStore,
   type ProviderResponse,
   type ToolRegistry,
 } from '../src/index.js';
@@ -92,6 +93,61 @@ test('usage ledger deduplicates request ids and release gate accepts a passed Ep
   assert.equal((await store.list(run.id)).filter((event) => event.type === 'usage.recorded').length, 1);
 });
 
+test('provider failures are recorded in the UsageLedger with a normalized failure class', async () => {
+  const store = new InMemoryEventStore();
+  const runtime = new RuntimeFacade({
+    store,
+    provider: {
+      id: 'failing-provider',
+      model: 'model',
+      capabilities: new MockProvider().capabilities,
+      complete: async () => {
+        const error = new Error('Provider unavailable');
+        Object.assign(error, { failure: { code: 'rate_limit', requestId: 'provider-request-1', retryable: true } });
+        throw error;
+      },
+    },
+  });
+  const task = await runtime.createTask({ goal: 'record failure', workspaceId: 'workspace-1' });
+  const session = await runtime.createSession({ taskId: task.id });
+  const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  const result = await runtime.run(run.id);
+  assert.equal(result.state, 'failed');
+  const usage = (await store.list(run.id)).find((event) => event.type === 'usage.recorded');
+  assert.equal(usage?.payload.kind, 'provider');
+  assert.equal(usage?.payload.failureCode, 'rate_limit');
+  assert.equal(usage?.payload.requestId, 'provider-request-1');
+  assert.equal(usage?.payload.cacheHit, false);
+});
+
+test('Episodes retain redacted trace links and release gates require dev and holdout repeats', async () => {
+  const store = new InMemoryEventStore();
+  const runtime = new RuntimeFacade({
+    store,
+    provider: new MockProvider([{ kind: 'final', content: 'trace output' }]),
+  });
+  const task = await runtime.createTask({ goal: 'trace release case', workspaceId: 'workspace-1' });
+  const session = await runtime.createSession({ taskId: task.id });
+  const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  await runtime.run(run.id);
+  const episode = await buildEpisode(store, run.id);
+  assert.deepEqual(episode.trace.providerIds, ['mock', 'mock-model']);
+  assert.ok(episode.trace.verifierIds.includes('text-output-v1'));
+  assert.doesNotMatch(episode.redactedJsonl, /api[-_ ]?key|authorization/i);
+
+  const incomplete = { ...episode, evaluationCase: 'coding-basic', evaluationSplit: 'dev' as const, evaluationAttempt: 1 };
+  assert.equal(evaluateReleaseGate([incomplete]).result, 'blocked');
+  assert.equal(evaluateReleaseGate([{ ...episode, redactedJsonl: '{"authorization":"still-secret"}' }]).result, 'blocked');
+  const repeated = (split: 'dev' | 'holdout') => [1, 2, 3].map((attempt) => ({
+    ...episode,
+    runId: `${split}-${attempt}`,
+    evaluationCase: 'coding-basic',
+    evaluationSplit: split,
+    evaluationAttempt: attempt,
+  }));
+  assert.equal(evaluateReleaseGate([...repeated('dev'), ...repeated('holdout')]).result, 'passed');
+});
+
 test('token budget hard-stops a response before delivery', async () => {
   const runtime = new RuntimeFacade({
     store: new InMemoryEventStore(),
@@ -104,6 +160,19 @@ test('token budget hard-stops a response before delivery', async () => {
   assert.equal(result.state, 'paused');
   assert.match(result.pauseReason ?? '', /budget/i);
   assert.equal(result.finalOutput, undefined);
+});
+
+test('latency, retry, and cache budgets hard-stop UsageLedger overspend', async () => {
+  const runtime = new RuntimeFacade({
+    store: new InMemoryEventStore(),
+    provider: new MockProvider([{ kind: 'final', content: 'slow', usage: { latencyMs: 11, retries: 1, cacheHit: false } }]),
+  });
+  const task = await runtime.createTask({ goal: 'bounded usage', workspaceId: 'workspace-1', budget: { maxLatencyMs: 10, maxRetries: 0, maxCacheMisses: 0 } });
+  const session = await runtime.createSession({ taskId: task.id });
+  const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  const result = await runtime.run(run.id);
+  assert.equal(result.state, 'paused');
+  assert.match(result.pauseReason ?? '', /budget/i);
 });
 
 test('Runtime ownership blocks stale controls and releases safely on shutdown', async () => {
@@ -187,6 +256,54 @@ test('an approval resumes the same proposal without asking the provider again', 
   assert.equal(events.filter((event) => event.type === 'approval.decided').length, 1);
   assert.equal(events.filter((event) => event.type === 'tool.call').length, 1);
   assert.equal((await runtime.resolveApproval(run.id, approvalId, 'approve')).state, 'completed');
+});
+
+test('a pending approval cannot be resumed or changed after its binding expires', async () => {
+  const store = new InMemoryEventStore();
+  let now = 0;
+  const runtime = new RuntimeFacade({
+    store,
+    clock: { now: () => new Date(now) },
+    approvalTtlMs: 100,
+    provider: new MockProvider([{ kind: 'tool_call', name: 'write_file', arguments: { path: 'report.md', content: 'bound' } }]),
+    toolRegistry: registeredTestTools,
+    policy: { id: 'approval-policy', version: 'v1', decide: () => ({ decision: 'ask' as const, reason: 'write requires approval' }) },
+    executor: async () => ({ ok: true, output: 'saved', receipt: { sideEffect: 'known' } }),
+  });
+  const task = await runtime.createTask({ goal: 'expire approval', workspaceId: 'workspace-1' });
+  const session = await runtime.createSession({ taskId: task.id });
+  const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  const paused = await runtime.run(run.id);
+  assert.equal(paused.state, 'paused');
+  await assert.rejects(() => runtime.resumeRun(run.id), /pending approval/);
+  const approval = (await store.list(run.id)).find((event) => event.type === 'approval.requested');
+  assert.ok(approval);
+  now = 101;
+  await assert.rejects(() => runtime.resolveApproval(run.id, String(approval.payload.approvalId), 'approve'), /expired/);
+  assert.equal((await runtime.getRun(run.id))?.state, 'paused');
+});
+
+test('large tool outputs are offloaded to an ArtifactStore and only a bounded preview enters the ledger', async () => {
+  const artifactStore = new MemoryArtifactStore();
+  const store = new InMemoryEventStore();
+  const runtime = new RuntimeFacade({
+    store,
+    artifactStore,
+    provider: new MockProvider([{ kind: 'tool_call', name: 'read_file', arguments: { path: 'README.md' } }, { kind: 'final', content: 'done' }]),
+    toolRegistry: registeredTestTools,
+    policy: allowToolPolicy,
+    executor: async () => ({ ok: true, output: 'x'.repeat(9_000), receipt: { sideEffect: 'none' } }),
+  });
+  const task = await runtime.createTask({ goal: 'offload output', workspaceId: 'workspace-1' });
+  const session = await runtime.createSession({ taskId: task.id });
+  const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  await runtime.run(run.id);
+  const receipt = (await store.list(run.id)).find((event) => event.type === 'tool.receipt');
+  const output = String(receipt?.payload.output ?? '');
+  const artifact = (receipt?.payload.receipt as { artifact?: { uri?: string } } | undefined)?.artifact;
+  assert.ok(artifact?.uri?.startsWith('artifact://'));
+  assert.ok(output.length < 3_000);
+  assert.equal((await artifactStore.read(String(artifact?.uri))).byteLength, 9_000);
 });
 
 test('denying an approval is auditable and never reaches the executor', async () => {

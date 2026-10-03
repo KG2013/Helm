@@ -1,25 +1,34 @@
 import {
+  buildEpisode,
   buildRunProjection,
+  evaluateReleaseGate,
   InMemoryEventStore,
   isTerminalRunState,
   MockProvider,
+  FileArtifactStore,
   redactRunJsonl,
   RuntimeFacade,
   reduceRunEvents,
   type ProviderResponse,
+  type EventStore,
+  PythonDocumentWorkerClient,
+  createOfficeRuntime,
 } from '@helm/runtime'
 import { openSqliteEventStore } from '@helm/runtime/sqlite-node'
 import {
+  createCodingRuntime,
   createWorkspaceInspectionRuntime,
 } from '@helm/runtime/tools'
 import { OpenAICompatibleProvider } from '@helm/providers'
 import { readKeychainSecret } from './keychain.js'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 function printHelp(): void {
-  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm export <run-id>  Export a redacted Run ledger and evidence projection\n  helm help             Show this help\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
+  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
 }
 
-async function printRun(runtime: RuntimeFacade, goal: string, workspaceId: string): Promise<void> {
+async function printRun(runtime: RuntimeFacade, goal: string, workspaceId: string, jsonl = false): Promise<void> {
   const task = await runtime.createTask({ goal, workspaceId })
   const session = await runtime.createSession({ taskId: task.id })
   const createdRun = await runtime.startRun({ taskId: task.id, sessionId: session.id })
@@ -27,7 +36,7 @@ async function printRun(runtime: RuntimeFacade, goal: string, workspaceId: strin
   const events = await runtime.getEvents(createdRun.id)
   const projection = buildRunProjection(events, result)
 
-  console.log(JSON.stringify({
+  const summary = {
     task: { id: task.id, goal: task.goal, workspaceId: task.workspaceId },
     session: { id: session.id },
     run: {
@@ -41,7 +50,13 @@ async function printRun(runtime: RuntimeFacade, goal: string, workspaceId: strin
     projection,
     artifacts: projection.artifacts,
     eventCount: events.length,
-  }, null, 2))
+  }
+  if (jsonl) {
+    for (const event of events) console.log(JSON.stringify(JSON.parse(redactRunJsonl([event]))))
+    console.log(JSON.stringify({ type: 'run.summary', runId: result.id, projection: summary.projection }))
+    return
+  }
+  console.log(JSON.stringify(summary, null, 2))
 }
 
 async function exportRun(runId: string): Promise<void> {
@@ -58,10 +73,70 @@ async function exportRun(runId: string): Promise<void> {
     const run = reduceRunEvents(events, runId)
     const projection = buildRunProjection(events, run)
     const jsonl = database.store.exportJsonl ? await database.store.exportJsonl(runId) : redactRunJsonl(events)
-    console.log(JSON.stringify({ runId, jsonl, projection, artifacts: projection.artifacts }, null, 2))
+    const episode = await buildEpisode(database.store, runId)
+    console.log(JSON.stringify({ runId, jsonl, episode, releaseGate: evaluateReleaseGate([episode]), projection, artifacts: projection.artifacts }, null, 2))
   } finally {
     await database.store.close()
   }
+}
+
+async function approvalRun(runId: string, approvalId: string, decision: 'approve' | 'deny', workspaceId: string): Promise<void> {
+  const statePath = process.env.HELM_STATE_DB
+  if (!statePath) {
+    console.error('helm approve requires HELM_STATE_DB to point at the Runtime SQLite ledger')
+    process.exitCode = 2
+    return
+  }
+  const database = openSqliteEventStore(statePath)
+  const runtime = await createPersistedRuntime(database.store, workspaceId)
+  try {
+    const result = await runtime.resolveApproval(runId, approvalId, decision, workspaceId)
+    const events = await runtime.getEvents(runId)
+    console.log(JSON.stringify({ runId, run: result, projection: buildRunProjection(events, result) }, null, 2))
+  } finally {
+    await runtime.shutdown('CLI approval completed')
+    await database.store.close()
+  }
+}
+
+async function createPersistedRuntime(store: EventStore, workspaceId: string): Promise<RuntimeFacade> {
+  const root = process.env.HELM_WORKSPACE_ROOT ?? process.cwd()
+  const taskKind = process.env.HELM_TASK_KIND?.toLowerCase()
+  if (taskKind === 'office') {
+    const scriptPath = process.env.HELM_DOCUMENT_WORKER ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../workers/document-worker/worker.py')
+    return createOfficeRuntime({
+      store,
+      provider: new MockProvider(),
+      worker: new PythonDocumentWorkerClient({ scriptPath, workspaceRoot: root }),
+      workspaceId,
+      root,
+      ownerId: process.env.HELM_RUNTIME_OWNER ?? `cli-${process.pid}`,
+      artifactStore: createCliArtifactStore(),
+    })
+  }
+  if (taskKind === 'coding') {
+    return createCodingRuntime({
+      store,
+      provider: new MockProvider(),
+      workspaceId,
+      root,
+      ownerId: process.env.HELM_RUNTIME_OWNER ?? `cli-${process.pid}`,
+      artifactStore: createCliArtifactStore(),
+    })
+  }
+  return createWorkspaceInspectionRuntime({
+    store,
+    provider: new MockProvider(),
+    workspaceId,
+    root,
+    ownerId: process.env.HELM_RUNTIME_OWNER ?? `cli-${process.pid}`,
+  })
+}
+
+function createCliArtifactStore(): FileArtifactStore | undefined {
+  const statePath = process.env.HELM_STATE_DB
+  const root = process.env.HELM_ARTIFACT_ROOT ?? (statePath ? `${statePath}.artifacts` : undefined)
+  return root ? new FileArtifactStore(root) : undefined
 }
 
 async function controlRun(runId: string, action: 'pause' | 'resume' | 'cancel', reason?: string): Promise<void> {
@@ -72,7 +147,7 @@ async function controlRun(runId: string, action: 'pause' | 'resume' | 'cancel', 
     return
   }
   const database = openSqliteEventStore(statePath)
-  const runtime = new RuntimeFacade({ store: database.store, provider: new MockProvider() })
+  const runtime = await createPersistedRuntime(database.store, process.env.HELM_WORKSPACE_ID ?? 'workspace-cli')
   try {
     const current = await runtime.getRun(runId)
     if (!current) throw new Error(`Unknown run: ${runId}`)
@@ -87,6 +162,7 @@ async function controlRun(runId: string, action: 'pause' | 'resume' | 'cancel', 
     const projection = buildRunProjection(events, result)
     console.log(JSON.stringify({ runId, run: result, projection, artifacts: projection.artifacts, eventCount: events.length }, null, 2))
   } finally {
+    await runtime.shutdown('CLI control completed')
     await database.store.close()
   }
 }
@@ -101,24 +177,53 @@ async function run(goal: string): Promise<void> {
         getApiKey: () => readKeychainSecret(process.env.HELM_KIMI_KEYCHAIN_SERVICE ?? 'com.helm.provider.kimi-code'),
       })
     : new MockProvider([{ kind: 'final', content: `Completed local task: ${goal}` } satisfies ProviderResponse])
-  const workspaceId = 'workspace-cli'
+  const workspaceId = process.env.HELM_WORKSPACE_ID ?? 'workspace-cli'
+  const workspaceRoot = process.env.HELM_WORKSPACE_ROOT ?? process.cwd()
   const database = process.env.HELM_STATE_DB ? openSqliteEventStore(process.env.HELM_STATE_DB) : undefined
   const store = database?.store ?? new InMemoryEventStore()
+  const artifactStore = createCliArtifactStore()
+  const taskKind = process.env.HELM_TASK_KIND?.toLowerCase()
+  const runtime = taskKind === 'office'
+    ? createOfficeRuntime({
+        store,
+        provider,
+        worker: new PythonDocumentWorkerClient({
+          scriptPath: process.env.HELM_DOCUMENT_WORKER ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../workers/document-worker/worker.py'),
+          workspaceRoot,
+        }),
+        workspaceId,
+        root: workspaceRoot,
+        ownerId: process.env.HELM_RUNTIME_OWNER ?? `cli-${process.pid}`,
+        artifactStore,
+      })
+    : taskKind === 'coding'
+      ? createCodingRuntime({
+          store,
+          provider,
+          workspaceId,
+          root: workspaceRoot,
+          ownerId: process.env.HELM_RUNTIME_OWNER ?? `cli-${process.pid}`,
+          artifactStore,
+        })
+    : createWorkspaceInspectionRuntime({
+        store,
+        provider,
+        workspaceId,
+        root: workspaceRoot,
+        ownerId: process.env.HELM_RUNTIME_OWNER ?? `cli-${process.pid}`,
+        artifactStore,
+      })
   try {
-    await printRun(createWorkspaceInspectionRuntime({
-      store,
-      provider,
-      workspaceId,
-      root: process.cwd(),
-    }), goal, workspaceId)
+    await printRun(runtime, goal, workspaceId, outputJsonl)
   } finally {
+    await runtime.shutdown('CLI process completed')
     await store.close?.()
   }
 }
 
 async function inspect(path = '.'): Promise<void> {
-  const workspaceId = 'workspace-cli'
-  const workspaceRoot = process.cwd()
+  const workspaceId = process.env.HELM_WORKSPACE_ID ?? 'workspace-cli'
+  const workspaceRoot = process.env.HELM_WORKSPACE_ROOT ?? process.cwd()
   const database = process.env.HELM_STATE_DB ? openSqliteEventStore(process.env.HELM_STATE_DB) : undefined
   const store = database?.store ?? new InMemoryEventStore()
   const runtime = createWorkspaceInspectionRuntime({
@@ -126,15 +231,21 @@ async function inspect(path = '.'): Promise<void> {
     provider: new MockProvider(),
     workspaceId,
     root: workspaceRoot,
+    ownerId: process.env.HELM_RUNTIME_OWNER ?? `cli-${process.pid}`,
+    artifactStore: createCliArtifactStore(),
   })
   try {
-    await printRun(runtime, `inspect ${path}`, workspaceId)
+    await printRun(runtime, `inspect ${path}`, workspaceId, outputJsonl)
   } finally {
+    await runtime.shutdown('CLI process completed')
     await store.close?.()
   }
 }
 
-const [command, ...args] = process.argv.slice(2).filter((argument) => argument !== '--')
+const rawArgs = process.argv.slice(2).filter((argument) => argument !== '--')
+const jsonl = rawArgs.includes('--jsonl')
+const [command, ...args] = rawArgs.filter((argument) => argument !== '--jsonl')
+const outputJsonl = jsonl || process.env.HELM_OUTPUT === 'jsonl'
 if (command === 'run') {
   const goal = args.join(' ').trim()
   if (!goal) {
@@ -144,7 +255,12 @@ if (command === 'run') {
     await run(goal)
   }
 } else if (command === 'inspect') {
-  await inspect(args.join(' ').trim() || '.')
+  if (args.length > 1) {
+    console.error('helm inspect accepts at most one workspace-relative path')
+    process.exitCode = 2
+  } else {
+    await inspect(args[0]?.trim() || '.')
+  }
 } else if (command === 'export') {
   const runId = args.join(' ').trim()
   if (!runId) {
@@ -161,6 +277,17 @@ if (command === 'run') {
     process.exitCode = 2
   } else {
     await controlRun(runId, action, args.slice(2).join(' ').trim() || undefined)
+  }
+} else if (command === 'approve') {
+  const runId = args[0]?.trim()
+  const approvalId = args[1]?.trim()
+  const deny = args.includes('--deny')
+  const workspaceId = process.env.HELM_WORKSPACE_ID ?? 'workspace-cli'
+  if (!runId || !approvalId) {
+    console.error('helm approve requires a run id and approval id; pass --deny to reject')
+    process.exitCode = 2
+  } else {
+    await approvalRun(runId, approvalId, deny ? 'deny' : 'approve', workspaceId)
   }
 } else {
   printHelp()

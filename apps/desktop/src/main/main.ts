@@ -2,15 +2,22 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'node:path'
 import {
   MockProvider,
+  FileArtifactStore,
+  PythonDocumentWorkerClient,
+  createOfficeRuntime,
+  type RuntimeFacade,
 } from '@helm/runtime'
 import { openSqliteEventStore } from '@helm/runtime/sqlite-node'
-import { createWorkspaceInspectionRuntime } from '@helm/runtime/tools'
+import { createCodingRuntime, createWorkspaceInspectionRuntime } from '@helm/runtime/tools'
 import { OpenAICompatibleProvider } from '@helm/providers'
 import { registerRuntimeIpcHandlers } from './runtime-bridge.js'
 import { readKeychainSecret } from './keychain.js'
 
 const devServerUrl = process.env.HELM_DEV_SERVER_URL
 let mainWindow: BrowserWindow | null = null
+let activeRuntime: RuntimeFacade | undefined
+let activeStore: { close(): Promise<void> | void } | undefined
+let isQuitting = false
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -59,12 +66,41 @@ app.whenReady().then(() => {
   const workspaceRoot = process.env.HELM_WORKSPACE_ROOT ?? process.cwd()
   const statePath = process.env.HELM_STATE_DB ?? join(app.getPath('userData'), 'state.sqlite')
   const sqlite = openSqliteEventStore(statePath)
-  const runtime = createWorkspaceInspectionRuntime({
-    store: sqlite.store,
-    provider: baseProvider,
-    workspaceId,
-    root: workspaceRoot,
-  })
+  activeStore = sqlite.store
+  const artifactStore = new FileArtifactStore(join(app.getPath('userData'), 'artifacts'))
+  const ownerId = process.env.HELM_RUNTIME_OWNER ?? `desktop-${process.pid}`
+  const taskKind = process.env.HELM_TASK_KIND?.toLowerCase()
+  const runtime = taskKind === 'office'
+    ? createOfficeRuntime({
+        store: sqlite.store,
+        provider: baseProvider,
+        worker: new PythonDocumentWorkerClient({
+          scriptPath: process.env.HELM_DOCUMENT_WORKER ?? join(__dirname, '../../../workers/document-worker/worker.py'),
+          workspaceRoot,
+        }),
+        workspaceId,
+        root: workspaceRoot,
+        ownerId,
+        artifactStore,
+      })
+    : taskKind === 'coding'
+      ? createCodingRuntime({
+          store: sqlite.store,
+          provider: baseProvider,
+          workspaceId,
+          root: workspaceRoot,
+          ownerId,
+          artifactStore,
+        })
+    : createWorkspaceInspectionRuntime({
+        store: sqlite.store,
+        provider: baseProvider,
+        workspaceId,
+        root: workspaceRoot,
+        ownerId,
+        artifactStore,
+      })
+  activeRuntime = runtime
   registerRuntimeIpcHandlers({
     ipc: {
       handle: (channel, handler) => ipcMain.handle(channel, (event, request) => {
@@ -86,8 +122,15 @@ app.whenReady().then(() => {
     },
   })
 
-  app.once('before-quit', () => {
-    void sqlite.store.close()
+  app.on('before-quit', (event) => {
+    if (isQuitting) return
+    event.preventDefault()
+    isQuitting = true
+    void (async () => {
+      await activeRuntime?.shutdown('Desktop process shutting down')
+      await activeStore?.close()
+      app.quit()
+    })()
   })
 
   createWindow()

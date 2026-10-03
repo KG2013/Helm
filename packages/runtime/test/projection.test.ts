@@ -47,7 +47,7 @@ test('Run projection derives coding artifacts, approvals, and verification from 
 })
 
 test('Run export redacts credential markers and private content consistently', () => {
-  const jsonl = redactRunJsonl([event({ sequence: 1, type: 'tool.receipt', payload: { output: 'private source', authorization: 'Bearer sk-super-secret-token', nested: 'token=abc' } })])
-  assert.doesNotMatch(jsonl, /private source|sk-super-secret-token|token=abc/)
+  const jsonl = redactRunJsonl([event({ sequence: 1, type: 'tool.receipt', payload: { output: 'private source', oldText: 'private patch source', newText: 'private patch replacement', authorization: 'Bearer sk-super-secret-token', nested: 'token=abc' } })])
+  assert.doesNotMatch(jsonl, /private source|private patch source|private patch replacement|sk-super-secret-token|token=abc/)
   assert.match(jsonl, /\[redacted\]/)
 })

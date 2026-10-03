@@ -6,6 +6,7 @@ export class InMemoryEventStore implements EventStore {
   private readonly byRun = new Map<ID, DomainEvent[]>();
   private sequence = 0;
   private eventId = 0;
+  private leaseQueue: Promise<void> = Promise.resolve();
 
   async append(input: NewDomainEvent): Promise<DomainEvent> {
     const event = makeEvent(`evt-${++this.eventId}`, ++this.sequence, input, new Date().toISOString());
@@ -46,6 +47,23 @@ export class InMemoryEventStore implements EventStore {
     const events = this.byRun.get(runId);
     if (!events?.length) return undefined;
     return reduceRunEvents(events, runId);
+  }
+
+  async tryAcquireRunLease(input: { runId: ID; ownerId: ID; leaseExpiresAt: string; now: string }): Promise<DomainEvent | boolean> {
+    const operation = this.leaseQueue.then(async () => {
+      const run = await this.getRun(input.runId);
+      if (!run) return false as const;
+      if (run.ownerId && run.ownerId !== input.ownerId && run.leaseExpiresAt && run.leaseExpiresAt > input.now) return false as const;
+      return this.append({
+        type: 'run.owner_acquired',
+        taskId: run.taskId,
+        sessionId: run.sessionId,
+        runId: run.id,
+        payload: { ownerId: input.ownerId, leaseExpiresAt: input.leaseExpiresAt, state: run.state },
+      });
+    });
+    this.leaseQueue = operation.then(() => undefined, () => undefined);
+    return operation;
   }
 
   async exportJsonl(runId?: ID): Promise<string> {
@@ -240,7 +258,15 @@ export class SqliteEventStore implements EventStore {
                 : 'ready';
       const existing = await this.db.all<{ payload_json: string }>('SELECT payload_json FROM helm_runs WHERE run_id = ?', [event.runId]);
       const priorPayload = existing[0]?.payload_json ? JSON.parse(existing[0].payload_json) as Record<string, unknown> : {};
-      const runPayload = { ...priorPayload, ...payload, state };
+      const runPayload: Record<string, unknown> = { ...priorPayload, ...payload, state };
+      if (event.type === 'run.owner_released') {
+        // The projection is used for the cross-process lease CAS. Clearing
+        // these fields here is required; merging an owner-released payload
+        // over the prior row would leave a stale active lease in SQLite even
+        // though replay correctly sees the release event.
+        delete runPayload.ownerId;
+        delete runPayload.leaseExpiresAt;
+      }
       await this.db.run(
         'INSERT INTO helm_runs (run_id, state, payload_json, sequence) VALUES (?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET state=excluded.state, payload_json=excluded.payload_json, sequence=excluded.sequence',
         [event.runId, state, JSON.stringify(runPayload), event.sequence],
@@ -302,6 +328,27 @@ export class SqliteEventStore implements EventStore {
     return events.length ? reduceRunEvents(events, runId) : undefined;
   }
 
+  async tryAcquireRunLease(input: { runId: ID; ownerId: ID; leaseExpiresAt: string; now: string }): Promise<DomainEvent | boolean> {
+    await this.init();
+    return this.enqueue(async () => this.db.transaction(async () => {
+      const rows = await this.db.all<{ payload_json: string }>('SELECT payload_json FROM helm_runs WHERE run_id = ?', [input.runId]);
+      const payload = rows[0]?.payload_json ? JSON.parse(rows[0].payload_json) as Record<string, unknown> : undefined;
+      if (!payload) return false;
+      const currentOwner = typeof payload.ownerId === 'string' ? payload.ownerId : undefined;
+      const currentExpiry = typeof payload.leaseExpiresAt === 'string' ? payload.leaseExpiresAt : undefined;
+      if (currentOwner && currentOwner !== input.ownerId && currentExpiry && currentExpiry > input.now) return false;
+      const event = await this.appendUnsafe({
+        type: 'run.owner_acquired',
+        taskId: typeof payload.taskId === 'string' ? payload.taskId : undefined,
+        sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : undefined,
+        runId: input.runId,
+        payload: { ownerId: input.ownerId, leaseExpiresAt: input.leaseExpiresAt, state: payload.state ?? 'ready' },
+      });
+      this.cacheEvent(event);
+      return event;
+    }));
+  }
+
   async exportJsonl(runId?: ID): Promise<string> {
     const events = runId ? await this.list(runId) : await this.listAll();
     return events.map((event) => JSON.stringify(redactExportEvent(event))).join('\n');
@@ -343,11 +390,11 @@ function rowToEvent(row: SqliteEventRow): DomainEvent {
 }
 
 const KNOWN_EVENT_TYPES = new Set<DomainEvent['type']>([
-  'task.created', 'session.created', 'run.created', 'run.started', 'run.state_changed', 'run.paused', 'run.resumed', 'run.completed', 'run.failed', 'run.cancelled', 'run.needs_reconciliation', 'step.started', 'step.proposal', 'policy.decision', 'approval.requested', 'approval.decided', 'tool.call', 'tool.receipt', 'step.observation', 'step.completed', 'verification.result', 'run.checkpoint', 'usage.recorded', 'run.owner_acquired', 'run.owner_released',
+  'task.created', 'session.created', 'run.created', 'run.started', 'run.state_changed', 'run.paused', 'run.resumed', 'run.completed', 'run.failed', 'run.cancelled', 'run.needs_reconciliation', 'step.started', 'step.proposal', 'policy.decision', 'approval.requested', 'approval.decided', 'tool.call', 'tool.receipt', 'step.observation', 'step.completed', 'verification.result', 'run.checkpoint', 'usage.recorded', 'run.owner_acquired', 'run.owner_released', 'experience.candidate_created', 'experience.candidate_reviewed',
 ]);
 
 const REDACTED_KEY = /api[-_]?key|authorization|cookie|secret|password|token/i;
-const PRIVATE_VALUE_KEY = /^(content|output|body|diff|fileContent|privateFile)$/i;
+const PRIVATE_VALUE_KEY = /^(content|output|body|diff|fileContent|privateFile|oldText|newText)$/i;
 
 function redactExportEvent(event: DomainEvent): DomainEvent {
   return { ...event, payload: redactExportValue(event.payload) as Record<string, unknown> };

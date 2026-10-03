@@ -1,4 +1,4 @@
-import { buildRunProjection, redactRunJsonl, reduceRunEvents, type DomainEvent, type RuntimeFacade, type Session, type Task } from '@helm/runtime'
+import { buildEpisode, buildRunProjection, evaluateReleaseGate, redactRunJsonl, reduceRunEvents, type DomainEvent, type RuntimeFacade, type Session, type Task } from '@helm/runtime'
 import {
   IPC_CHANNELS,
   isRunId,
@@ -28,7 +28,7 @@ export type RuntimeBridgeOptions = {
   workspaceIds?: readonly string[]
 }
 
-const SENSITIVE_KEYS = /api[-_]?key|authorization|cookie|secret|password|token/i
+const SENSITIVE_KEYS = /api[-_]?key|authorization|cookie|secret|password|token|oldText|newText/i
 
 function sanitizeValue(value: unknown, depth = 0): unknown {
   if (depth > 4) return '[truncated]'
@@ -56,9 +56,9 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     let task: Task
     let session: Session
     if (request.sessionId) {
-      const existingSession = runtime.getSession(request.sessionId)
+      const existingSession = await runtime.loadSession(request.sessionId)
       if (!existingSession) throw new Error('Unknown session.')
-      const existingTask = runtime.getTask(existingSession.taskId)
+      const existingTask = await runtime.loadTask(existingSession.taskId)
       if (!existingTask || existingTask.workspaceId !== request.workspaceId) throw new Error('Session workspace mismatch.')
       session = existingSession
       task = existingTask
@@ -90,7 +90,7 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
   ipc.handle(IPC_CHANNELS.runApproval, async (_event, value) => {
     if (!isRunApprovalRequest(value)) throw new Error('Invalid approval request.')
     const request = value as RunApprovalRequest
-    const task = runtime.getTask((await runtime.getRun(request.runId))?.taskId ?? '')
+    const task = await runtime.loadTask((await runtime.getRun(request.runId))?.taskId ?? '')
     if (!task || task.workspaceId !== request.workspaceId) throw new Error('Approval workspace mismatch.')
     return runtime.resolveApproval(request.runId, request.approvalId, request.decision, request.workspaceId)
   })
@@ -99,8 +99,8 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     const events = await runtime.getEvents(value)
     if (!events.length) throw new Error('Unknown run.')
     const run = reduceRunEvents(events, value)
-    const task = runtime.getTask(run.taskId)
-    const session = runtime.getSession(run.sessionId)
+    const task = await runtime.loadTask(run.taskId)
+    const session = await runtime.loadSession(run.sessionId)
     if (!task || !session) throw new Error('Run metadata unavailable.')
     const projection = buildRunProjection(events, run)
     const snapshot: RunSnapshot = {
@@ -119,10 +119,16 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     if (!events.length) throw new Error('Unknown run.')
     const run = reduceRunEvents(events, request.runId)
     const projection = buildRunProjection(events, run)
+    const episode = await buildEpisode({
+      list: async (runId) => runtime.getEvents(runId),
+      exportJsonl: async () => redactRunJsonl(events),
+    }, request.runId)
     const response: RunExportResponse = {
       runId: request.runId,
       jsonl: redactRunJsonl(events),
       projection: sanitizeValue(projection) as RunExportResponse['projection'],
+      episode: sanitizeValue(episode) as RunExportResponse['episode'],
+      releaseGate: evaluateReleaseGate([episode]),
     }
     return response
   })

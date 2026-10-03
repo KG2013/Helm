@@ -1,8 +1,11 @@
+import { createHash } from 'node:crypto';
 import { transitionRunState, isTerminalRunState, RunStateError } from './state-machine.js';
 import { TextOutputVerifier } from './verifier.js';
 import { buildProviderContext, normalizeProviderContextProjection, toolProfileToSchema } from './context.js';
+import { createExperienceCandidate as createCandidate, reviewExperienceCandidate as reviewCandidate, type ExperienceCandidate } from './experience.js';
 import type {
   Budget,
+  ApprovalBinding,
   DomainEvent,
   EventStore,
   ID,
@@ -25,6 +28,8 @@ import type {
   ToolPolicy,
   ToolRegistry,
   ContextAssembler,
+  ArtifactStore,
+  ToolExecutorResult,
   Verification,
   Verifier,
 } from './types.js';
@@ -34,6 +39,7 @@ const DEFAULT_BUDGET: Budget = {
   maxDurationMs: 15 * 60 * 1000,
   maxReviewerRounds: 1,
 };
+const DEFAULT_APPROVAL_TTL_MS = 15 * 60 * 1000;
 
 class SystemClock implements RuntimeClock {
   now(): Date {
@@ -50,6 +56,8 @@ class DefaultIdFactory implements RuntimeIdFactory {
 }
 
 const defaultPolicy: ToolPolicy = {
+  id: 'default-deny',
+  version: 'v1',
   decide: () => ({ decision: 'deny', reason: 'No ToolPolicy is configured; tool execution is denied.' }),
 };
 
@@ -77,6 +85,7 @@ type PendingApproval = {
   call: ToolCall;
   index: number;
   reason: string;
+  binding: ApprovalBinding;
 };
 
 export class RuntimeFacade {
@@ -91,7 +100,10 @@ export class RuntimeFacade {
   private readonly ids: RuntimeIdFactory;
   private readonly defaultBudget: Budget;
   private readonly ownerId: ID;
+  private readonly principalId: ID;
   private readonly leaseDurationMs: number;
+  private readonly approvalTtlMs: number;
+  private readonly artifactStore?: ArtifactStore;
   private readonly eventListeners = new Set<RuntimeEventListener>();
   private readonly tasks = new Map<ID, Task>();
   private readonly sessions = new Map<ID, Session>();
@@ -110,7 +122,10 @@ export class RuntimeFacade {
     this.ids = options.ids ?? new DefaultIdFactory();
     this.defaultBudget = { ...DEFAULT_BUDGET, ...options.defaultBudget };
     this.ownerId = options.ownerId ?? 'runtime-local';
+    this.principalId = options.principalId ?? 'local-user';
     this.leaseDurationMs = options.leaseDurationMs ?? 5 * 60 * 1000;
+    this.approvalTtlMs = options.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS;
+    this.artifactStore = options.artifactStore;
   }
 
   async createTask(input: TaskInput): Promise<Task> {
@@ -156,6 +171,9 @@ export class RuntimeFacade {
       steps: 0,
       reviewerRounds: 0,
       budget: { ...task.budget, ...input.budget },
+      evaluationCase: task.evaluationCase,
+      evaluationSplit: task.evaluationSplit,
+      evaluationAttempt: task.evaluationAttempt,
     };
     await this.append({ type: 'run.created', taskId: task.id, sessionId: session.id, runId: run.id, payload: run as unknown as Record<string, unknown> });
     await this.transition(run.id, 'start');
@@ -169,11 +187,15 @@ export class RuntimeFacade {
     run = await this.ensureOwnership(runId, run);
     const task = await this.requireTask(run.taskId);
     const session = await this.requireSession(run.sessionId);
-    const startedAt = this.clock.now().getTime();
+    // Use the durable Run creation time so a restart or pause cannot reset
+    // the wall-clock budget by starting a fresh run() invocation.
+    const createdAt = Date.parse(run.createdAt);
+    const startedAt = Number.isFinite(createdAt) ? createdAt : this.clock.now().getTime();
     const controller = this.runControllers.get(run.id) ?? new AbortController();
     this.runControllers.set(run.id, controller);
 
     while (!isTerminalRunState(run.state) && run.state !== 'paused') {
+      run = await this.ensureOwnership(run.id, run);
       if (run.steps >= run.budget.maxSteps || this.clock.now().getTime() - startedAt >= run.budget.maxDurationMs) {
         if (run.state === 'deciding') await this.transition(run.id, 'budget_exceeded', { reason: 'run budget exceeded' });
         else await this.failRun(run.id, 'Run budget exceeded outside a pausable state.');
@@ -212,16 +234,21 @@ export class RuntimeFacade {
         timeoutMs: remainingMs,
       };
       let response;
+      const providerStartedAt = this.clock.now().getTime();
       try {
         response = await this.provider.complete(request);
       } catch (error) {
-        run = await this.requireRun(run.id);
+        run = await this.ensureOwnership(run.id, await this.requireRun(run.id));
         if (isTerminalRunState(run.state) || run.state === 'paused') break;
+        await this.recordProviderFailure(run, request, error, Math.max(0, this.clock.now().getTime() - providerStartedAt));
         await this.failRun(run.id, `Provider error: ${sanitizeDiagnostic(error)}`);
         run = await this.requireRun(run.id);
         break;
       }
-      run = await this.requireRun(run.id);
+      // A provider may be in flight long enough for its lease to expire. Do
+      // not apply a late proposal from a stale owner after another Runtime
+      // has claimed the Run.
+      run = await this.ensureOwnership(run.id, await this.requireRun(run.id));
       if (isTerminalRunState(run.state) || run.state === 'paused') break;
       await this.recordUsage(run, response, context);
       if (this.usageBudgetExceeded(run, context, response.usage)) {
@@ -277,6 +304,7 @@ export class RuntimeFacade {
           break;
         }
         if (policy.decision === 'ask') {
+          const binding = this.createApprovalBinding(call.id, profile, call, task.workspaceId);
           const pending: PendingApproval = {
             approvalId: call.id,
             task,
@@ -285,6 +313,7 @@ export class RuntimeFacade {
             call,
             index,
             reason: policy.reason,
+            binding,
           };
           this.pendingApprovals.set(call.id, pending);
           await this.append({
@@ -297,6 +326,7 @@ export class RuntimeFacade {
               reason: policy.reason,
               workspaceId: task.workspaceId,
               call,
+              binding,
             },
           });
           await this.transition(run.id, 'needs_input', { stepId, reason: policy.reason });
@@ -305,7 +335,8 @@ export class RuntimeFacade {
         }
         run = await this.requireRun(run.id);
         if (isTerminalRunState(run.state) || run.state === 'paused') break;
-        run = await this.executeToolCall({ approvalId: call.id, task, session, request, call, index, reason: '' }, run.id);
+        const binding = this.createApprovalBinding(call.id, profile, call, task.workspaceId);
+        run = await this.executeToolCall({ approvalId: call.id, task, session, request, call, index, reason: '', binding }, run.id);
         if (isTerminalRunState(run.state) || run.state === 'paused') break;
         continue;
       }
@@ -332,10 +363,13 @@ export class RuntimeFacade {
     return this.requireRun(runId);
   }
 
-  async resumeRun(runId: ID): Promise<Run> {
+  async resumeRun(runId: ID, options: { bypassApproval?: boolean } = {}): Promise<Run> {
     const run = await this.requireRun(runId);
     await this.assertOwner(run);
     if (run.state !== 'paused') throw new RunStateError(run.state, 'resume');
+    if (!options.bypassApproval && await this.hasPendingApproval(runId)) {
+      throw new Error('Run has a pending approval; resolve it explicitly before resuming.');
+    }
     await this.transition(runId, 'resume');
     await this.append({ type: 'run.resumed', taskId: run.taskId, sessionId: run.sessionId, runId, payload: { state: 'recovering' } });
     await this.transition(runId, 'recovered');
@@ -366,6 +400,7 @@ export class RuntimeFacade {
     }
     if (pending.call.runId !== runId) throw new Error('Approval does not belong to this Run.');
     if (workspaceId !== undefined && pending.task.workspaceId !== workspaceId) throw new Error('Approval workspace mismatch.');
+    this.assertApprovalBinding(pending);
     if (run.state !== 'paused') throw new RunStateError(run.state, 'resume');
 
     await this.append({
@@ -373,7 +408,7 @@ export class RuntimeFacade {
       taskId: pending.task.id,
       sessionId: pending.session.id,
       runId,
-      payload: { approvalId, decision, call: pending.call },
+      payload: { approvalId, decision, call: pending.call, binding: pending.binding },
     });
     this.pendingApprovals.delete(approvalId);
     if (decision === 'deny') {
@@ -381,7 +416,7 @@ export class RuntimeFacade {
       return this.requireRun(runId);
     }
 
-    await this.resumeRun(runId);
+    await this.resumeRun(runId, { bypassApproval: true });
     await this.transition(runId, 'proposal_valid', { stepId: pending.call.stepId, approvalId });
     const afterExecution = await this.executeToolCall(pending, runId);
     if (isTerminalRunState(afterExecution.state) || afterExecution.state === 'paused') return afterExecution;
@@ -431,13 +466,42 @@ export class RuntimeFacade {
       call,
       index,
       reason: typeof requested.payload.reason === 'string' ? requested.payload.reason : 'approval required',
+      binding: requested.payload.binding as ApprovalBinding,
     };
+    if (!isApprovalBinding(pending.binding)) return undefined;
     this.pendingApprovals.set(approvalId, pending);
     return pending;
   }
 
+  private async hasPendingApproval(runId: ID): Promise<boolean> {
+    for (const pending of this.pendingApprovals.values()) if (pending.call.runId === runId) return true;
+    const events = await this.store.list(runId);
+    const requested = new Set(events.filter((event) => event.type === 'approval.requested').map((event) => String(event.payload.approvalId)));
+    const decided = new Set(events.filter((event) => event.type === 'approval.decided').map((event) => String(event.payload.approvalId)));
+    return [...requested].some((approvalId) => !decided.has(approvalId));
+  }
+
   async getRun(runId: ID): Promise<Run | undefined> {
     return this.store.getRun(runId);
+  }
+
+  /** Renew the durable owner lease without changing Run execution state. */
+  async renewOwnership(runId: ID): Promise<Run> {
+    const run = await this.requireRun(runId);
+    await this.assertOwner(run);
+    return this.acquireOwnership(runId);
+  }
+
+  async createExperienceCandidate(input: Omit<ExperienceCandidate, 'validationState' | 'approvalState'>): Promise<ExperienceCandidate> {
+    const candidate = createCandidate(input);
+    await this.append({ type: 'experience.candidate_created', payload: candidate as unknown as Record<string, unknown> });
+    return candidate;
+  }
+
+  async reviewExperienceCandidate(candidate: ExperienceCandidate, review: Parameters<typeof reviewCandidate>[1]): Promise<ExperienceCandidate> {
+    const reviewed = reviewCandidate(candidate, review);
+    await this.append({ type: 'experience.candidate_reviewed', payload: reviewed as unknown as Record<string, unknown> });
+    return reviewed;
   }
 
   /** Reconcile a process restart before allowing a Run to request new work. */
@@ -524,8 +588,17 @@ export class RuntimeFacade {
     return this.tasks.get(taskId);
   }
 
+  /** Rehydrate metadata from the durable ledger for reconnecting surfaces. */
+  async loadTask(taskId: ID): Promise<Task | undefined> {
+    try { return await this.requireTask(taskId); } catch { return undefined; }
+  }
+
   getSession(sessionId: ID): Session | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  async loadSession(sessionId: ID): Promise<Session | undefined> {
+    try { return await this.requireSession(sessionId); } catch { return undefined; }
   }
 
   private async requireRun(runId: ID): Promise<Run> {
@@ -537,18 +610,61 @@ export class RuntimeFacade {
   private async acquireOwnership(runId: ID): Promise<Run> {
     const run = await this.requireRun(runId);
     const leaseExpiresAt = new Date(this.clock.now().getTime() + this.leaseDurationMs).toISOString();
-    await this.append({ type: 'run.owner_acquired', taskId: run.taskId, sessionId: run.sessionId, runId, payload: { ownerId: this.ownerId, leaseExpiresAt, state: run.state } });
+    const acquired = this.store.tryAcquireRunLease
+      ? await this.store.tryAcquireRunLease({ runId, ownerId: this.ownerId, leaseExpiresAt, now: this.timestamp() })
+      : (await this.append({ type: 'run.owner_acquired', taskId: run.taskId, sessionId: run.sessionId, runId, payload: { ownerId: this.ownerId, leaseExpiresAt, state: run.state } }), true);
+    if (acquired === false) throw new Error(`Run ${runId} is owned by another active Runtime.`);
+    if (typeof acquired === 'object') this.notifyEvent(acquired);
     return this.requireRun(runId);
   }
 
+  private createApprovalBinding(approvalId: ID, profile: { id: string; version: string }, call: ToolCall, workspaceId: ID): ApprovalBinding {
+    const policyVersion = `${this.policy.id ?? 'policy'}@${this.policy.version ?? 'v1'}`;
+    const nonce = this.ids.next('approval-nonce');
+    const expiresAt = new Date(this.clock.now().getTime() + this.approvalTtlMs).toISOString();
+    return {
+      approvalId,
+      nonce,
+      toolProfileId: profile.id,
+      toolProfileVersion: profile.version,
+      actionHash: hashAction({ name: call.name, arguments: call.arguments, workspaceId, profile: `${profile.id}@${profile.version}`, policyVersion }),
+      workspaceId,
+      policyVersion,
+      principal: this.principalId,
+      expiresAt,
+    };
+  }
+
+  private assertApprovalBinding(pending: PendingApproval): void {
+    const binding = pending.binding;
+    if (!isApprovalBinding(binding)) throw new Error('Approval binding is missing or invalid.');
+    if (binding.approvalId !== pending.approvalId || binding.workspaceId !== pending.task.workspaceId) throw new Error('Approval binding does not match the requested action.');
+    if (binding.principal !== this.principalId) throw new Error('Approval principal changed; approval is invalid.');
+    if (new Date(binding.expiresAt).getTime() <= this.clock.now().getTime()) throw new Error('Approval has expired.');
+    const profile = this.toolRegistry.get(pending.call.name);
+    if (!profile || profile.id !== binding.toolProfileId || profile.version !== binding.toolProfileVersion) throw new Error('Approval Tool Profile changed; approval is invalid.');
+    const expectedPolicyVersion = `${this.policy.id ?? 'policy'}@${this.policy.version ?? 'v1'}`;
+    if (binding.policyVersion !== expectedPolicyVersion) throw new Error('Approval Policy changed; approval is invalid.');
+    const expectedHash = hashAction({ name: pending.call.name, arguments: pending.call.arguments, workspaceId: pending.task.workspaceId, profile: `${profile.id}@${profile.version}`, policyVersion: expectedPolicyVersion });
+    if (binding.actionHash !== expectedHash) throw new Error('Approval action binding changed; approval is invalid.');
+  }
+
   private async ensureOwnership(runId: ID, run: Run): Promise<Run> {
-    if (run.ownerId === this.ownerId) return run;
+    if (run.ownerId === this.ownerId) {
+      const expiry = run.leaseExpiresAt ? new Date(run.leaseExpiresAt).getTime() : 0;
+      if (expiry - this.clock.now().getTime() > Math.max(1_000, this.leaseDurationMs / 3)) return run;
+      return this.acquireOwnership(runId);
+    }
     if (!run.ownerId || (run.leaseExpiresAt && new Date(run.leaseExpiresAt).getTime() <= this.clock.now().getTime())) return this.acquireOwnership(runId);
     throw new Error(`Run ${runId} is owned by another active Runtime.`);
   }
 
   private async assertOwner(run: Run): Promise<void> {
-    if (!run.ownerId || run.ownerId === this.ownerId) return;
+    if (!run.ownerId) {
+      await this.acquireOwnership(run.id);
+      return;
+    }
+    if (run.ownerId === this.ownerId) return;
     if (run.leaseExpiresAt && new Date(run.leaseExpiresAt).getTime() <= this.clock.now().getTime()) {
       await this.acquireOwnership(run.id);
       return;
@@ -588,14 +704,16 @@ export class RuntimeFacade {
 
   private async executeToolCall(pending: PendingApproval, runId: ID): Promise<Run> {
     const run = await this.requireRun(runId);
+    await this.assertOwner(run);
     await this.transition(run.id, 'policy_allow', { stepId: pending.call.stepId, approvalId: pending.approvalId });
     await this.append({ type: 'tool.call', taskId: pending.task.id, sessionId: pending.session.id, runId: run.id, payload: pending.call as unknown as Record<string, unknown> });
+    const startedAt = this.clock.now().getTime();
     let observation: Observation;
     try {
       const latestRun = await this.requireRun(run.id);
       const latestContext = await this.store.list(run.id);
       const projected = normalizeProviderContextProjection(this.contextAssembler.assemble({ task: pending.task, session: pending.session, run: latestRun, events: latestContext }));
-      const result = await this.executor(pending.call, {
+      let result = await this.executor(pending.call, {
         ...pending.request,
         run: latestRun,
         context: latestContext,
@@ -604,14 +722,47 @@ export class RuntimeFacade {
         tools: this.toolRegistry.list?.().map(toolProfileToSchema),
         toolResults: projected.toolResults,
       });
+      result = await this.offloadLargeToolResult(result, pending, latestRun.id);
       observation = { ok: result.ok, output: result.output, error: result.error, receipt: result.receipt };
     } catch (error) {
       observation = { ok: false, error: sanitizeDiagnostic(error), receipt: { executorError: true } };
     }
     let current = await this.requireRun(run.id);
+    // If the lease changed while the executor was in flight, leave the
+    // durable tool call without a receipt. The next owner will reconcile it
+    // instead of accepting a late receipt from a stale process.
+    try {
+      await this.assertOwner(current);
+    } catch {
+      return current;
+    }
     await this.append({ type: 'tool.receipt', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, toolCallId: pending.call.id, name: pending.call.name, ...observation } });
     await this.append({ type: 'step.observation', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, observation } });
     current = await this.requireRun(run.id);
+    await this.append({
+      type: 'usage.recorded',
+      taskId: pending.task.id,
+      sessionId: pending.session.id,
+      runId: current.id,
+      payload: {
+        kind: 'tool',
+        requestId: pending.call.id,
+        provider: 'tool-executor',
+        model: pending.call.name,
+        operation: pending.call.name,
+        latencyMs: Math.max(0, this.clock.now().getTime() - startedAt),
+        retries: 0,
+        cacheHit: false,
+        failureCode: observation.ok ? undefined : observation.receipt?.sideEffect === 'unknown' ? 'unknown' : 'unavailable',
+      },
+    });
+    const usageEvents = await this.store.list(current.id);
+    if (this.usageBudgetExceeded(current, usageEvents)) {
+      await this.append({ type: 'step.completed', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, index: pending.index } });
+      await this.transition(current.id, 'needs_input', { reason: 'usage budget exceeded' });
+      await this.appendCheckpoint(current.id, pending.call.stepId);
+      return this.requireRun(current.id);
+    }
     if (isTerminalRunState(current.state) || current.state === 'paused') return current;
       if (observation.receipt?.sideEffect === 'unknown') {
         await this.append({ type: 'step.completed', taskId: pending.task.id, sessionId: pending.session.id, runId: current.id, payload: { stepId: pending.call.stepId, index: pending.index } });
@@ -654,24 +805,61 @@ export class RuntimeFacade {
       sessionId: run.sessionId,
       runId: run.id,
       payload: {
+        kind: 'provider',
         requestId,
         provider: response.provider ?? this.provider.id,
         model: response.model ?? this.provider.model,
+        retries: 0,
+        cacheHit: false,
         ...usage,
       },
     });
   }
 
-  private usageBudgetExceeded(run: Run, events: DomainEvent[], current: import('./types.js').TokenUsage | undefined): boolean {
-    if (!current) return false;
+  private async recordProviderFailure(run: Run, request: ProviderRequest, error: unknown, latencyMs: number): Promise<void> {
+    const failure = error && typeof error === 'object' && 'failure' in error
+      ? (error as { failure?: { code?: string; requestId?: string; retryable?: boolean } }).failure
+      : undefined;
+    const failureCode = failure?.code;
+    await this.append({
+      type: 'usage.recorded',
+      taskId: run.taskId,
+      sessionId: run.sessionId,
+      runId: run.id,
+      payload: {
+        kind: 'provider',
+        requestId: failure?.requestId ?? request.requestId,
+        provider: this.provider.id,
+        model: this.provider.model,
+        latencyMs,
+        retries: 0,
+        cacheHit: false,
+        ...(typeof failureCode === 'string' ? { failureCode } : { failureCode: 'unknown' }),
+      },
+    });
+  }
+
+  private usageBudgetExceeded(run: Run, events: DomainEvent[], current?: import('./types.js').TokenUsage): boolean {
     const prior = events.filter((event) => event.type === 'usage.recorded').reduce((total, event) => {
-      const usage = event.payload as { totalTokens?: number; costUsd?: number };
-      return { tokens: total.tokens + (usage.totalTokens ?? 0), cost: total.cost + (usage.costUsd ?? 0) };
-    }, { tokens: 0, cost: 0 });
-    const tokens = prior.tokens + (current.totalTokens ?? (current.inputTokens ?? 0) + (current.outputTokens ?? 0));
-    const cost = prior.cost + (current.costUsd ?? 0);
+      const usage = event.payload as { totalTokens?: number; inputTokens?: number; outputTokens?: number; costUsd?: number; latencyMs?: number; retries?: number; cacheHit?: boolean };
+      return {
+        tokens: total.tokens + (usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)),
+        cost: total.cost + (usage.costUsd ?? 0),
+        latency: total.latency + (usage.latencyMs ?? 0),
+        retries: total.retries + (usage.retries ?? 0),
+        cacheMisses: total.cacheMisses + (usage.cacheHit === false ? 1 : 0),
+      };
+    }, { tokens: 0, cost: 0, latency: 0, retries: 0, cacheMisses: 0 });
+    const tokens = prior.tokens + (current ? current.totalTokens ?? (current.inputTokens ?? 0) + (current.outputTokens ?? 0) : 0);
+    const cost = prior.cost + (current?.costUsd ?? 0);
+    const latency = prior.latency + (current?.latencyMs ?? 0);
+    const retries = prior.retries + (current?.retries ?? 0);
+    const cacheMisses = prior.cacheMisses + (current?.cacheHit === false ? 1 : 0);
     return (run.budget.maxTokens !== undefined && tokens > run.budget.maxTokens)
-      || (run.budget.maxCostUsd !== undefined && cost > run.budget.maxCostUsd);
+      || (run.budget.maxCostUsd !== undefined && cost > run.budget.maxCostUsd)
+      || (run.budget.maxLatencyMs !== undefined && latency > run.budget.maxLatencyMs)
+      || (run.budget.maxRetries !== undefined && retries > run.budget.maxRetries)
+      || (run.budget.maxCacheMisses !== undefined && cacheMisses > run.budget.maxCacheMisses);
   }
 
   private timestamp(): string {
@@ -680,6 +868,11 @@ export class RuntimeFacade {
 
   private async append(event: NewDomainEvent): Promise<DomainEvent> {
     const stored = await this.store.append({ ...event, timestamp: event.timestamp ?? this.timestamp() });
+    this.notifyEvent(stored);
+    return stored;
+  }
+
+  private notifyEvent(stored: DomainEvent): void {
     for (const listener of this.eventListeners) {
       try {
         listener(stored);
@@ -687,7 +880,6 @@ export class RuntimeFacade {
         // Observers must not be able to break the Runtime write path.
       }
     }
-    return stored;
   }
 
   private async transition(runId: ID, action: Parameters<typeof transitionRunState>[1], payload: Record<string, unknown> = {}): Promise<Run> {
@@ -709,4 +901,62 @@ export class RuntimeFacade {
     const action = run.state === 'executing' ? 'execution_failed' : run.state === 'paused' ? 'resume' : 'fail';
     return this.transition(runId, action, { error });
   }
+
+  private async offloadLargeToolResult(result: ToolExecutorResult, pending: PendingApproval, runId: ID): Promise<ToolExecutorResult> {
+    if (result.output === undefined) return result;
+    const content = typeof result.output === 'string' ? result.output : JSON.stringify(result.output);
+    if (Buffer.byteLength(content, 'utf8') <= 8_000) return result;
+    if (!this.artifactStore) {
+      return {
+        ...result,
+        ok: false,
+        output: undefined,
+        error: 'ArtifactStore is unavailable for a large tool result; delivery is blocked.',
+        receipt: { ...(result.receipt ?? {}), artifactStoreError: 'unavailable', sideEffect: result.receipt?.sideEffect ?? 'none' },
+      };
+    }
+    try {
+      const artifact = await this.artifactStore.put({
+        runId,
+        type: 'tool-output',
+        content,
+        path: typeof pending.call.arguments.path === 'string' ? pending.call.arguments.path : undefined,
+        limitations: ['Large tool output is stored as an explicit Artifact; only a bounded preview is retained in the event ledger.'],
+      });
+      const preview = `${content.slice(0, 2_000)}…`;
+      return {
+        ...result,
+        output: preview,
+        receipt: { ...(result.receipt ?? {}), artifact },
+      };
+    } catch (error) {
+      return { ...result, receipt: { ...(result.receipt ?? {}), artifactStoreError: sanitizeDiagnostic(error) } };
+    }
+  }
+}
+
+function hashAction(value: Record<string, unknown>): string {
+  return createHash('sha256').update(stableJson(value)).digest('hex');
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function isApprovalBinding(value: unknown): value is ApprovalBinding {
+  if (!value || typeof value !== 'object') return false;
+  const binding = value as Partial<ApprovalBinding>;
+  return typeof binding.approvalId === 'string'
+    && typeof binding.nonce === 'string'
+    && typeof binding.toolProfileId === 'string'
+    && typeof binding.toolProfileVersion === 'string'
+    && typeof binding.actionHash === 'string'
+    && typeof binding.workspaceId === 'string'
+    && typeof binding.policyVersion === 'string'
+    && typeof binding.principal === 'string'
+    && typeof binding.expiresAt === 'string';
 }

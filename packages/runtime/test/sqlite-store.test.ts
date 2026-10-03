@@ -67,6 +67,56 @@ test('two SQLite store instances allocate a unique append-only sequence', async 
   })
 })
 
+test('SQLite lease acquisition is an atomic owner decision across Runtime instances', async () => {
+  await withDatabase(async (filename) => {
+    const first = openSqliteEventStore(filename)
+    const second = openSqliteEventStore(filename)
+    await first.store.appendMany([
+      { type: 'task.created', taskId: 'task-lease', payload: { id: 'task-lease', goal: 'lease', workspaceId: 'workspace-1' } },
+      { type: 'session.created', taskId: 'task-lease', sessionId: 'session-lease', payload: { id: 'session-lease', taskId: 'task-lease', status: 'active' } },
+      { type: 'run.created', taskId: 'task-lease', sessionId: 'session-lease', runId: 'run-lease', payload: { id: 'run-lease', taskId: 'task-lease', sessionId: 'session-lease', state: 'deciding', steps: 0, reviewerRounds: 0, budget: { maxSteps: 2, maxDurationMs: 1000, maxReviewerRounds: 0 } } },
+    ])
+    const [left, right] = await Promise.all([
+      first.store.tryAcquireRunLease!({ runId: 'run-lease', ownerId: 'owner-left', leaseExpiresAt: '2099-01-01T00:00:00.000Z', now: '2026-10-03T00:00:00.000Z' }),
+      second.store.tryAcquireRunLease!({ runId: 'run-lease', ownerId: 'owner-right', leaseExpiresAt: '2099-01-01T00:00:00.000Z', now: '2026-10-03T00:00:00.000Z' }),
+    ])
+    assert.equal([left, right].filter((value) => value !== false).length, 1)
+    assert.equal([left, right].filter((value) => value === false).length, 1)
+    const owner = (await first.store.getRun('run-lease'))?.ownerId
+    assert.ok(owner === 'owner-left' || owner === 'owner-right')
+    await first.store.close()
+    await second.store.close()
+  })
+})
+
+test('SQLite owner release clears the durable lease projection for reconnect', async () => {
+  await withDatabase(async (filename) => {
+    const first = openSqliteEventStore(filename)
+    const runtime = new RuntimeFacade({
+      store: first.store,
+      provider: new MockProvider(),
+      ownerId: 'owner-first',
+    })
+    const task = await runtime.createTask({ goal: 'pause on shutdown', workspaceId: 'workspace-1' })
+    const session = await runtime.createSession({ taskId: task.id })
+    const run = await runtime.startRun({ taskId: task.id, sessionId: session.id })
+    await runtime.shutdown('test disconnect')
+    assert.equal((await first.store.getRun(run.id))?.ownerId, undefined)
+    await first.store.close()
+
+    const second = openSqliteEventStore(filename)
+    const claimed = await second.store.tryAcquireRunLease!({
+      runId: run.id,
+      ownerId: 'owner-second',
+      leaseExpiresAt: '2099-01-01T00:00:00.000Z',
+      now: '2026-10-03T00:00:00.000Z',
+    })
+    assert.notEqual(claimed, false)
+    assert.equal((await second.store.getRun(run.id))?.ownerId, 'owner-second')
+    await second.store.close()
+  })
+})
+
 test('a second Runtime reopens a completed run without calling the provider again', async () => {
   await withDatabase(async (filename) => {
     const first = openSqliteEventStore(filename);

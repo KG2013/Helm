@@ -10,3 +10,4 @@ export * from './trace.js';
 export * from './experience.js';
 export * from './projection.js';
 export * from './office.js';
+export * from './artifacts.js';
