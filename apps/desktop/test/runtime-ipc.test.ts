@@ -100,10 +100,20 @@ test('desktop IPC inspect uses the registered read-only Runtime path and artifac
       })
       poll()
     })
-    const snapshot = await ipc.invoke(IPC_CHANNELS.runSnapshot, started.run.id) as { run: { verification?: { result: string; evidence: Array<{ uri?: string }> } }; events: Array<{ type: string; payload: Record<string, unknown> }> }
+    const snapshot = await ipc.invoke(IPC_CHANNELS.runSnapshot, started.run.id) as { run: { verification?: { result: string; evidence: Array<{ uri?: string }> } }; events: Array<{ type: string; payload: Record<string, unknown> }>; projection: { artifacts: Array<{ type: string; tool: string; sourceRunId?: string; path?: string }>; verification?: { result: string } } }
     assert.equal(snapshot.run.verification?.result, 'passed')
     assert.match(snapshot.run.verification?.evidence[0]?.uri ?? '', /^workspace:\/\//)
     assert.ok(snapshot.events.some((event) => event.type === 'tool.receipt'))
+    assert.equal(snapshot.projection.verification?.result, 'passed')
+    assert.equal(snapshot.projection.artifacts.length, 1)
+    assert.equal(snapshot.projection.artifacts[0]?.type, 'workspace-inspection')
+    assert.equal(snapshot.projection.artifacts[0]?.tool, 'workspace.inspect')
+    assert.equal(snapshot.projection.artifacts[0]?.sourceRunId, started.run.id)
+    const exported = await ipc.invoke(IPC_CHANNELS.runExport, { runId: started.run.id }) as { runId: string; jsonl: string; projection: typeof snapshot.projection }
+    assert.equal(exported.runId, started.run.id)
+    assert.match(exported.jsonl, /"type":"tool\.receipt"/)
+    assert.equal(exported.projection.verification?.result, 'passed')
+    assert.equal(exported.projection.artifacts[0]?.sourceRunId, started.run.id)
     stop()
   } finally {
     await rm(root, { recursive: true, force: true })

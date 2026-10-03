@@ -1,15 +1,18 @@
-import { reduceRunEvents, type DomainEvent, type RuntimeFacade, type Session, type Task } from '@helm/runtime'
+import { buildRunProjection, reduceRunEvents, type DomainEvent, type RuntimeFacade, type Session, type Task } from '@helm/runtime'
 import {
   IPC_CHANNELS,
   isRunId,
   isRunControlRequest,
   isRunApprovalRequest,
+  isRunExportRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
   type StartRunRequest,
   type RunControlRequest,
   type RunApprovalRequest,
+  type RunExportRequest,
+  type RunExportResponse,
   type StartRunResponse,
 } from '../shared/ipc.js'
 
@@ -99,8 +102,30 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     const task = runtime.getTask(run.taskId)
     const session = runtime.getSession(run.sessionId)
     if (!task || !session) throw new Error('Run metadata unavailable.')
-    const snapshot: RunSnapshot = { task, session, run, events }
+    const projection = buildRunProjection(events, run)
+    const snapshot: RunSnapshot = {
+      task,
+      session,
+      run,
+      events: events.map(sanitizeEvent),
+      projection: sanitizeValue(projection) as RunSnapshot['projection'],
+    }
     return snapshot
+  })
+  ipc.handle(IPC_CHANNELS.runExport, async (_event, value) => {
+    if (!isRunExportRequest(value)) throw new Error('Invalid Run export request.')
+    const request = value as RunExportRequest
+    const events = await runtime.getEvents(request.runId)
+    if (!events.length) throw new Error('Unknown run.')
+    const run = reduceRunEvents(events, request.runId)
+    const projection = buildRunProjection(events, run)
+    const sanitizedEvents = events.map(sanitizeEvent)
+    const response: RunExportResponse = {
+      runId: request.runId,
+      jsonl: sanitizedEvents.map((event) => JSON.stringify(event)).join('\n'),
+      projection: sanitizeValue(projection) as RunExportResponse['projection'],
+    }
+    return response
   })
 
   return unsubscribe

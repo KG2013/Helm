@@ -54,7 +54,7 @@ test('production Electron Main/preload/Renderer completes two real UI Runs', asy
       processType: typeof (globalThis as { process?: unknown }).process,
       requireType: typeof (globalThis as { require?: unknown }).require,
     }))
-    assert.deepEqual(bridge.helmKeys, ['controlRun', 'getRunSnapshot', 'resolveApproval', 'runtimeInfo', 'startRun', 'subscribe'])
+    assert.deepEqual(bridge.helmKeys, ['controlRun', 'exportRun', 'getRunSnapshot', 'resolveApproval', 'runtimeInfo', 'startRun', 'subscribe'])
     assert.equal(bridge.processType, 'undefined', 'Renderer must not receive Node process')
     assert.equal(bridge.requireType, 'undefined', 'Renderer must not receive CommonJS require')
 

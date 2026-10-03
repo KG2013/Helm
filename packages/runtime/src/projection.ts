@@ -1,0 +1,159 @@
+import type { DomainEvent, ID, Run, Verification } from './types.js';
+import { reduceRunEvents } from './events.js';
+
+/**
+ * The evidence projection is the read model shared by CLI and Desktop.
+ *
+ * It intentionally derives every field from the append-only Run events. A
+ * surface may choose how to render the projection, but it must not invent a
+ * second Artifact or Verification model of its own.
+ */
+export interface ProjectedArtifact {
+  id: ID;
+  runId: ID;
+  sequence: number;
+  type: string;
+  tool: string;
+  ok: boolean;
+  sideEffect?: string;
+  sourceRunId?: ID;
+  path?: string;
+  changedFiles: string[];
+  hash?: string;
+  bytes?: number;
+  diff?: {
+    text?: string;
+    hash?: string;
+  };
+  test?: {
+    command?: string;
+    args?: string[];
+    exitCode?: number;
+    output?: string;
+    outputHash?: string;
+  };
+  receipt: Record<string, unknown>;
+}
+
+export interface ProjectedApproval {
+  id: ID;
+  runId: ID;
+  sequence: number;
+  approvalId: ID;
+  decision?: 'approve' | 'deny';
+  reason?: string;
+  workspaceId?: ID;
+  call?: Record<string, unknown>;
+}
+
+export interface RunProjection {
+  run: Run;
+  artifacts: ProjectedArtifact[];
+  approvals: ProjectedApproval[];
+  verification?: Verification;
+}
+
+/** Build the same Run/Artifact/Approval/Verification read model for all surfaces. */
+export function buildRunProjection(events: readonly DomainEvent[], run?: Run): RunProjection {
+  const projectedRun = run ?? reduceRunEvents(events);
+  const artifacts = events
+    .filter((event) => event.type === 'tool.receipt')
+    .map((event) => projectReceipt(event))
+    .filter((artifact): artifact is ProjectedArtifact => Boolean(artifact));
+
+  const approvals = new Map<ID, ProjectedApproval>();
+  for (const event of events) {
+    if (event.type === 'approval.requested') {
+      const payload = event.payload as Record<string, unknown>;
+      if (typeof payload.approvalId !== 'string') continue;
+      approvals.set(payload.approvalId, {
+        id: event.id,
+        runId: event.runId ?? projectedRun.id,
+        sequence: event.sequence,
+        approvalId: payload.approvalId,
+        reason: typeof payload.reason === 'string' ? payload.reason : undefined,
+        workspaceId: typeof payload.workspaceId === 'string' ? payload.workspaceId : undefined,
+        call: asRecord(payload.call),
+      });
+    }
+    if (event.type === 'approval.decided') {
+      const payload = event.payload as Record<string, unknown>;
+      const approvalId = typeof payload.approvalId === 'string' ? payload.approvalId : undefined;
+      if (!approvalId) continue;
+      const prior = approvals.get(approvalId);
+      approvals.set(approvalId, {
+        ...(prior ?? { id: event.id, runId: event.runId ?? projectedRun.id, sequence: event.sequence, approvalId }),
+        decision: payload.decision === 'approve' || payload.decision === 'deny' ? payload.decision : undefined,
+        sequence: event.sequence,
+      });
+    }
+  }
+
+  const latestVerification = [...events].reverse().find((event) => event.type === 'verification.result');
+  const verification = asRecord(latestVerification?.payload)?.verification;
+  return {
+    run: projectedRun,
+    artifacts,
+    approvals: [...approvals.values()],
+    verification: isVerification(verification) ? verification : projectedRun.verification,
+  };
+}
+
+function projectReceipt(event: DomainEvent): ProjectedArtifact | undefined {
+  const payload = event.payload as Record<string, unknown>;
+  const receipt = asRecord(payload.receipt);
+  if (!receipt) return undefined;
+  const artifact = asRecord(receipt.artifact);
+  const tool = typeof payload.name === 'string'
+    ? payload.name
+    : typeof receipt.tool === 'string' ? receipt.tool : 'unknown';
+  const type = typeof artifact?.type === 'string'
+    ? artifact.type
+    : typeof receipt.profile === 'string' ? receipt.profile.split('@')[0] : tool;
+  const path = typeof artifact?.path === 'string'
+    ? artifact.path
+    : typeof receipt.path === 'string' ? receipt.path : undefined;
+  const changedFiles = Array.isArray(artifact?.changedFiles)
+    ? artifact.changedFiles.filter((value): value is string => typeof value === 'string')
+    : path && (tool === 'workspace.edit' || tool === 'workspace.patch' || tool === 'workspace.diff') ? [path] : [];
+  const output = typeof payload.output === 'string' ? payload.output : undefined;
+  const hash = typeof artifact?.hash === 'string' ? artifact.hash : undefined;
+  const test = tool === 'workspace.test'
+    ? {
+        command: typeof receipt.command === 'string' ? receipt.command : undefined,
+        args: Array.isArray(receipt.args) ? receipt.args.filter((value): value is string => typeof value === 'string') : undefined,
+        exitCode: typeof receipt.exitCode === 'number' ? receipt.exitCode : undefined,
+        output,
+        outputHash: hash,
+      }
+    : undefined;
+  const diff = tool === 'workspace.diff' ? { text: output, hash } : undefined;
+  return {
+    id: event.id,
+    runId: event.runId ?? String(artifact?.sourceRunId ?? ''),
+    sequence: event.sequence,
+    type,
+    tool,
+    ok: payload.ok === true,
+    sideEffect: typeof receipt.sideEffect === 'string' ? receipt.sideEffect : undefined,
+    sourceRunId: typeof artifact?.sourceRunId === 'string' ? artifact.sourceRunId : event.runId,
+    path,
+    changedFiles,
+    hash,
+    bytes: typeof artifact?.bytes === 'number' ? artifact.bytes : undefined,
+    diff,
+    test,
+    receipt,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function isVerification(value: unknown): value is Verification {
+  const record = asRecord(value);
+  return (record?.result === 'passed' || record?.result === 'failed' || record?.result === 'unknown')
+    && typeof record.verifier === 'string'
+    && Array.isArray(record.evidence);
+}

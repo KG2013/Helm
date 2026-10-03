@@ -19,9 +19,9 @@
 
 目标链路：inspect → read → proposal → policy/approval → edit → test → diff → verification。
 
-确定性 fixture 已覆盖 read → approval → edit/patch → test → diff → verification；工具已注册 schema、采用 workspace 路径守卫、受控测试命令和可替换 sandbox；sandbox 不可用时拒绝执行。禁止将工作区目录或 Git worktree 当作执行隔离。CLI/Desktop 的同一 Artifact 投影仍待接线。
+确定性 fixture 已覆盖 read → approval → edit/patch → test → diff → verification；工具已注册 schema、采用 workspace 路径守卫、受控测试命令和可替换 sandbox；sandbox 不可用时拒绝执行。禁止将工作区目录或 Git worktree 当作执行隔离。Runtime 的同一 Run/Artifact/Approval/Verification projection 已接入 CLI JSON 与 Desktop snapshot/export；Coding Runtime 的入口调度和 Renderer diff/test 细节展示仍待接线。
 
-核心完成条件已由 Runtime fixture 覆盖：一次小修改有可审阅 diff、测试退出码、Coding Artifact 和 Coding Verifier；越界路径、拒绝授权和 sandbox 缺失分别进入明确结果。CLI/Desktop 的同一 Run/Artifact/Verification 结果仍属于后续切片。
+核心完成条件已由 Runtime fixture 覆盖：一次小修改有可审阅 diff、测试退出码、Coding Artifact 和 Coding Verifier；越界路径、拒绝授权和 sandbox 缺失分别进入明确结果。CLI/Desktop 已读取同一事件投影并提供脱敏导出；Coding 入口调度和完整 UI 交付仍属于后续切片。
 
 ## 3. 真实 Provider 与凭据（#8 已完成合同，真实联调待补）
 
@@ -35,9 +35,11 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 原生 SQLite contract tests 已覆盖迁移、事务、序列、projection 和恢复核心；Runtime owner/lease、stale owner 控制拒绝与 shutdown 安全暂停已接入，跨进程 owner arbitration 和完整 reconnect smoke 仍属于后续 T9/#14。
 
-## 5. Office Worker 核心已建立，Runtime 交付仍待接线
+## 5. Office Worker Runtime 核心已接线，桌面交付仍待补
 
-受限 JSONL worker 已提供 DOCX 最小生成、XLSX 指定单元格读写和 PDF text-layer 提取，并返回 hash、source Run、worker Receipt 与 limitations。Runtime 仍需为这些操作注册 Tool Profile、Policy/Approval、Artifact ownership 和 Office Verifier；扫描 PDF 需接入 OCR 后才可交付页码/置信度证据。
+受限 JSONL worker 已提供 DOCX package/content 检查、XLSX 指定单元格/范围读写与 target/scope snapshot、PDF text-layer 分页来源与 coverage，并返回 hash、source Run、worker Receipt、checks 与 limitations。Runtime 已通过 `createOfficeRuntime` 注册 Tool Profile、Policy/Approval、Worker Client、Artifact receipt 和 Office Verifier；缺渲染、OCR、覆盖率或未授权范围证据时返回 UNKNOWN 并暂停交付。
+
+下一步接入真实 worker 进程管理、CLI/Desktop 的同一 Artifact/Verification 投影；扫描 PDF 需接入带 confidence/页码来源的 OCR，DOCX 需显式执行视觉渲染检查后才可交付。
 
 随后补跨恢复预算、重试/限流分类、诊断导出、故障注入与 Experience Candidate review UI；UsageLedger、Episode、release gate 和成对 Context compaction 核心已建立，仍需接入固定 Coding/Office dev/holdout 三轮运行。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化等维持 P0 范围约束。
 

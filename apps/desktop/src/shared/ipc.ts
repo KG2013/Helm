@@ -1,4 +1,4 @@
-import type { DomainEvent, Run, Session, Task } from '@helm/runtime'
+import type { DomainEvent, Run, RunProjection, Session, Task } from '@helm/runtime'
 
 export const IPC_CHANNELS = {
   runtimeInfo: 'helm:runtime-info',
@@ -6,6 +6,7 @@ export const IPC_CHANNELS = {
   runSnapshot: 'helm:run-snapshot',
   runControl: 'helm:run-control',
   runApproval: 'helm:run-approval',
+  runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
 
@@ -34,6 +35,16 @@ export type RunApprovalRequest = {
   decision: 'approve' | 'deny'
 }
 
+export type RunExportRequest = {
+  runId: string
+}
+
+export type RunExportResponse = {
+  runId: string
+  jsonl: string
+  projection: RunProjection
+}
+
 export type StartRunResponse = {
   task: Task
   session: Session
@@ -47,6 +58,7 @@ export type RunSnapshot = {
   session: Session
   run: Run
   events: DomainEvent[]
+  projection: RunProjection
 }
 
 export function isStartRunRequest(value: unknown): value is StartRunRequest {
@@ -72,4 +84,9 @@ export function isRunApprovalRequest(value: unknown): value is RunApprovalReques
   const request = value as Partial<RunApprovalRequest>
   return isRunId(request.runId) && isRunId(request.approvalId) && isRunId(request.workspaceId)
     && (request.decision === 'approve' || request.decision === 'deny')
+}
+
+export function isRunExportRequest(value: unknown): value is RunExportRequest {
+  if (!value || typeof value !== 'object') return false
+  return isRunId((value as Partial<RunExportRequest>).runId)
 }
