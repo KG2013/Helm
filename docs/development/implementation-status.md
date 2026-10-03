@@ -1,6 +1,6 @@
 # 当前实现状态
 
-核对日期：2026-10-03。本文以本仓库代码为依据；[架构基线](../design/architecture-v0.md) 和 accepted ADR 表达目标，不代表 P0 已完成。
+核对日期：2026-10-03。本文以本仓库代码和 2026-10-03 验收记录为依据；[架构基线](../design/architecture-v0.md) 和 accepted ADR 表达目标，实时供应商/Office 依赖仍按环境边界单独标注。
 
 ## 已建立的骨架
 
@@ -29,7 +29,7 @@ Keychain、受限 shell、真实工件存储和 Office Runtime verifier 已接�
 | 检查 | 已验证结果 | 实际覆盖 |
 |---|---|---|
 | `pnpm build` | 通过 | Runtime、Provider、CLI 输出及桌面 TypeScript/Vite/esbuild 构建 |
-| `pnpm test` | 通过 | Runtime 当前 47 项、Provider 7 项、Desktop IPC 6 项；SQLite、Provider、Coding、Office 和 Projection 合同使用本地 fixture，Kimi 真实请求单独记录 |
+| `pnpm test` | 通过 | Runtime 54 项、Provider 8 项、Desktop IPC 7 项；SQLite、Provider、Coding、Office 和 Projection 合同使用本地 fixture，Kimi 真实请求单独记录 |
 | `pnpm typecheck` | 通过 | Runtime、Provider、CLI；桌面检查在 build 中 |
 | Worker health / inspect | 返回成功结构化回执 | inspect 仅验证文件元数据 |
 | 桌面开发预览 | 前序已启动 Vite/Electron 并预览界面 | 预览本身不证明 IPC；真实模型、审批、工件或打包版本端到端测试待后续 |
@@ -38,6 +38,6 @@ Keychain、受限 shell、真实工件存储和 Office Runtime verifier 已接�
 | CLI 源码及构建产物启动 | Mock Run 返回 completed；`inspect .` 返回 completed、inspect verification passed、结构化 Artifact receipt | 不代表执行了用户目标中的写入、编码或 Office 操作 |
 | Document Worker contract | 9 项 Python tests 通过；DOCX package/content 与可选有界渲染检查、XLSX 指定单元格读写与 bounded workbook fingerprint、target/scope checks、越界路径拒绝、扫描 PDF 的 OCR unavailable/unknown、逐页来源指纹与可用工具 fixture；Runtime Office fixture 8 项覆盖真实 Python JSONL client、Runtime E2E 和 symlink guard | CLI/Desktop 尚未统一展示 Office Artifact/Verification；OCR 仍取决于目标环境工具，DOCX 仅验证有界转换和页数，不代表像素级视觉对比 |
 
-Runtime 当前 49 项测试覆盖状态机、SQLite migration/事务/跨实例序号与原子 lease、重启 replay、checkpoint、approval hydrate/绑定过期、known/unknown receipt recovery、owner/lease shutdown、独立进程 approval reconnect、Provider-driven inspect Context/ToolResult、成功与失败 UsageLedger（Provider/Tool request-ID 去重）、ArtifactStore 大输出、Episode trace（含 step/policy/tool profile 版本）/固定三次 dev-holdout release gate、Token/latency/retry/cache budgets、Experience Candidate、成对 Context compaction、Coding read/edit/test/diff、Office DOCX/XLSX/PDF Worker Client/Policy/Verifier、Projection、sandbox fail-closed、在途取消，以及 inspect 安全边界。Provider 的 7 项测试覆盖三家 capability fixture、结构化请求、usage/cost、HTTP 分类、取消/超时、预取消和 normalized stream chunks。Desktop IPC 的 6 项测试覆盖公开 handler 的控制、inspect artifact、Episode 导出、审批和失败/未知分支；Electron production smoke 还验证真实窗口边界。Kimi Code CLI 与 Electron 请求均使用 Keychain 中的用户凭据并成功返回，但这只证明文本请求连通性，不代表 Office 或完整编码任务验收。
+Runtime 当前 54 项测试覆盖状态机、SQLite migration/事务/跨实例序号与原子 lease、重启 replay、checkpoint、approval hydrate/绑定过期、known/unknown receipt recovery、owner/lease shutdown、独立进程 approval reconnect、Provider-driven inspect Context/ToolResult、成功与失败 UsageLedger（Provider/Tool request-ID 去重）、ArtifactStore 大输出、Episode trace（含 step/policy/tool profile 版本）/固定三次 dev-holdout release gate、Token/latency/retry/cache budgets、Experience Candidate、成对 Context compaction、Coding read/edit/test/diff、Office DOCX/XLSX/PDF Worker Client/Policy/Verifier、Projection、sandbox fail-closed、在途取消，以及 inspect 安全边界。Provider 的 8 项测试覆盖三家 capability fixture、结构化请求、usage/cost、HTTP 分类、取消/超时、预取消和 normalized stream chunks。Desktop IPC 的 7 项测试覆盖公开 handler 的控制、inspect artifact、Episode 导出、审批和失败/未知分支；Electron production smoke 还验证真实窗口边界。Kimi Code CLI 与 Electron 请求均使用 Keychain 中的用户凭据并成功返回，但这只证明文本请求连通性，不代表 Office 或完整编码任务验收。
 
 后续测试目标见 [公共测试接口](../design/test-seams.md)，实施顺序见 [下一步计划](next-steps.md)。

@@ -33,16 +33,16 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 原生 Node SQLite adapter 已提供版本化迁移、WAL/事务、append-only sequence、durable projections、checkpoint、pending approval/receipt 恢复、未知工具对账和 JSONL 脱敏导出。CLI 通过 `HELM_STATE_DB` 接入，Desktop 主进程默认使用用户数据目录数据库。
 
-原生 SQLite contract tests 已覆盖迁移、事务、序列、projection 和恢复核心；Runtime owner/lease、stale owner 控制拒绝与 shutdown 安全暂停已接入，跨进程 owner arbitration 和完整 reconnect smoke 仍属于后续 T9/#14。
+原生 SQLite contract tests 已覆盖迁移、事务、序列、projection 和恢复核心；Runtime owner/lease、stale owner 控制拒绝、shutdown 安全暂停，以及独立 Node 进程的 owner arbitration、Approval reconnect 和 reconciliation smoke 已由 T9/#14 覆盖。Electron 打包重启回归仍需目标环境执行。
 
 ## 5. Office Worker Runtime 与交付已接线
 
-受限 JSONL worker 已提供 DOCX package/content 与可选有界 `soffice`/`libreoffice` PDF 转换检查、XLSX 指定单元格/范围读写与 target/scope snapshot、PDF text-layer 分页来源与 coverage，并在 `pdftoppm`/`tesseract` 可用时提供带页码和 confidence 的 OCR。所有路径均返回 hash、source Run、worker Receipt、checks 与 limitations；缺渲染、OCR、覆盖率或未授权范围证据时返回 UNKNOWN 并暂停交付。
+受限 JSONL worker 已提供 DOCX package/content 与可选有界 `soffice`/`libreoffice` PDF 转换检查、XLSX 指定单元格/范围读写与 bounded workbook fingerprint、target/scope checks、PDF text-layer 分页来源与 coverage，并在 `pdftoppm`/`tesseract` 可用时提供带页码和 confidence 的 OCR。所有路径均返回 hash、source Run、worker Receipt、checks 与 limitations；缺渲染、OCR、覆盖率或未授权范围证据时返回 UNKNOWN 并暂停交付。
 
 真实 worker 进程管理、Runtime E2E 和 CLI/Desktop 的同一 Artifact/Verification projection 已接入；目标环境仍需确认 OCR 工具链。当前 DOCX 检查验证有界转换和可打开的 PDF 页数，不做像素级视觉对比；缺少渲染器或 OCR 命令时保持 UNKNOWN。
 
-随后补真实 coding sandbox 适配、固定 Coding/Office dev/holdout 三轮运行的现场记录、打包应用重启回归和 Experience Candidate review UI；UsageLedger、Episode、release gate 和成对 Context compaction 核心已建立。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化等维持 P0 范围约束。
+剩余工作集中在 Docker image/daemon 的现场 smoke、DeepSeek/智谱真实联调、目标环境 Office/OCR 依赖、Electron 打包重启回归，以及 Experience Candidate review UI；UsageLedger、Episode、release gate、独立 Runtime reconnect 和成对 Context compaction 核心已建立。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化等维持 P0 范围约束。
 
 ## 与原架构阶段的关系
 
-架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 仍是持久恢复前提，执行隔离仍是真实副作用前提。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。
+架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。
