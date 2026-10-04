@@ -5,6 +5,7 @@ import { boundProviderEvents, buildProviderContext, normalizeProviderContextProj
 import { createExperienceCandidate as createCandidate, reviewExperienceCandidate as reviewCandidate, type ExperienceCandidate } from './experience.js';
 import { isBudgetExceeded, listReconciliationCandidates, summarizeBudgetUsage } from './hardening.js';
 import { ActionGateway, createToolActionAdapter, toolActionRequest } from './action-gateway.js';
+import { AgentRunCoordinator, type CreateChildAgentInput } from './agent.js';
 import type {
   Budget,
   ApprovalBinding,
@@ -110,6 +111,7 @@ export class RuntimeFacade {
   private readonly approvalTtlMs: number;
   private readonly artifactStore?: ArtifactStore;
   private readonly actionGateway: ActionGateway;
+  private readonly agentCoordinator: AgentRunCoordinator;
   private readonly eventListeners = new Set<RuntimeEventListener>();
   private readonly tasks = new Map<ID, Task>();
   private readonly sessions = new Map<ID, Session>();
@@ -133,6 +135,7 @@ export class RuntimeFacade {
     this.approvalTtlMs = options.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS;
     this.artifactStore = options.artifactStore;
     this.actionGateway = options.actionGateway ?? new ActionGateway({ store: this.store, clock: this.clock, ids: this.ids });
+    this.agentCoordinator = new AgentRunCoordinator({ store: this.store, gateway: this.actionGateway, clock: this.clock, ids: this.ids });
   }
 
   async createTask(input: TaskInput): Promise<Task> {
@@ -645,6 +648,22 @@ export class RuntimeFacade {
     };
     await this.append({ type: 'run.reconciled', taskId: run.taskId, sessionId: run.sessionId, runId: run.id, payload: record as unknown as Record<string, unknown> });
     return record;
+  }
+
+  async createAgentChild(input: CreateChildAgentInput) {
+    return this.agentCoordinator.createChild(input);
+  }
+
+  async listAgentRuns(parentRunId?: ID) {
+    return this.agentCoordinator.list(parentRunId);
+  }
+
+  async aggregateAgentResults(parentRunId: ID) {
+    return this.agentCoordinator.aggregate(parentRunId);
+  }
+
+  async executeAgentAction(input: Parameters<AgentRunCoordinator['executeChildAction']>[0]) {
+    return this.agentCoordinator.executeChildAction(input);
   }
 
   onEvent(listener: RuntimeEventListener): () => void {

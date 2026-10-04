@@ -54,3 +54,23 @@ test('child result requires typed evidence and is replayable through the parent 
   assert.equal((await coordinator.get(child.agentRunId))?.state, 'completed');
   assert.equal((await coordinator.list(rootRun.id)).length, 1);
 });
+
+test('child actions are bounded by identity scope and aggregate typed evidence', async () => {
+  const { coordinator } = await fixture();
+  const child = await coordinator.createChild({
+    parentRunId: rootRun.id, role: 'worker', principal: 'local-user', goal: 'bounded action',
+    capabilities: ['record.read'], scope: { connector: 'loopback', records: ['1'] },
+    allowedCapabilities: ['record.read'], allowedScope: { connector: 'loopback', records: ['1', '2'] },
+  });
+  const result = await coordinator.executeChildAction({
+    agentRunId: child.agentRunId, actionId: 'child-action-1', profile: { id: 'connector.read', version: 'v1' },
+    target: 'loopback://records/1', capabilities: ['record.read'], scope: { connector: 'loopback', records: ['1'] },
+    argsHash: 'hash', argsSummary: 'record:1', adapter: { id: 'loopback', execute: async () => ({ ok: true, output: { id: '1' }, receipt: { sideEffect: 'none' }, evidence: [{ type: 'record', summary: 'record read back', uri: 'loopback://records/1' }] }) },
+  });
+  assert.equal(result.status, 'success');
+  assert.equal((await coordinator.aggregate(rootRun.id)).status, 'success');
+  await assert.rejects(() => coordinator.executeChildAction({
+    agentRunId: child.agentRunId, actionId: 'child-action-2', profile: { id: 'connector.write', version: 'v1' },
+    target: 'loopback://records/2', capabilities: ['record.write'], scope: { connector: 'loopback', records: ['2'] }, argsHash: 'hash', adapter: { id: 'loopback', execute: async () => ({ ok: true }) },
+  }), /capability/i);
+});

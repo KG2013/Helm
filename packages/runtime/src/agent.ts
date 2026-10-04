@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { ActionGateway } from './action-gateway.js';
-import type { AgentIdentity, AgentResult, AgentRunRecord, AgentRunState, ActionRequest, ArtifactReference, Budget, EventStore, Evidence, ID, RuntimeClock, RuntimeIdFactory } from './types.js';
+import type { AgentAggregateResult, AgentIdentity, AgentResult, AgentRunRecord, AgentRunState, ActionAdapter, ActionRequest, ArtifactReference, Budget, EventStore, Evidence, ID, RuntimeClock, RuntimeIdFactory } from './types.js';
 
 const clock: RuntimeClock = { now: () => new Date() };
 const ids: RuntimeIdFactory = { next: (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}` };
@@ -116,6 +116,59 @@ export class AgentRunCoordinator {
     await this.store.append({ type: 'agent.result', taskId: record.taskId, runId: record.parentRunId, payload: safe as unknown as Record<string, unknown> });
     await this.setState(result.agentRunId, result.status === 'success' ? 'completed' : result.status === 'failure' ? 'failed' : 'unknown');
     return safe;
+  }
+
+  async executeChildAction(input: { agentRunId: ID; actionId: ID; profile: { id: string; version: string }; target: string; capabilities: string[]; scope: Record<string, unknown>; argsHash: string; argsSummary?: string; adapter: ActionAdapter; deadline?: string }): Promise<AgentResult> {
+    const record = await this.requireAgent(input.agentRunId);
+    if (input.capabilities.some((capability) => !record.identity.capabilities.includes(capability))) throw new Error('Child Agent requested an ungranted capability.');
+    if (!scopeWithin(input.scope, record.scope)) throw new Error('Child Agent requested an out-of-scope action.');
+    if (record.state === 'created' || record.state === 'paused') await this.setState(record.agentRunId, 'running');
+    const parent = await this.store.getRun(record.parentRunId);
+    if (!parent) throw new Error(`Unknown parent Run: ${record.parentRunId}`);
+    const action = await this.gateway.executeApproved({
+      request: {
+        actionId: input.actionId,
+        runId: record.parentRunId,
+        taskId: record.taskId,
+        sessionId: parent.sessionId,
+        parentAgentId: record.identity.agentId,
+        profile: input.profile,
+        target: input.target,
+        scope: input.scope,
+        capabilities: input.capabilities,
+        network: { mode: 'none' },
+        argsHash: input.argsHash,
+        argsSummary: input.argsSummary,
+        idempotencyKey: `${record.agentRunId}:${input.actionId}`,
+        dryRun: false,
+        deadline: input.deadline ?? new Date(this.clock.now().getTime() + 60_000).toISOString(),
+      },
+      adapter: input.adapter,
+      markRunNeedsReconciliation: false,
+    });
+    const status = action.status === 'executed' && action.ok ? 'success' : action.status === 'unknown' ? 'unknown' : 'failure';
+    const evidence = action.evidence ?? [];
+    const result: AgentResult = {
+      agentRunId: record.agentRunId,
+      status,
+      output: action.output,
+      evidence,
+      artifacts: evidence.filter((item): item is Evidence & { uri: string; hash: string } => typeof item.uri === 'string' && typeof item.hash === 'string').map((item) => ({ uri: item.uri, type: item.type, hash: item.hash, bytes: 0, sourceRunId: record.parentRunId })),
+      conflict: status === 'success' && evidence.length === 0 ? 'Child action completed without evidence.' : undefined,
+    };
+    if (result.status === 'success' && result.evidence.length === 0) result.status = 'unknown';
+    return this.recordResult(result);
+  }
+
+  async aggregate(parentRunId: ID): Promise<AgentAggregateResult> {
+    const children = await this.list(parentRunId);
+    const events = await this.store.listAll();
+    const results = children.map((child) => [...events].reverse().find((event) => event.type === 'agent.result' && event.payload.agentRunId === child.agentRunId)?.payload as unknown as AgentResult | undefined).filter((result): result is AgentResult => Boolean(result));
+    if (results.length !== children.length) return { parentRunId, status: 'unknown', results, conflict: 'One or more child AgentRuns have no typed result.' };
+    if (results.some((result) => result.status === 'unknown')) return { parentRunId, status: 'unknown', results, conflict: 'Child Agent result or side effect is UNKNOWN.' };
+    if (results.some((result) => result.status === 'failure')) return { parentRunId, status: 'failure', results };
+    if (results.some((result) => result.conflict)) return { parentRunId, status: 'conflict', results, conflict: results.find((result) => result.conflict)?.conflict };
+    return { parentRunId, status: 'success', results };
   }
 
   async get(agentRunId: ID): Promise<AgentRunRecord | undefined> {

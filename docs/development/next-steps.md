@@ -59,6 +59,12 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 child 的实际执行、父结果聚合和 CLI/Desktop 操作入口在 #30 继续完成；当前切片只交付身份、授权边界和可回放关系。
 
+## 9. 受限子 Agent 执行与聚合（#30：已完成）
+
+`AgentRunCoordinator.executeChildAction` 会先检查 child 已授予的 capability/scope，再将动作交给 ActionGateway；适配器返回的输出只能形成 typed `AgentResult`，缺 Evidence/Artifact 的成功声明会降级为 UNKNOWN。`aggregate(parentRunId)` 在缺结果、UNKNOWN、失败和证据冲突时分别返回可观察状态，不把模型文字当作完成事实。CLI 提供 `helm agent list/create`，Desktop 提供 `agent-list/agent-create`，两者都从同一事件账本回放 parent/child 关系。
+
+累计预算、并发、取消和重启恢复在 #31 继续加固；本切片不放宽 child 的能力或 scope。
+
 ## 与原架构阶段的关系
 
 架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。

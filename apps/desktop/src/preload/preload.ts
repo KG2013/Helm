@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type RunApprovalRequest, type RunControlRequest, type RunExportRequest, type RunExportResponse, type RunReconciliationRequest, type RunReconciliationResponse, type RunSnapshot, type RuntimeInfo, type RunEventPayload, type StartRunRequest, type StartRunResponse } from '../shared/ipc.js'
+import { IPC_CHANNELS, type AgentCreateRequest, type AgentListRequest, type RunApprovalRequest, type RunControlRequest, type RunExportRequest, type RunExportResponse, type RunReconciliationRequest, type RunReconciliationResponse, type RunSnapshot, type RuntimeInfo, type RunEventPayload, type StartRunRequest, type StartRunResponse } from '../shared/ipc.js'
 
 contextBridge.exposeInMainWorld('helm', {
   runtimeInfo: (): Promise<RuntimeInfo> => ipcRenderer.invoke(IPC_CHANNELS.runtimeInfo),
@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('helm', {
   getRunSnapshot: (runId: string): Promise<RunSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.runSnapshot, runId),
   exportRun: (request: RunExportRequest): Promise<RunExportResponse> => ipcRenderer.invoke(IPC_CHANNELS.runExport, request),
   reconcileRun: (request: RunReconciliationRequest): Promise<RunReconciliationResponse> => ipcRenderer.invoke(IPC_CHANNELS.runReconciliation, request),
+  listAgents: (request?: AgentListRequest) => ipcRenderer.invoke(IPC_CHANNELS.agentList, request),
+  createAgent: (request: AgentCreateRequest) => ipcRenderer.invoke(IPC_CHANNELS.agentCreate, request),
   controlRun: (request: RunControlRequest) => ipcRenderer.invoke(IPC_CHANNELS.runControl, request),
   resolveApproval: (request: RunApprovalRequest) => ipcRenderer.invoke(IPC_CHANNELS.runApproval, request),
   subscribe: (listener: (payload: RunEventPayload) => void) => {

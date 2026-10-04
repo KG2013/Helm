@@ -7,6 +7,8 @@ export const IPC_CHANNELS = {
   runControl: 'helm:run-control',
   runApproval: 'helm:run-approval',
   runReconciliation: 'helm:run-reconciliation',
+  agentList: 'helm:agent-list',
+  agentCreate: 'helm:agent-create',
   runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
@@ -64,6 +66,20 @@ export type RunReconciliationResponse = {
   record?: ReconciliationRecord
 }
 
+export type AgentListRequest = { parentRunId?: string }
+export type AgentCreateRequest = {
+  parentRunId: string
+  parentAgentId?: string
+  role: string
+  principal: string
+  goal: string
+  capabilities: string[]
+  scope: Record<string, unknown>
+  allowedCapabilities: string[]
+  allowedScope: Record<string, unknown>
+  budget?: Partial<import('@helm/runtime').Budget>
+}
+
 export type StartRunResponse = {
   task: Task
   session: Session
@@ -119,4 +135,18 @@ export function isRunReconciliationRequest(value: unknown): value is RunReconcil
   if (request.reason !== undefined && (typeof request.reason !== 'string' || request.reason.length > 2_000)) return false
   if (request.evidence !== undefined && (!Array.isArray(request.evidence) || request.evidence.length > 32 || request.evidence.some((item) => !item || typeof item !== 'object' || typeof item.type !== 'string' || typeof item.summary !== 'string'))) return false
   return request.action === 'inspect' || Boolean(request.outcome)
+}
+
+export function isAgentListRequest(value: unknown): value is AgentListRequest {
+  return value === undefined || (Boolean(value) && typeof value === 'object' && ((value as AgentListRequest).parentRunId === undefined || isRunId((value as AgentListRequest).parentRunId)))
+}
+
+export function isAgentCreateRequest(value: unknown): value is AgentCreateRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<AgentCreateRequest>
+  return isRunId(request.parentRunId) && typeof request.role === 'string' && request.role.length <= 120
+    && isRunId(request.principal) && typeof request.goal === 'string' && request.goal.trim().length > 0 && request.goal.length <= 4_000
+    && Array.isArray(request.capabilities) && request.capabilities.every((item) => typeof item === 'string' && item.length <= 120)
+    && Array.isArray(request.allowedCapabilities) && request.allowedCapabilities.every((item) => typeof item === 'string' && item.length <= 120)
+    && Boolean(request.scope) && typeof request.scope === 'object' && Boolean(request.allowedScope) && typeof request.allowedScope === 'object'
 }

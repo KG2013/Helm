@@ -6,6 +6,8 @@ import {
   isRunApprovalRequest,
   isRunExportRequest,
   isRunReconciliationRequest,
+  isAgentListRequest,
+  isAgentCreateRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
@@ -16,6 +18,8 @@ import {
   type RunExportResponse,
   type RunReconciliationRequest,
   type RunReconciliationResponse,
+  type AgentListRequest,
+  type AgentCreateRequest,
   type StartRunResponse,
 } from '../shared/ipc.js'
 
@@ -160,6 +164,16 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
       record,
     }
     return sanitizeValue(response) as RunReconciliationResponse
+  })
+  ipc.handle(IPC_CHANNELS.agentList, async (_event, value) => {
+    if (!isAgentListRequest(value)) throw new Error('Invalid Agent list request.')
+    const request = (value ?? {}) as AgentListRequest
+    return sanitizeValue(await runtime.listAgentRuns(request.parentRunId))
+  })
+  ipc.handle(IPC_CHANNELS.agentCreate, async (_event, value) => {
+    if (!isAgentCreateRequest(value)) throw new Error('Invalid Agent create request.')
+    const request = value as AgentCreateRequest
+    return sanitizeValue(await runtime.createAgentChild(request))
   })
 
   return unsubscribe

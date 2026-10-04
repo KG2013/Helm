@@ -539,6 +539,13 @@ export interface AgentResult {
   conflict?: string;
 }
 
+export interface AgentAggregateResult {
+  parentRunId: ID;
+  status: 'success' | 'failure' | 'unknown' | 'conflict';
+  results: AgentResult[];
+  conflict?: string;
+}
+
 export interface VerifierInput {
   task: Task;
   run: Run;
