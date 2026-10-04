@@ -22,6 +22,7 @@ import {
   isBrowserActionRequest,
   isBrowserVerifyRequest,
   isA2AListRequest,
+  isA2AControlRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
@@ -48,6 +49,7 @@ import {
   type BrowserActionRequest,
   type BrowserVerifyRequest,
   type A2AListRequest,
+  type A2AControlRequest,
   type StartRunResponse,
 } from '../shared/ipc.js'
 
@@ -277,6 +279,13 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
   ipc.handle(IPC_CHANNELS.a2aList, async (_event, value) => {
     if (!isA2AListRequest(value)) throw new Error('Invalid A2A list request.')
     return sanitizeValue(await runtime.listA2ADeliveries((value as A2AListRequest | undefined)?.runId))
+  })
+  ipc.handle(IPC_CHANNELS.a2aControl, async (_event, value) => {
+    if (!isA2AControlRequest(value)) throw new Error('Invalid A2A control request.')
+    const request = value as A2AControlRequest
+    if (request.action === 'retry') return sanitizeValue(await runtime.retryA2A(request.messageId))
+    if (request.action === 'mark-unknown') return sanitizeValue(await runtime.markUnknownA2A(request.messageId, request.reason ?? 'Marked unknown by local operator.'))
+    return sanitizeValue(await runtime.reconcileA2A(request.messageId, request.outcome!, request.evidence, request.reason))
   })
 
   return unsubscribe

@@ -27,6 +27,7 @@ export const IPC_CHANNELS = {
   browserActionApprove: 'helm:browser-action-approve',
   browserVerify: 'helm:browser-verify',
   a2aList: 'helm:a2a-list',
+  a2aControl: 'helm:a2a-control',
   runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
@@ -121,6 +122,13 @@ export type BrowserActionProfileRequest = import('@helm/runtime').BrowserActionP
 export type BrowserActionRequest = import('@helm/runtime').BrowserActionInput
 export type BrowserVerifyRequest = { contextId: string; actionId: string; expectedDomAfterHash: string }
 export type A2AListRequest = { runId?: string }
+export type A2AControlRequest = {
+  messageId: string
+  action: 'retry' | 'mark-unknown' | 'reconcile'
+  outcome?: 'known' | 'failed' | 'unknown'
+  evidence?: Evidence[]
+  reason?: string
+}
 
 export type StartRunResponse = {
   task: Task
@@ -310,4 +318,14 @@ export function isBrowserVerifyRequest(value: unknown): value is BrowserVerifyRe
 
 export function isA2AListRequest(value: unknown): value is A2AListRequest {
   return value === undefined || (Boolean(value) && typeof value === 'object' && ((value as A2AListRequest).runId === undefined || isRunId((value as A2AListRequest).runId)))
+}
+
+export function isA2AControlRequest(value: unknown): value is A2AControlRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<A2AControlRequest>
+  if (!isRunId(request.messageId) || !['retry', 'mark-unknown', 'reconcile'].includes(request.action ?? '')) return false
+  if (request.outcome !== undefined && !['known', 'failed', 'unknown'].includes(request.outcome)) return false
+  if (request.reason !== undefined && (typeof request.reason !== 'string' || request.reason.length > 2_000)) return false
+  if (request.evidence !== undefined && (!Array.isArray(request.evidence) || request.evidence.length > 32 || request.evidence.some((item) => !item || typeof item !== 'object' || typeof item.type !== 'string' || typeof item.summary !== 'string'))) return false
+  return request.action !== 'reconcile' || Boolean(request.outcome)
 }

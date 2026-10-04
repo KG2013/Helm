@@ -77,6 +77,10 @@ export function evaluateReleaseGate(episodes: readonly Episode[], options: Relea
     const unknownActions = episode.events.filter((event) => event.type === 'action.receipt' && ((event.payload.receipt as Record<string, unknown> | undefined)?.effect === 'unknown' || event.payload.outcome === 'unknown'));
     const reconciledActions = new Set(episode.events.filter((event) => event.type === 'run.reconciled' && ['known', 'failed'].includes(String((event.payload as Record<string, unknown>).outcome))).map((event) => String((event.payload as Record<string, unknown>).actionId ?? '')));
     if (unknownActions.some((event) => !reconciledActions.has(String(event.payload.actionId ?? (event.payload.receipt as Record<string, unknown> | undefined)?.actionId ?? '')))) reasons.push(`${episode.runId}: action side effect is unknown.`);
+    const reconciledA2A = new Set(episode.events.filter((event) => event.type === 'a2a.reconciliation' && ['known', 'failed'].includes(String(event.payload.outcome))).map((event) => String(event.payload.messageId ?? '')));
+    const unknownA2A = episode.events.filter((event) => event.type === 'a2a.delivery' && event.payload.state === 'unknown');
+    if (unknownA2A.some((event) => !reconciledA2A.has(String(event.payload.messageId ?? '')))) reasons.push(`${episode.runId}: A2A delivery is unknown.`);
+    if (episode.events.some((event) => event.type === 'a2a.delivery' && event.payload.state === 'failed')) reasons.push(`${episode.runId}: A2A delivery failed.`);
     if (episode.events.some((event) => event.type === 'agent.result' && event.payload.status === 'unknown')) reasons.push(`${episode.runId}: child AgentRun result is unknown.`);
     if (containsCredentialMarker(episode.redactedJsonl)) reasons.push(`${episode.runId}: redacted export still contains a credential marker.`);
   }

@@ -99,6 +99,13 @@ export class RemoteAgentCoordinator {
     if (input.capabilities.some(isLocalCapability)) throw new Error('Remote Agent cannot request local workspace, shell, Keychain, or tool capabilities.');
     if (!scopeWithin(input.scope, input.recipient.scope)) throw new Error('Remote Agent scope is outside the authenticated recipient grant.');
     for (const artifact of input.artifactRefs ?? []) await this.verifyArtifact(artifact, input.parentRunId);
+    const priorDelivery = await this.transport.findDelivery(input.sender.id, input.recipient.id, input.idempotencyKey);
+    if (priorDelivery) {
+      const prior = await this.transport.get(priorDelivery.messageId);
+      const priorChild = prior ? await this.agents.get(prior.envelope.correlationId) : undefined;
+      if (!prior || !priorChild) throw new Error('Remote Agent idempotency record has incomplete lineage.');
+      return { child: priorChild, envelope: prior.envelope, delivery: prior.delivery, result: await this.latestResult(priorChild.agentRunId), aggregate: await this.agents.aggregate(priorChild.parentRunId) };
+    }
     const child = await this.agents.createChild({
       parentRunId: input.parentRunId,
       parentAgentId: input.parentAgentId,
@@ -141,13 +148,16 @@ export class RemoteAgentCoordinator {
     const child = await this.agents.get(record.envelope.correlationId);
     if (!child) throw new Error('Remote Agent child lineage is unavailable.');
     const existing = await this.latestResult(child.agentRunId);
-    if (record.delivery.state === 'ack' || record.delivery.state === 'failed' || existing) {
+    if (record.delivery.state === 'ack' || existing) {
       const delivery = record.delivery.state === 'sent' && existing
         ? await this.transport.ack(messageId, hash({ agentRunId: child.agentRunId, status: existing.status, evidence: existing.evidence, artifacts: existing.artifacts.map((artifact) => ({ uri: artifact.uri, hash: artifact.hash })) }))
         : record.delivery;
       return { child, envelope: record.envelope, delivery, result: existing, aggregate: await this.agents.aggregate(child.parentRunId) };
     }
-    if (record.delivery.state === 'queued') await this.transport.dispatch(messageId);
+    if (record.delivery.state === 'queued' || record.delivery.state === 'unknown' || record.delivery.state === 'failed') {
+      const dispatched = await this.transport.dispatch(messageId);
+      if (dispatched.state !== 'sent') return { child, envelope: record.envelope, delivery: dispatched, aggregate: await this.agents.aggregate(child.parentRunId) };
+    }
     let result: AgentResult;
     try {
       const workerResult = await worker({ envelope: record.envelope, child });
@@ -155,7 +165,7 @@ export class RemoteAgentCoordinator {
       result = await this.agents.recordResult({ agentRunId: child.agentRunId, status: safe.status, output: safe.output, evidence: safe.evidence, artifacts: safe.artifacts, conflict: safe.conflict });
     } catch (error) {
       result = await this.agents.recordResult({ agentRunId: child.agentRunId, status: 'unknown', evidence: [], artifacts: [], conflict: safeError(error) });
-      await this.transport.fail(messageId, safeError(error));
+      await this.transport.markUnknown(messageId, safeError(error));
       const aggregate = await this.agents.aggregate(child.parentRunId);
       await this.recordParentVerification(child.parentRunId, aggregate);
       return { child, envelope: record.envelope, delivery: (await this.transport.get(messageId))!.delivery, result, aggregate };

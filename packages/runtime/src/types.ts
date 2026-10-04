@@ -766,7 +766,7 @@ export interface BrowserRegistryOptions {
   ids?: RuntimeIdFactory;
 }
 
-export type A2ADeliveryState = 'queued' | 'sent' | 'ack' | 'failed';
+export type A2ADeliveryState = 'queued' | 'sent' | 'ack' | 'failed' | 'unknown';
 
 export interface A2AIdentity {
   id: ID;
@@ -821,6 +821,17 @@ export interface A2ADeliveryRecord {
   deadline: string;
   receiptHash?: string;
   error?: string;
+  reconciliationId?: ID;
+}
+
+export interface A2AReconciliationRecord {
+  id: ID;
+  messageId: ID;
+  runId: ID;
+  outcome: 'known' | 'failed' | 'unknown';
+  evidence: Evidence[];
+  reason?: string;
+  recordedAt: string;
 }
 
 export interface A2ATransportOptions {
@@ -883,6 +894,7 @@ export type EventType =
   | 'a2a.envelope'
   | 'a2a.delivery'
   | 'a2a.rejected'
+  | 'a2a.reconciliation'
   | 'tool.call'
   | 'tool.receipt'
   | 'step.observation'

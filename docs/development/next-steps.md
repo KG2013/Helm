@@ -105,6 +105,10 @@ child 的实际执行、父结果聚合和 CLI/Desktop 操作入口在 #30 继�
 
 远程 action 的 network 默认是 `none`；allowlist 模式必须同时命中 Runtime 配置的 endpoint allowlist 和 URL host，未 allowlist 的请求写入 `a2a.rejected` 并拒绝。远程 capability 不能包含本地 workspace、shell、Keychain 或 tool 边界，scope 和 capability 仍由 child grant 与 ActionGateway 重新检查，`approval_required` 只产生绑定具体 action/scope 的本地审批事件。worker 的 ACK/receipt/output 不能单独完成交付：success 必须携带本地可读 Artifact、Evidence 和 postcondition，Runtime 重新读取并校验 Artifact hash/bytes 后才 ACK；缺证据、越权、凭据样内容和未知副作用保持 UNKNOWN/失败并留在事件账本。
 
+## 20. A2A 投递幂等、迟到响应与重启对账（#41：已完成）
+
+`A2ALoopbackTransport` 持久化 `queued/sent/ack/failed/unknown`、correlation、deadline、attempt、receipt hash 和 reconciliation ID。相同 sender/recipient/idempotency key 的委派在创建 child 前复用已有 delivery/lineage；重试复用同一 message 与幂等键，`RemoteAgentCoordinator` 遇到已有 child result 不再次运行 worker。断连、过期 deadline 或迟到 ACK 进入 UNKNOWN；`a2a.reconciliation` 只有带有界证据才能将状态 mark-known/failed，未对账 UNKNOWN 会阻断 release gate。CLI 提供 `a2a retry` 与 `a2a reconcile`，Desktop 通过 `a2a-control` 使用同一 Runtime 对账入口；loopback 故障和 allowlist fixture 仍与真实网络 smoke 分开，跨机和任意互联网 endpoint 保持 opt-in。
+
 ## 与原架构阶段的关系
 
 架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type A2AListRequest, type AgentControlRequest, type AgentCreateRequest, type AgentListRequest, type BrowserActionProfileRequest, type BrowserActionRequest, type BrowserAssertRequest, type BrowserContextCreateRequest, type BrowserContextListRequest, type BrowserControlRequest, type BrowserNavigateRequest, type BrowserVerifyRequest, type ConnectorPreviewRequest, type ConnectorRegisterRequest, type ConnectorVerifyRequest, type ConnectorWriteRequest, type RunApprovalRequest, type RunControlRequest, type RunExportRequest, type RunExportResponse, type RunReconciliationRequest, type RunReconciliationResponse, type RunSnapshot, type RuntimeInfo, type RunEventPayload, type StartRunRequest, type StartRunResponse } from '../shared/ipc.js'
+import { IPC_CHANNELS, type A2AControlRequest, type A2AListRequest, type AgentControlRequest, type AgentCreateRequest, type AgentListRequest, type BrowserActionProfileRequest, type BrowserActionRequest, type BrowserAssertRequest, type BrowserContextCreateRequest, type BrowserContextListRequest, type BrowserControlRequest, type BrowserNavigateRequest, type BrowserVerifyRequest, type ConnectorPreviewRequest, type ConnectorRegisterRequest, type ConnectorVerifyRequest, type ConnectorWriteRequest, type RunApprovalRequest, type RunControlRequest, type RunExportRequest, type RunExportResponse, type RunReconciliationRequest, type RunReconciliationResponse, type RunSnapshot, type RuntimeInfo, type RunEventPayload, type StartRunRequest, type StartRunResponse } from '../shared/ipc.js'
 
 contextBridge.exposeInMainWorld('helm', {
   runtimeInfo: (): Promise<RuntimeInfo> => ipcRenderer.invoke(IPC_CHANNELS.runtimeInfo),
@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('helm', {
   approveBrowserAction: (request: BrowserActionRequest) => ipcRenderer.invoke(IPC_CHANNELS.browserActionApprove, request),
   verifyBrowserAction: (request: BrowserVerifyRequest) => ipcRenderer.invoke(IPC_CHANNELS.browserVerify, request),
   listA2ADeliveries: (request?: A2AListRequest) => ipcRenderer.invoke(IPC_CHANNELS.a2aList, request),
+  controlA2ADelivery: (request: A2AControlRequest) => ipcRenderer.invoke(IPC_CHANNELS.a2aControl, request),
   controlRun: (request: RunControlRequest) => ipcRenderer.invoke(IPC_CHANNELS.runControl, request),
   resolveApproval: (request: RunApprovalRequest) => ipcRenderer.invoke(IPC_CHANNELS.runApproval, request),
   subscribe: (listener: (payload: RunEventPayload) => void) => {

@@ -76,3 +76,34 @@ test('A2A loopback keeps context bounded and rejects credential-like content', a
   const input = unsigned({ context: { goalSummary: 'authorization: leaked-value' } });
   await assert.rejects(() => transport.send({ ...input, signature: transport.sign(input) }), /context/i);
 });
+
+test('A2A loopback keeps late ACKs UNKNOWN, retries the same message, and reconciles with evidence', async () => {
+  const store = new InMemoryEventStore();
+  const transport = new A2ALoopbackTransport({ store });
+  transport.registerIdentity(sender, 'sender-fixture-key');
+  transport.registerIdentity(recipient, 'recipient-fixture-key');
+  const input = unsigned({ idempotencyKey: 'retry-once' });
+  const sent = await transport.send({ ...input, signature: transport.sign(input) });
+  await transport.dispatch(sent.messageId);
+  const unknown = await transport.markUnknown(sent.messageId, 'remote disconnected after dispatch');
+  assert.equal(unknown.state, 'unknown');
+  const late = await transport.ack(sent.messageId, 'c'.repeat(64));
+  assert.equal(late.state, 'unknown');
+  assert.equal(late.receiptHash, 'c'.repeat(64));
+  const retried = await transport.retry(sent.messageId);
+  assert.equal(retried.state, 'sent');
+  assert.equal(retried.attempt, 2);
+  const acknowledged = await transport.ack(sent.messageId, 'd'.repeat(64));
+  assert.equal(acknowledged.state, 'ack');
+
+  const second = await transport.send({ ...input, idempotencyKey: 'reconcile-once', signature: transport.sign({ ...input, idempotencyKey: 'reconcile-once' }) });
+  await transport.dispatch(second.messageId);
+  await transport.markUnknown(second.messageId, 'remote restarted');
+  await assert.rejects(() => transport.reconcile(second.messageId, 'known'), /evidence/i);
+  const reconciled = await transport.reconcile(second.messageId, 'known', [{ type: 'local.postcondition', summary: 'Local read-after-write evidence.' }]);
+  assert.equal(reconciled.state, 'ack');
+  assert.ok(reconciled.reconciliationId);
+  const restarted = new A2ALoopbackTransport({ store });
+  assert.equal((await restarted.replay())[1]?.state, 'ack');
+  assert.ok((await store.listAll()).some((event) => event.type === 'a2a.reconciliation'));
+});

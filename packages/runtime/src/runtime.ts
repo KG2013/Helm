@@ -794,6 +794,18 @@ export class RuntimeFacade {
     return this.a2aTransport.fail(messageId, reason);
   }
 
+  retryA2A(messageId: ID) {
+    return this.a2aTransport.retry(messageId);
+  }
+
+  markUnknownA2A(messageId: ID, reason: string) {
+    return this.a2aTransport.markUnknown(messageId, reason);
+  }
+
+  reconcileA2A(messageId: ID, outcome: import('./types.js').A2AReconciliationRecord['outcome'], evidence: import('./types.js').Evidence[] = [], reason?: string) {
+    return this.a2aTransport.reconcile(messageId, outcome, evidence, reason);
+  }
+
   listA2ADeliveries(runId?: ID) {
     return this.a2aTransport.list(runId);
   }

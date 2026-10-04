@@ -5,6 +5,7 @@ import type {
   A2AEnvelope,
   A2AEnvelopeInput,
   A2AIdentity,
+  A2AReconciliationRecord,
   A2ATransportOptions,
   ArtifactReference,
   DomainEvent,
@@ -84,18 +85,32 @@ export class A2ALoopbackTransport {
   async dispatch(messageId: ID): Promise<A2ADeliveryRecord> {
     const record = await this.get(messageId);
     if (!record) throw new Error(`Unknown A2A message: ${messageId}`);
-    if (record.delivery.state === 'ack' || record.delivery.state === 'failed') return cloneDelivery(record.delivery);
+    if (record.delivery.state === 'ack') return cloneDelivery(record.delivery);
+    if (record.delivery.state === 'sent') return cloneDelivery(record.delivery);
+    if (Date.parse(record.envelope.deadline) <= this.clock.now().getTime()) return this.markUnknown(messageId, 'A2A deadline expired before dispatch.');
     const next = this.delivery(record.envelope, 'sent', record.delivery.queuedAt, record.delivery.attempt + 1, record.delivery);
     await this.appendDelivery(next);
     return cloneDelivery(next);
+  }
+
+  async retry(messageId: ID): Promise<A2ADeliveryRecord> {
+    const record = await this.get(messageId);
+    if (!record) throw new Error(`Unknown A2A message: ${messageId}`);
+    if (record.delivery.state === 'ack') return cloneDelivery(record.delivery);
+    return this.dispatch(messageId);
   }
 
   async ack(messageId: ID, receiptHash: string): Promise<A2ADeliveryRecord> {
     const record = await this.get(messageId);
     if (!record) throw new Error(`Unknown A2A message: ${messageId}`);
     if (record.delivery.state === 'ack') return cloneDelivery(record.delivery);
-    if (record.delivery.state !== 'sent') throw new Error(`A2A message ${messageId} is not awaiting ACK.`);
     if (!/^[a-f0-9]{64}$/i.test(receiptHash)) throw new Error('A2A receipt hash must be sha256.');
+    if (record.delivery.state === 'failed' || record.delivery.state === 'unknown') {
+      const next = this.delivery(record.envelope, 'unknown', record.delivery.queuedAt, record.delivery.attempt, record.delivery, { receiptHash, error: 'Late A2A ACK requires local reconciliation.' });
+      await this.appendDelivery(next);
+      return cloneDelivery(next);
+    }
+    if (record.delivery.state !== 'sent') throw new Error(`A2A message ${messageId} is not awaiting ACK.`);
     const next = this.delivery(record.envelope, 'ack', record.delivery.queuedAt, record.delivery.attempt, record.delivery, { receiptHash });
     await this.appendDelivery(next);
     return cloneDelivery(next);
@@ -107,6 +122,29 @@ export class A2ALoopbackTransport {
     if (record.delivery.state === 'failed') return cloneDelivery(record.delivery);
     if (record.delivery.state === 'ack') throw new Error(`A2A message ${messageId} is already acknowledged.`);
     const next = this.delivery(record.envelope, 'failed', record.delivery.queuedAt, record.delivery.attempt, record.delivery, { error: safeError(reason) });
+    await this.appendDelivery(next);
+    return cloneDelivery(next);
+  }
+
+  async markUnknown(messageId: ID, reason: string): Promise<A2ADeliveryRecord> {
+    const record = await this.get(messageId);
+    if (!record) throw new Error(`Unknown A2A message: ${messageId}`);
+    if (record.delivery.state === 'ack') return cloneDelivery(record.delivery);
+    if (record.delivery.state === 'unknown') return cloneDelivery(record.delivery);
+    const next = this.delivery(record.envelope, 'unknown', record.delivery.queuedAt, record.delivery.attempt, record.delivery, { error: safeError(reason) });
+    await this.appendDelivery(next);
+    return cloneDelivery(next);
+  }
+
+  async reconcile(messageId: ID, outcome: A2AReconciliationRecord['outcome'], evidence: A2AReconciliationRecord['evidence'] = [], reason?: string): Promise<A2ADeliveryRecord> {
+    const record = await this.get(messageId);
+    if (!record) throw new Error(`Unknown A2A message: ${messageId}`);
+    if ((outcome === 'known' || outcome === 'failed') && evidence.length === 0) throw new Error('A2A reconciliation requires evidence for a known or failed outcome.');
+    validateReconciliationEvidence(evidence);
+    const reconciliation: A2AReconciliationRecord = { id: this.ids.next('a2a-reconcile'), messageId, runId: record.envelope.runId, outcome, evidence: evidence.map(cloneEvidence), reason: reason ? safeError(reason) : undefined, recordedAt: this.clock.now().toISOString() };
+    await this.store.append({ type: 'a2a.reconciliation', taskId: record.envelope.taskId, runId: record.envelope.runId, payload: reconciliation as unknown as Record<string, unknown> });
+    const state: A2ADeliveryState = outcome === 'known' ? 'ack' : outcome === 'failed' ? 'failed' : 'unknown';
+    const next = this.delivery(record.envelope, state, record.delivery.queuedAt, record.delivery.attempt, record.delivery, { reconciliationId: reconciliation.id, error: outcome === 'unknown' ? reconciliation.reason : undefined });
     await this.appendDelivery(next);
     return cloneDelivery(next);
   }
@@ -133,7 +171,9 @@ export class A2ALoopbackTransport {
   }
 
   async replay(): Promise<A2ADeliveryRecord[]> { return this.list(); }
-  async replayPending(): Promise<A2ADeliveryRecord[]> { return (await this.list()).filter((record) => record.state === 'queued' || record.state === 'sent'); }
+  async replayPending(): Promise<A2ADeliveryRecord[]> { return (await this.list()).filter((record) => record.state === 'queued' || record.state === 'sent' || record.state === 'unknown'); }
+
+  async findDelivery(senderId: ID, recipientId: ID, idempotencyKey: string): Promise<A2ADeliveryRecord | undefined> { return this.findByIdempotency(senderId, recipientId, idempotencyKey); }
 
   private normalizeEnvelope(input: A2AEnvelopeInput | A2AEnvelope): A2AEnvelope {
     const messageId = 'messageId' in input && input.messageId ? input.messageId : this.ids.next('a2a-message');
@@ -191,4 +231,8 @@ function cloneContext(context: A2AEnvelopeInput['context']): A2AEnvelopeInput['c
 function cloneArtifact(artifact: ArtifactReference): ArtifactReference { return { ...artifact, limitations: artifact.limitations ? [...artifact.limitations] : undefined }; }
 function sanitizeEnvelope(envelope: A2AEnvelope): A2AEnvelope { return { ...envelope, sender: cloneIdentity(envelope.sender), recipient: cloneIdentity(envelope.recipient), context: { goalSummary: envelope.context.goalSummary.slice(0, 600), constraints: envelope.context.constraints?.slice(0, 16).map((item) => item.slice(0, 300)), summaries: envelope.context.summaries?.slice(0, 16).map((item) => item.slice(0, 300)) }, artifactRefs: envelope.artifactRefs?.map(cloneArtifact) }; }
 function cloneDelivery(delivery: A2ADeliveryRecord): A2ADeliveryRecord { return { ...delivery }; }
+function cloneEvidence(evidence: A2AReconciliationRecord['evidence'][number]): A2AReconciliationRecord['evidence'][number] { return { ...evidence }; }
+function validateReconciliationEvidence(evidence: A2AReconciliationRecord['evidence']): void {
+  if (evidence.length > 32 || evidence.some((item) => !item || typeof item.type !== 'string' || typeof item.summary !== 'string' || item.type.length > 120 || item.summary.length > 1_000 || SENSITIVE.test(item.summary) || (item.uri !== undefined && (item.uri.length > 500 || SENSITIVE.test(item.uri))) || (item.hash !== undefined && !/^[a-f0-9]{64}$/i.test(item.hash)))) throw new Error('A2A reconciliation evidence is unbounded or sensitive.');
+}
 function safeError(error: unknown): string { return (error instanceof Error ? error.message : String(error)).replace(/(?:api[-_ ]?key|authorization|cookie|password|secret|token)\s*[:=]\s*[^\s,;]+/gi, '[redacted]').slice(0, 500); }

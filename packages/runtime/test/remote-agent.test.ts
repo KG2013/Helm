@@ -31,6 +31,11 @@ test('Remote Agent delegation preserves child correlation, typed result, authori
   });
   assert.equal(delegated.delivery.state, 'queued');
   assert.equal(delegated.envelope.correlationId, delegated.child.agentRunId);
+  const duplicate = await remote.delegate({
+    parentRunId: rootRun.id, role: recipient.role, principal: recipient.principal, goal: 'Read one bounded fixture', capabilities: ['delegate:read'], scope: { taskId: rootRun.taskId }, allowedCapabilities: ['delegate:read'], allowedScope: { taskId: rootRun.taskId },
+    sender, recipient, context: { goalSummary: 'Read the bounded fixture only.', summaries: ['No conversation is forwarded.'] }, artifactRefs: [artifact], idempotencyKey: 'remote-once', deadline: delegated.envelope.deadline,
+  });
+  assert.equal(duplicate.child.agentRunId, delegated.child.agentRunId);
   const result = await remote.executeWorker(delegated.envelope.messageId, async ({ envelope, child }) => ({
     status: 'success' as const,
     output: { child: child.agentRunId, correlation: envelope.correlationId },
@@ -92,5 +97,5 @@ test('Remote Agent receipt alone cannot pass the local evidence and postconditio
   });
   const result = await remote.executeWorker(delegated.envelope.messageId, async () => ({ status: 'success' as const, evidence: [], artifacts: [] }));
   assert.equal(result.result?.status, 'unknown');
-  assert.equal(result.delivery.state, 'failed');
+  assert.equal(result.delivery.state, 'unknown');
 });
