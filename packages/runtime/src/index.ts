@@ -15,3 +15,4 @@ export * from './sandbox.js';
 export * from './evaluation.js';
 export * from './hardening.js';
 export * from './action-gateway.js';
+export * from './agent.js';

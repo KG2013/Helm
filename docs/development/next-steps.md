@@ -53,6 +53,12 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 真实 Connector、浏览器、子 Agent 和 A2A 适配器仍按各自独立 issue 接入；Gateway 本身不把远端 ACK、模型文字或文件存在当作完成证据。
 
+## 8. Multi-Agent 身份与父子关系（#29：已完成）
+
+`AgentRunCoordinator` 通过 ActionGateway 创建有界 child AgentRun，事件账本保存 agent identity、角色、能力、scope、目标、预算、状态及 parent/root lineage。创建前执行 capability 与 scope 子集检查，并限制嵌套深度；结果必须是 typed success/failure/UNKNOWN，success 至少携带 Evidence 或 Artifact。child 的动作不自授权，也不会把原始凭据或完整对话写入事件。
+
+child 的实际执行、父结果聚合和 CLI/Desktop 操作入口在 #30 继续完成；当前切片只交付身份、授权边界和可回放关系。
+
 ## 与原架构阶段的关系
 
 架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。

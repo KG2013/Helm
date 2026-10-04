@@ -506,6 +506,39 @@ export interface ActionExecutionResult {
   replayed?: boolean;
 }
 
+export type AgentRunState = 'created' | 'running' | 'paused' | 'completed' | 'failed' | 'unknown' | 'cancelled';
+
+export interface AgentIdentity {
+  agentId: ID;
+  role: string;
+  capabilities: string[];
+  principal: ID;
+}
+
+export interface AgentRunRecord {
+  agentRunId: ID;
+  rootRunId: ID;
+  parentRunId: ID;
+  parentAgentId?: ID;
+  taskId: ID;
+  identity: AgentIdentity;
+  goal: string;
+  scope: Record<string, unknown>;
+  budget: Partial<Budget>;
+  state: AgentRunState;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentResult {
+  agentRunId: ID;
+  status: 'success' | 'failure' | 'unknown';
+  output?: unknown;
+  evidence: Evidence[];
+  artifacts: ArtifactReference[];
+  conflict?: string;
+}
+
 export interface VerifierInput {
   task: Task;
   run: Run;
@@ -541,6 +574,9 @@ export type EventType =
   | 'action.approved'
   | 'action.denied'
   | 'action.receipt'
+  | 'agent.created'
+  | 'agent.state_changed'
+  | 'agent.result'
   | 'tool.call'
   | 'tool.receipt'
   | 'step.observation'
