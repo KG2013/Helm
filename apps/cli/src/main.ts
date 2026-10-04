@@ -29,7 +29,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 function printHelp(): void {
-  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm office health    Preflight Office/OCR dependencies and report versions\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm agent list <run-id>  List persisted child AgentRuns\n  helm agent create <run-id> <role> <goal>  Create a bounded child AgentRun\n  helm agent cancel|recover <run-id>  Cancel or recover child AgentRuns\n  helm connector list  List registered Connector Profiles\n  helm connector register <id> <version> <connector-id>  Register a bounded Profile\n  helm connector preview <run-id> <connector-id> <profile-id> <version> <action> <target>  Create a dry-run preview\n  helm connector write <run-id> <connector-id> <profile-id> <version> <action> <target>  Request an idempotent connector write\n  helm connector verify <run-id> <action-id> <target>  Query read-after-write evidence\n  helm browser list [run-id]  List controlled browser contexts\n  helm browser create <run-id> <app-id> <window-id>  Create a scoped fixture context\n  helm browser navigate|approve <context-id> <url>  Navigate through the ActionGateway\n  helm browser assert <context-id>  Assert fixture DOM evidence\n  helm browser close|reconnect|cleanup <context-id>  Control context lifecycle\n  helm browser profile-list|profile-register  Manage versioned browser action profiles\n  helm browser action|action-approve <context-id> <profile-id> <version> <action> <locator>  Execute or approve an action\n  helm browser verify <context-id> <action-id> --expected-hash <sha256>  Verify an action postcondition\n  helm a2a list [run-id]  List persisted loopback remote-agent deliveries\n  helm a2a retry <message-id>  Retry a queued/unknown/failed delivery with the same idempotency key\n  helm a2a reconcile <message-id> <known|failed|unknown> [reason]  Record evidence-backed local A2A reconciliation\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
+  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm office health    Preflight Office/OCR dependencies and report versions\n  helm experience list  List Experience Candidates\n  helm experience review <candidate-id> <approve|reject|revalidate>  Review a Candidate with --evidence <uri>\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm agent list <run-id>  List persisted child AgentRuns\n  helm agent create <run-id> <role> <goal>  Create a bounded child AgentRun\n  helm agent cancel|recover <run-id>  Cancel or recover child AgentRuns\n  helm connector list  List registered Connector Profiles\n  helm connector register <id> <version> <connector-id>  Register a bounded Profile\n  helm connector preview <run-id> <connector-id> <profile-id> <version> <action> <target>  Create a dry-run preview\n  helm connector write <run-id> <connector-id> <profile-id> <version> <action> <target>  Request an idempotent connector write\n  helm connector verify <run-id> <action-id> <target>  Query read-after-write evidence\n  helm browser list [run-id]  List controlled browser contexts\n  helm browser create <run-id> <app-id> <window-id>  Create a scoped fixture context\n  helm browser navigate|approve <context-id> <url>  Navigate through the ActionGateway\n  helm browser assert <context-id>  Assert fixture DOM evidence\n  helm browser close|reconnect|cleanup <context-id>  Control context lifecycle\n  helm browser profile-list|profile-register  Manage versioned browser action profiles\n  helm browser action|action-approve <context-id> <profile-id> <version> <action> <locator>  Execute or approve an action\n  helm browser verify <context-id> <action-id> --expected-hash <sha256>  Verify an action postcondition\n  helm a2a list [run-id]  List persisted loopback remote-agent deliveries\n  helm a2a retry <message-id>  Retry a queued/unknown/failed delivery with the same idempotency key\n  helm a2a reconcile <message-id> <known|failed|unknown> [reason]  Record evidence-backed local A2A reconciliation\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
 }
 
 async function printRun(runtime: RuntimeFacade, goal: string, workspaceId: string, jsonl = false, officePreflight?: OfficeHealthSnapshot): Promise<void> {
@@ -69,6 +69,49 @@ async function officeHealth(): Promise<void> {
   const scriptPath = process.env.HELM_DOCUMENT_WORKER ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../workers/document-worker/worker.py');
   const worker = new PythonDocumentWorkerClient({ scriptPath, workspaceRoot: root });
   console.log(JSON.stringify(await worker.health().catch(() => unavailableOfficePreflight()), null, 2));
+}
+
+async function experienceCommand(action: 'list' | 'review', args: string[]): Promise<void> {
+  const statePath = process.env.HELM_STATE_DB
+  if (!statePath) {
+    console.error('helm experience requires HELM_STATE_DB to point at the Runtime SQLite ledger')
+    process.exitCode = 2
+    return
+  }
+  const database = openSqliteEventStore(statePath)
+  const runtime = await createPersistedRuntime(database.store, process.env.HELM_WORKSPACE_ID ?? 'workspace-cli')
+  try {
+    if (action === 'list') {
+      console.log(JSON.stringify(await runtime.listExperienceCandidates(), null, 2))
+      return
+    }
+    const candidateId = args[0]?.trim()
+    const reviewAction = args[1] as 'approve' | 'reject' | 'revalidate' | undefined
+    if (!candidateId || !reviewAction || !['approve', 'reject', 'revalidate'].includes(reviewAction)) {
+      throw new Error('helm experience review requires a candidate id and approve, reject, or revalidate')
+    }
+    const evidenceIndex = args.indexOf('--evidence')
+    const evidence = evidenceIndex >= 0 ? (args[evidenceIndex + 1] ?? '').split(',').map((item) => item.trim()).filter(Boolean) : undefined
+    const riskIndex = args.indexOf('--risk')
+    const riskValue = riskIndex >= 0 ? args[riskIndex + 1] : undefined
+    const risk = riskValue && ['low', 'medium', 'high', 'unknown'].includes(riskValue) ? riskValue as 'low' | 'medium' | 'high' | 'unknown' : undefined
+    const reviewerIndex = args.indexOf('--reviewer')
+    const reviewerId = reviewerIndex >= 0 ? args[reviewerIndex + 1]?.trim() : undefined
+    const validation = reviewAction === 'approve' ? 'validated' : reviewAction === 'reject' ? 'rejected' : 'unvalidated'
+    const approval = reviewAction === 'approve' ? 'approved' : reviewAction === 'reject' ? 'rejected' : 'pending'
+    console.log(JSON.stringify(await runtime.reviewExperienceCandidateById(candidateId, {
+      action: reviewAction,
+      validation,
+      approval,
+      risk,
+      validationEvidence: evidence,
+      reviewerId,
+      reviewedAt: new Date().toISOString(),
+    }), null, 2))
+  } finally {
+    await runtime.shutdown('CLI Experience Candidate command completed')
+    await database.store.close()
+  }
 }
 
 async function exportRun(runId: string): Promise<void> {
@@ -518,6 +561,13 @@ if (command === 'run') {
     process.exitCode = 2
   } else {
     await officeHealth()
+  }
+} else if (command === 'experience') {
+  if (args[0] !== 'list' && args[0] !== 'review') {
+    console.error('helm experience requires list or review')
+    process.exitCode = 2
+  } else {
+    await experienceCommand(args[0], args.slice(1))
   }
 } else if (command === 'export') {
   const runId = args.join(' ').trim()

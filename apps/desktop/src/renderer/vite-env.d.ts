@@ -26,6 +26,8 @@ interface Window {
     listA2ADeliveries: (request?: import('../shared/ipc.js').A2AListRequest) => Promise<import('@helm/runtime').A2ADeliveryRecord[]>
     controlRun: (request: import('../shared/ipc.js').RunControlRequest) => Promise<import('@helm/runtime').Run>
     resolveApproval: (request: import('../shared/ipc.js').RunApprovalRequest) => Promise<import('@helm/runtime').Run>
+    listExperienceCandidates: () => Promise<import('@helm/runtime').ExperienceCandidate[]>
+    reviewExperienceCandidate: (request: import('../shared/ipc.js').ExperienceReviewRequest) => Promise<import('@helm/runtime').ExperienceCandidate>
     subscribe: (listener: (payload: import('../shared/ipc.js').RunEventPayload) => void) => () => void
   }
 }

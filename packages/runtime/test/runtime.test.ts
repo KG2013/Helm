@@ -216,9 +216,9 @@ test('Runtime ownership blocks stale controls and releases safely on shutdown', 
 });
 
 test('Experience Candidate remains pending until explicit validation and approval', () => {
-  const candidate = createExperienceCandidate({ id: 'candidate-1', sourceEpisodeId: 'episode-1', summary: 'avoid repeated patch mismatch', applicability: ['coding'], costChecks: { tokenBudgetOk: true, costBudgetOk: true }, createdAt: 'now' });
+  const candidate = createExperienceCandidate({ id: 'candidate-1', sourceEpisodeId: 'episode-1', summary: 'avoid repeated patch mismatch', applicability: ['coding'], costChecks: { tokenBudgetOk: true, costBudgetOk: true }, validationEvidence: ['trace://episode-1/step-1'], createdAt: 'now' });
   assert.equal(canPromoteExperienceCandidate(candidate), false);
-  const reviewed = reviewExperienceCandidate(candidate, { validation: 'validated', approval: 'approved' });
+  const reviewed = reviewExperienceCandidate(candidate, { validation: 'validated', approval: 'approved', action: 'approve' });
   assert.equal(canPromoteExperienceCandidate(reviewed), true);
   assert.equal(candidate.approvalState, 'pending');
 });
@@ -232,14 +232,35 @@ test('Experience Candidates persist for review and obey the reviewer round budge
     summary: 'retain a validated failure pattern',
     applicability: ['coding'],
     costChecks: { tokenBudgetOk: true, costBudgetOk: true },
+    validationEvidence: ['trace://trace-1/step-1'],
     createdAt: 'now',
   });
   assert.deepEqual((await runtime.listExperienceCandidates()).map((item) => item.id), [candidate.id]);
-  const reviewed = await runtime.reviewExperienceCandidateById(candidate.id, { validation: 'validated', approval: 'approved', reviewerId: 'reviewer-1' });
+  const reviewed = await runtime.reviewExperienceCandidateById(candidate.id, { validation: 'validated', approval: 'approved', action: 'approve', reviewerId: 'reviewer-1' });
   assert.equal(reviewed.approvalState, 'approved');
   assert.equal((await runtime.listExperienceCandidates())[0]?.validationState, 'validated');
   await assert.rejects(() => runtime.reviewExperienceCandidateById(candidate.id, { validation: 'validated', approval: 'approved' }), /reviewer round budget/i);
 })
+
+test('Experience Candidate approval fails closed without evidence and revalidate appends a new version', async () => {
+  const runtime = new RuntimeFacade({ store: new InMemoryEventStore(), provider: new MockProvider(), defaultBudget: { maxReviewerRounds: 3 } });
+  const candidate = await runtime.createExperienceCandidate({
+    id: 'candidate-gated', sourceEpisodeId: 'episode-gated', sourceTraceId: 'trace-gated', summary: 'gated candidate', applicability: ['coding'], costChecks: { tokenBudgetOk: true, costBudgetOk: true }, createdAt: 'now',
+  });
+  await assert.rejects(() => runtime.reviewExperienceCandidateById(candidate.id, { action: 'approve', validation: 'validated', approval: 'approved' }), /requires a source Episode\/trace and validation evidence/i);
+  const revalidated = await runtime.reviewExperienceCandidateById(candidate.id, { action: 'revalidate', validation: 'unvalidated', approval: 'pending', validationEvidence: ['trace://episode-gated/recheck'], reviewerId: 'reviewer-2' });
+  assert.equal(revalidated.validationState, 'unvalidated');
+  assert.equal(revalidated.approvalState, 'pending');
+  assert.deepEqual(revalidated.validationEvidence, ['trace://episode-gated/recheck']);
+  assert.equal(revalidated.reviewVersion, 1);
+  assert.equal((await runtime.listExperienceCandidates())[0]?.reviewVersion, 1);
+});
+
+test('Experience Candidate evidence rejects bare paths and sensitive values', () => {
+  assert.throws(() => createExperienceCandidate({
+    id: 'candidate-invalid-evidence', sourceEpisodeId: 'episode-invalid', sourceTraceId: 'trace-invalid', summary: 'bounded candidate', applicability: ['coding'], costChecks: { tokenBudgetOk: true, costBudgetOk: true }, validationEvidence: ['foo'], createdAt: 'now',
+  }), /validation evidence/i);
+});
 
 test('tool calls are executed through the injected executor and remain auditable', async () => {
   const store = new InMemoryEventStore();

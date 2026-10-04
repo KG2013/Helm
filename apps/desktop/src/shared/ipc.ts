@@ -1,4 +1,4 @@
-import type { BudgetUsage, DomainEvent, Episode, Evidence, OfficeHealthSnapshot, ReconciliationRecord, ReleaseGateResult, Run, RunProjection, Session, Task } from '@helm/runtime'
+import type { BudgetUsage, CandidateReviewAction, CandidateRisk, DomainEvent, Episode, Evidence, ExperienceCandidate, OfficeHealthSnapshot, ReconciliationRecord, ReleaseGateResult, Run, RunProjection, Session, Task } from '@helm/runtime'
 
 export const IPC_CHANNELS = {
   runtimeInfo: 'helm:runtime-info',
@@ -28,6 +28,8 @@ export const IPC_CHANNELS = {
   browserVerify: 'helm:browser-verify',
   a2aList: 'helm:a2a-list',
   a2aControl: 'helm:a2a-control',
+  experienceList: 'helm:experience-list',
+  experienceReview: 'helm:experience-review',
   runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
@@ -130,6 +132,14 @@ export type A2AControlRequest = {
   evidence?: Evidence[]
   reason?: string
 }
+export type ExperienceReviewRequest = {
+  candidateId: string
+  action: CandidateReviewAction
+  risk?: CandidateRisk
+  evidence?: string[]
+  reviewerId?: string
+}
+export type ExperienceReviewResponse = ExperienceCandidate
 
 export type StartRunResponse = {
   task: Task
@@ -157,6 +167,16 @@ export function isStartRunRequest(value: unknown): value is StartRunRequest {
 
 export function isRunId(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= 200
+}
+
+export function isExperienceReviewRequest(value: unknown): value is ExperienceReviewRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<ExperienceReviewRequest>
+  if (!isRunId(request.candidateId) || !['approve', 'reject', 'revalidate'].includes(request.action ?? '')) return false
+  if (request.risk !== undefined && !['low', 'medium', 'high', 'unknown'].includes(request.risk)) return false
+  if (request.reviewerId !== undefined && !isRunId(request.reviewerId)) return false
+  if (request.evidence !== undefined && (!Array.isArray(request.evidence) || request.evidence.length > 32 || request.evidence.some((item) => typeof item !== 'string' || item.length === 0 || item.length > 1_000))) return false
+  return true
 }
 
 export function isRunControlRequest(value: unknown): value is RunControlRequest {

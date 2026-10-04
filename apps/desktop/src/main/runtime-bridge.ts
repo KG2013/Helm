@@ -23,6 +23,7 @@ import {
   isBrowserVerifyRequest,
   isA2AListRequest,
   isA2AControlRequest,
+  isExperienceReviewRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
@@ -50,6 +51,7 @@ import {
   type BrowserVerifyRequest,
   type A2AListRequest,
   type A2AControlRequest,
+  type ExperienceReviewRequest,
   type StartRunResponse,
 } from '../shared/ipc.js'
 import { DesktopWindowRegistry } from './window-registry.js'
@@ -308,6 +310,22 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     if (request.action === 'retry') return sanitizeValue(await runtime.retryA2A(request.messageId))
     if (request.action === 'mark-unknown') return sanitizeValue(await runtime.markUnknownA2A(request.messageId, request.reason ?? 'Marked unknown by local operator.'))
     return sanitizeValue(await runtime.reconcileA2A(request.messageId, request.outcome!, request.evidence, request.reason))
+  })
+  ipc.handle(IPC_CHANNELS.experienceList, async () => sanitizeValue(await runtime.listExperienceCandidates()))
+  ipc.handle(IPC_CHANNELS.experienceReview, async (_event, value) => {
+    if (!isExperienceReviewRequest(value)) throw new Error('Invalid Experience Candidate review request.')
+    const request = value as ExperienceReviewRequest
+    const validation = request.action === 'approve' ? 'validated' : request.action === 'reject' ? 'rejected' : 'unvalidated'
+    const approval = request.action === 'approve' ? 'approved' : request.action === 'reject' ? 'rejected' : 'pending'
+    return sanitizeValue(await runtime.reviewExperienceCandidateById(request.candidateId, {
+      action: request.action,
+      validation,
+      approval,
+      risk: request.risk,
+      validationEvidence: request.evidence,
+      reviewerId: request.reviewerId,
+      reviewedAt: new Date().toISOString(),
+    }))
   })
 
   return unsubscribe

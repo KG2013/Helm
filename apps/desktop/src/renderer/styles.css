@@ -223,6 +223,26 @@ h1 { color: var(--text); font-size: 23px; line-height: 1.25; letter-spacing: -.0
 .verification-unknown .verification-row strong,
 .verification-needs_reconciliation .verification-row strong { color: #ef9b9b; }
 
+.experience-section { margin-top: 23px; }
+.candidate-empty, .candidate-error { padding: 9px 10px; border: 1px solid var(--border-soft); border-radius: 8px; color: var(--faint); background: rgba(20, 35, 56, .35); font-size: 9px; line-height: 1.45; }
+.candidate-error { margin-top: 6px; color: #efaaaa; border-color: rgba(239, 155, 155, .32); background: rgba(137, 57, 57, .12); }
+.candidate-card { margin-bottom: 6px; padding: 10px; border: 1px solid var(--border-soft); border-radius: 8px; background: rgba(20, 35, 56, .48); }
+.candidate-card-header, .candidate-meta, .candidate-source, .candidate-actions { display: flex; align-items: center; gap: 6px; }
+.candidate-card-header { justify-content: space-between; gap: 8px; }
+.candidate-card-header strong { min-width: 0; color: #c7d5e5; font-size: 10px; font-weight: 600; }
+.candidate-card p { margin: 5px 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.candidate-risk { flex: 0 0 auto; color: var(--amber); font-size: 8px; text-transform: uppercase; }
+.risk-low { color: var(--green); }
+.risk-high { color: #ef9b9b; }
+.candidate-meta { color: var(--faint); font-size: 8px; }
+.candidate-source { flex-wrap: wrap; margin-top: 6px; color: var(--faint); font-size: 8px; }
+.candidate-source code { max-width: 100%; overflow-wrap: anywhere; color: var(--cyan); font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.candidate-source span { margin-left: auto; }
+.candidate-evidence { display: grid; gap: 3px; margin-top: 5px; }
+.candidate-evidence code { overflow-wrap: anywhere; color: var(--muted); font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.candidate-actions { margin-top: 8px; }
+.candidate-actions .inline-action { margin-left: 0; padding: 4px 6px; font-size: 8px; }
+
 .coding-evidence { margin-top: 18px; }
 .coding-detail-card { border: 1px solid var(--border-soft); border-radius: 8px; background: rgba(14, 27, 44, .62); padding: 10px; }
 .coding-detail-meta { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 10px; }

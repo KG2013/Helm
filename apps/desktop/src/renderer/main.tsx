@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { buildRunProjection, reduceRunEvents } from '@helm/runtime'
-import type { DomainEvent, Run, Session, Task } from '@helm/runtime'
+import type { DomainEvent, ExperienceCandidate, Run, Session, Task } from '@helm/runtime'
 import type { RunEventPayload, RunSnapshot } from '../shared/ipc.js'
 import './styles.css'
 
@@ -157,6 +157,9 @@ function App() {
   const [error, setError] = useState<string>()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [controlPending, setControlPending] = useState(false)
+  const [candidates, setCandidates] = useState<ExperienceCandidate[]>([])
+  const [candidateError, setCandidateError] = useState<string>()
+  const [candidatePending, setCandidatePending] = useState<string>()
 
   const activeRunIdRef = useRef<string | undefined>(undefined)
   const submittingRef = useRef(false)
@@ -227,6 +230,12 @@ function App() {
     })
     return unsubscribe
   }, [mergeEvents])
+
+  useEffect(() => {
+    if (!window.helm) return undefined
+    void window.helm.listExperienceCandidates().then(setCandidates).catch((cause) => setCandidateError(cause instanceof Error ? cause.message : 'Unable to load Experience Candidates.'))
+    return undefined
+  }, [])
 
   const steps = useMemo(() => timeline(run), [run])
   const currentMessages = useMemo(() => messagesFromLedger(task, run, events), [events, run, task])
@@ -302,6 +311,25 @@ function App() {
     }
   }
 
+  async function reviewCandidate(candidate: ExperienceCandidate, action: 'approve' | 'reject' | 'revalidate') {
+    if (!window.helm || candidatePending) return
+    setCandidatePending(candidate.id)
+    setCandidateError(undefined)
+    try {
+      const reviewed = await window.helm.reviewExperienceCandidate({
+        candidateId: candidate.id,
+        action,
+        evidence: action === 'approve' ? candidate.validationEvidence ?? [] : undefined,
+        reviewerId: 'desktop-user',
+      })
+      setCandidates((previous) => previous.map((item) => item.id === reviewed.id ? reviewed : item))
+    } catch (cause) {
+      setCandidateError(cause instanceof Error ? cause.message : 'Unable to review Experience Candidate.')
+    } finally {
+      setCandidatePending(undefined)
+    }
+  }
+
   const runStatus = run?.state ?? 'ready'
   const runLabel = runStatus === 'completed' ? 'Run complete' : runStatus === 'needs_reconciliation' ? 'Reconciliation required' : runStatus === 'failed' ? 'Run failed' : runStatus === 'cancelled' ? 'Run cancelled' : 'Working on the task'
 
@@ -343,6 +371,27 @@ function App() {
 
         <aside className="right-panel panel">
           <div className="right-tabs"><button className="right-tab active">Run evidence <span>{events.length}</span></button><button className="right-tab">Trace</button></div>
+          <div className="experience-section" data-testid="experience-candidates">
+            <div className="section-heading"><span>EXPERIENCE CANDIDATES</span><span className="muted">{candidates.length}</span></div>
+            {candidates.length === 0 && <div className="candidate-empty">No candidates awaiting review.</div>}
+            {candidates.map((candidate) => {
+              const hasEvidence = Boolean(candidate.sourceEpisodeId && candidate.sourceTraceId && (candidate.validationEvidence?.length ?? 0) > 0)
+              return <div className="candidate-card" key={candidate.id}>
+                <div className="candidate-card-header"><strong>{candidate.summary}</strong><span className={`candidate-risk risk-${candidate.risk ?? 'unknown'}`}>{candidate.risk ?? 'unknown'}</span></div>
+                <p>{candidate.applicability.join(' · ') || 'No applicability recorded'}</p>
+                <div className="candidate-meta"><span>validation {candidate.validationState}</span><span>approval {candidate.approvalState}</span><span>v{candidate.reviewVersion ?? 0}</span><span>tokens {candidate.costChecks.tokenBudgetOk ? 'ok' : 'blocked'}</span><span>cost {candidate.costChecks.costBudgetOk ? 'ok' : 'blocked'}</span></div>
+                <div className="candidate-source"><code>{candidate.sourceEpisodeId}</code><code>{candidate.sourceTraceId ?? 'trace unavailable'}</code><span>{candidate.validationEvidence?.length ?? 0} validation refs</span></div>
+                {(candidate.validationEvidence?.length ?? 0) > 0 && <div className="candidate-evidence">{candidate.validationEvidence?.slice(0, 3).map((uri) => <code key={uri}>{uri}</code>)}</div>}
+                {(candidate.evidence?.length ?? 0) > 0 && <div className="candidate-evidence">{candidate.evidence?.slice(0, 3).map((evidence, index) => <code key={`${evidence.uri}-${index}`}>{evidence.uri}{evidence.hash ? ` · ${evidence.hash.slice(0, 12)}` : ''}</code>)}</div>}
+                <div className="candidate-actions">
+                  <button className="inline-action" disabled={candidatePending === candidate.id || !hasEvidence} title={hasEvidence ? 'Approve with recorded evidence' : 'Approval requires a source Episode, trace, and validation evidence'} onClick={() => void reviewCandidate(candidate, 'approve')}>Approve</button>
+                  <button className="inline-action danger" disabled={candidatePending === candidate.id} onClick={() => void reviewCandidate(candidate, 'reject')}>Reject</button>
+                  <button className="inline-action" disabled={candidatePending === candidate.id} onClick={() => void reviewCandidate(candidate, 'revalidate')}>Revalidate</button>
+                </div>
+              </div>
+            })}
+            {candidateError && <div className="candidate-error" role="alert">{candidateError}</div>}
+          </div>
           <div className="artifact-section"><div className="section-heading"><span>RUN CONTEXT</span><span className="muted">{run?.id ?? 'none'}</span></div><div className="artifact-card"><div className="artifact-icon code-icon"><Icon name="code" /></div><div className="artifact-copy"><strong>{task?.workspaceId ?? 'workspace-helm'}</strong><span>{task ? 'Workspace selected · no file changes' : 'Waiting for task input'}</span></div></div></div>{codingDelivery && <CodingEvidence delivery={codingDelivery} verification={projection?.verification} />}
           <div className="approval-section"><div className="section-heading"><span>APPROVAL</span><span className="approval-state">Runtime owned</span></div><div className={`approval-card ${approval ? 'approval-card-pending' : ''}`}><div className="approval-icon"><Icon name="shield" /></div><div>{approval ? <><strong>Approval required: {approval.call.name}</strong><p>{approval.reason}</p><code>{JSON.stringify(approval.call.arguments)}</code><div className="approval-actions"><button className="inline-action" disabled={controlPending} onClick={() => void decideApproval('approve')}>Approve</button><button className="inline-action danger" disabled={controlPending} onClick={() => void decideApproval('deny')}>Deny</button></div></> : <><strong>{events.some((event) => event.type === 'policy.decision') ? 'Policy decision recorded' : 'No pending approval'}</strong><p>Approval appears here only for a concrete Runtime tool proposal.</p></>}</div></div></div>
           <div className="verification-section"><div className="section-heading"><span>VERIFICATION</span><span className="muted">Runtime evidence</span></div><div className={`verification-card verification-${verificationResult}`} data-testid="verification"><div className="verification-row"><span className={`verification-icon ${verificationResult === 'passed' ? 'passed' : verificationResult === 'failed' || verificationResult === 'needs_reconciliation' ? 'failed' : 'pending'}`}><Icon name={verificationResult === 'passed' ? 'check' : 'clock'} /></span><span>{run?.state === 'needs_reconciliation' ? 'Unknown side effect; reconciliation required.' : run?.verification?.message ?? (run?.lastError ?? 'Waiting for final output')}</span><strong>{verificationResult}</strong></div></div></div>

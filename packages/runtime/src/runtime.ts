@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { transitionRunState, isTerminalRunState, RunStateError } from './state-machine.js';
 import { TextOutputVerifier } from './verifier.js';
 import { boundProviderEvents, buildProviderContext, normalizeProviderContextProjection, toolProfileToSchema } from './context.js';
-import { createExperienceCandidate as createCandidate, reviewExperienceCandidate as reviewCandidate, type ExperienceCandidate } from './experience.js';
+import { canPromoteExperienceCandidate, createExperienceCandidate as createCandidate, reviewExperienceCandidate as reviewCandidate, type ExperienceCandidate } from './experience.js';
 import { isBudgetExceeded, listReconciliationCandidates, summarizeBudgetUsage } from './hardening.js';
 import { ActionGateway, createToolActionAdapter, toolActionRequest } from './action-gateway.js';
 import { AgentRunCoordinator, type CreateChildAgentInput } from './agent.js';
@@ -545,6 +545,9 @@ export class RuntimeFacade {
     }
     if (rounds >= maxRounds) throw new Error(`Experience Candidate reviewer round budget exceeded (${maxRounds}).`);
     const reviewed = reviewCandidate(candidate, review);
+    if (reviewed.approvalState === 'approved' && !canPromoteExperienceCandidate(reviewed)) {
+      throw new Error('Experience Candidate approval requires a source Episode/trace and validation evidence.');
+    }
     await this.append({ type: 'experience.candidate_reviewed', payload: reviewed as unknown as Record<string, unknown> });
     return reviewed;
   }

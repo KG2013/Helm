@@ -67,6 +67,38 @@ test('desktop IPC authorizes a Run per window and recovery is triggered by recon
   stop()
 })
 
+test('desktop IPC lists and reviews Experience Candidates with evidence gates', async () => {
+  const ipc = new FakeIpcMain()
+  const runtime = new RuntimeFacade({ store: new InMemoryEventStore(), provider: new MockProvider() })
+  const stop = registerRuntimeIpcHandlers({
+    ipc,
+    runtime,
+    runtimeInfo: { appVersion: '0.1.0', platform: 'test', isPackaged: false },
+    emit: () => undefined,
+  })
+  await runtime.createExperienceCandidate({
+    id: 'candidate-ipc',
+    sourceEpisodeId: 'episode-ipc',
+    sourceTraceId: 'trace-ipc',
+    summary: 'Review a bounded coding pattern',
+    applicability: ['coding'],
+    risk: 'medium',
+    costChecks: { tokenBudgetOk: true, costBudgetOk: true },
+    createdAt: 'now',
+  })
+  const listed = await ipc.invoke(IPC_CHANNELS.experienceList) as Array<{ id: string; approvalState: string; risk?: string }>
+  assert.equal(listed[0]?.id, 'candidate-ipc')
+  assert.equal(listed[0]?.approvalState, 'pending')
+  assert.equal(listed[0]?.risk, 'medium')
+  await assert.rejects(() => ipc.invoke(IPC_CHANNELS.experienceReview, { candidateId: 'candidate-ipc', action: 'approve' }), /requires a source Episode\/trace and validation evidence/i)
+  const reviewed = await ipc.invoke(IPC_CHANNELS.experienceReview, { candidateId: 'candidate-ipc', action: 'approve', evidence: ['trace://episode-ipc/step-1'], reviewerId: 'desktop-reviewer' }) as { approvalState: string; validationState: string; reviewVersion: number; reviewerId?: string }
+  assert.equal(reviewed.approvalState, 'approved')
+  assert.equal(reviewed.validationState, 'validated')
+  assert.equal(reviewed.reviewVersion, 1)
+  assert.equal(reviewed.reviewerId, 'desktop-reviewer')
+  stop()
+})
+
 test('desktop IPC starts a Runtime Run and forwards ordered events', async () => {
   const ipc = new FakeIpcMain()
   const events: number[] = []
