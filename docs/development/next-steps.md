@@ -97,6 +97,10 @@ child 的实际执行、父结果聚合和 CLI/Desktop 操作入口在 #30 继�
 
 `A2ALoopbackTransport` 为本地 fixture 定义带 sender/recipient identity、capability grant、task/run/correlation/idempotency/deadline、scope、最小 goal/summaries context 和授权 Artifact refs 的 envelope。注册身份绑定仅用于 fixture 的 HMAC 签名，签名密钥不会写入事件；能力与 scope 必须同时满足两端 allowlist，deadline、凭据样文本、未授权 Artifact、非法身份和重复幂等键在持久账本中记录 `a2a.rejected` 后拒绝。投递状态通过 `a2a.envelope` 与 `a2a.delivery` 记录 queued→sent→ack/failed，新的 transport 实例可从 EventStore 重放；跨机网络、远程 worker、网络策略和重试对账留给 #39–#41。
 
+## 18. A2A Remote Agent 最小上下文与委派执行（#39：已完成）
+
+`RemoteAgentCoordinator` 先创建受边界约束的本地 child AgentRun，再用 child `agentRunId` 作为 A2A correlation 投递最小上下文。loopback worker 返回 typed status、Evidence 和授权 Artifact 后，由本地 AgentRunCoordinator 记录结果并聚合父 Run；不符合 parent Run Artifact grant 的引用或无 evidence/Artifact 的 success 会被拒绝并将 child 保持为可审计失败/UNKNOWN。远端 action proposal 重新构造成带 parent/child lineage 的本地 ActionRequest，经 ActionGateway 的 Policy/Approval 决定，远端没有自批准或直接提交父 Run 的入口；CLI `a2a list` 与 Desktop `a2a-list` 读取同一 delivery/correlation projection。
+
 ## 与原架构阶段的关系
 
 架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。

@@ -21,6 +21,7 @@ import {
   isBrowserActionProfileRequest,
   isBrowserActionRequest,
   isBrowserVerifyRequest,
+  isA2AListRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
@@ -46,6 +47,7 @@ import {
   type BrowserActionProfileRequest,
   type BrowserActionRequest,
   type BrowserVerifyRequest,
+  type A2AListRequest,
   type StartRunResponse,
 } from '../shared/ipc.js'
 
@@ -271,6 +273,10 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
   ipc.handle(IPC_CHANNELS.browserVerify, async (_event, value) => {
     if (!isBrowserVerifyRequest(value)) throw new Error('Invalid Browser postcondition verification request.')
     return sanitizeValue(await runtime.verifyBrowserAction(value as BrowserVerifyRequest))
+  })
+  ipc.handle(IPC_CHANNELS.a2aList, async (_event, value) => {
+    if (!isA2AListRequest(value)) throw new Error('Invalid A2A list request.')
+    return sanitizeValue(await runtime.listA2ADeliveries((value as A2AListRequest | undefined)?.runId))
   })
 
   return unsubscribe

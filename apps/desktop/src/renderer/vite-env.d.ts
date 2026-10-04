@@ -23,6 +23,7 @@ interface Window {
     executeBrowserAction: (request: import('../shared/ipc.js').BrowserActionRequest) => Promise<import('@helm/runtime').BrowserActionResult>
     approveBrowserAction: (request: import('../shared/ipc.js').BrowserActionRequest) => Promise<import('@helm/runtime').BrowserActionResult>
     verifyBrowserAction: (request: import('../shared/ipc.js').BrowserVerifyRequest) => Promise<import('@helm/runtime').BrowserPostconditionResult>
+    listA2ADeliveries: (request?: import('../shared/ipc.js').A2AListRequest) => Promise<import('@helm/runtime').A2ADeliveryRecord[]>
     controlRun: (request: import('../shared/ipc.js').RunControlRequest) => Promise<import('@helm/runtime').Run>
     resolveApproval: (request: import('../shared/ipc.js').RunApprovalRequest) => Promise<import('@helm/runtime').Run>
     subscribe: (listener: (payload: import('../shared/ipc.js').RunEventPayload) => void) => () => void

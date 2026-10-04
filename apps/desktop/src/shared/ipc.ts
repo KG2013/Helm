@@ -26,6 +26,7 @@ export const IPC_CHANNELS = {
   browserAction: 'helm:browser-action',
   browserActionApprove: 'helm:browser-action-approve',
   browserVerify: 'helm:browser-verify',
+  a2aList: 'helm:a2a-list',
   runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
@@ -119,6 +120,7 @@ export type BrowserControlRequest = { contextId: string; action: 'close' | 'reco
 export type BrowserActionProfileRequest = import('@helm/runtime').BrowserActionProfile
 export type BrowserActionRequest = import('@helm/runtime').BrowserActionInput
 export type BrowserVerifyRequest = { contextId: string; actionId: string; expectedDomAfterHash: string }
+export type A2AListRequest = { runId?: string }
 
 export type StartRunResponse = {
   task: Task
@@ -304,4 +306,8 @@ export function isBrowserVerifyRequest(value: unknown): value is BrowserVerifyRe
   const request = value as Partial<BrowserVerifyRequest>
   return isRunId(request.contextId) && isRunId(request.actionId)
     && typeof request.expectedDomAfterHash === 'string' && /^[a-f0-9]{64}$/i.test(request.expectedDomAfterHash)
+}
+
+export function isA2AListRequest(value: unknown): value is A2AListRequest {
+  return value === undefined || (Boolean(value) && typeof value === 'object' && ((value as A2AListRequest).runId === undefined || isRunId((value as A2AListRequest).runId)))
 }

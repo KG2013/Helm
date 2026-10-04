@@ -77,6 +77,8 @@ test('desktop IPC starts a Runtime Run and forwards ordered events', async () =>
   assert.equal(agent.parentRunId, started.run.id)
   const listedAgents = await ipc.invoke(IPC_CHANNELS.agentList, { parentRunId: started.run.id }) as Array<{ agentRunId: string }>
   assert.deepEqual(listedAgents.map((item) => item.agentRunId), [agent.agentRunId])
+  const a2aDeliveries = await ipc.invoke(IPC_CHANNELS.a2aList, { runId: started.run.id }) as Array<{ runId: string }>
+  assert.deepEqual(a2aDeliveries, [])
   const recoveredAgents = await ipc.invoke(IPC_CHANNELS.agentControl, { parentRunId: started.run.id, action: 'recover' }) as { parentRunId: string; agents: unknown[] }
   assert.equal(recoveredAgents.parentRunId, started.run.id)
   await ipc.invoke(IPC_CHANNELS.connectorRegister, { id: 'loopback.records', version: 'v1', connectorId: 'loopback', actions: ['record.preview', 'record.write'], allowedTargets: ['loopback://records'], allowedFields: ['name'], scope: { records: ['1'] } })
