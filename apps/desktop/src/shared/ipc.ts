@@ -15,6 +15,12 @@ export const IPC_CHANNELS = {
   connectorPreview: 'helm:connector-preview',
   connectorWrite: 'helm:connector-write',
   connectorVerify: 'helm:connector-verify',
+  browserContextList: 'helm:browser-context-list',
+  browserContextCreate: 'helm:browser-context-create',
+  browserNavigate: 'helm:browser-navigate',
+  browserApprove: 'helm:browser-approve',
+  browserAssert: 'helm:browser-assert',
+  browserControl: 'helm:browser-control',
   runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
@@ -100,6 +106,11 @@ export type ConnectorVerifyRequest = {
   expectedVersion?: string
   postcondition?: string
 }
+export type BrowserContextListRequest = { runId?: string }
+export type BrowserContextCreateRequest = import('@helm/runtime').BrowserContextCreateInput
+export type BrowserNavigateRequest = import('@helm/runtime').BrowserNavigationInput
+export type BrowserAssertRequest = import('@helm/runtime').BrowserDomAssertionInput
+export type BrowserControlRequest = { contextId: string; action: 'close' | 'reconnect' | 'cleanup'; reason?: string }
 
 export type StartRunResponse = {
   task: Task
@@ -222,4 +233,42 @@ export function isConnectorVerifyRequest(value: unknown): value is ConnectorVeri
     && typeof request.expectedAfterHash === 'string' && /^[a-f0-9]{64}$/i.test(request.expectedAfterHash)
     && (request.expectedVersion === undefined || isRunId(request.expectedVersion))
     && (request.postcondition === undefined || (typeof request.postcondition === 'string' && request.postcondition.length <= 500))
+}
+
+export function isBrowserContextListRequest(value: unknown): value is BrowserContextListRequest {
+  return value === undefined || (Boolean(value) && typeof value === 'object' && ((value as BrowserContextListRequest).runId === undefined || isRunId((value as BrowserContextListRequest).runId)))
+}
+
+export function isBrowserContextCreateRequest(value: unknown): value is BrowserContextCreateRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<BrowserContextCreateRequest>
+  const profile = request.profile
+  return isRunId(request.runId) && isRunId(request.taskId) && isRunId(request.sessionId) && isRunId(request.appId) && isRunId(request.windowId)
+    && Boolean(profile) && typeof profile === 'object' && typeof profile.id === 'string' && typeof profile.version === 'string'
+    && Array.isArray(profile.allowedOrigins) && profile.allowedOrigins.every((item) => typeof item === 'string')
+    && Array.isArray(profile.allowedApps) && profile.allowedApps.every((item) => typeof item === 'string')
+    && Array.isArray(profile.allowedWindows) && profile.allowedWindows.every((item) => typeof item === 'string')
+}
+
+export function isBrowserNavigateRequest(value: unknown): value is BrowserNavigateRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<BrowserNavigateRequest>
+  return isRunId(request.contextId) && typeof request.url === 'string' && request.url.length <= 1_000 && isRunId(request.idempotencyKey)
+    && (request.actionId === undefined || isRunId(request.actionId))
+}
+
+export function isBrowserAssertRequest(value: unknown): value is BrowserAssertRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<BrowserAssertRequest>
+  return isRunId(request.contextId) && isRunId(request.idempotencyKey)
+    && (request.actionId === undefined || isRunId(request.actionId))
+    && (request.expectedText === undefined || (typeof request.expectedText === 'string' && request.expectedText.length <= 500))
+    && (request.expectedSelector === undefined || (typeof request.expectedSelector === 'string' && request.expectedSelector.length <= 300))
+}
+
+export function isBrowserControlRequest(value: unknown): value is BrowserControlRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<BrowserControlRequest>
+  return isRunId(request.contextId) && (request.action === 'close' || request.action === 'reconnect' || request.action === 'cleanup')
+    && (request.reason === undefined || (typeof request.reason === 'string' && request.reason.length <= 500))
 }

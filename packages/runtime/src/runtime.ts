@@ -7,6 +7,7 @@ import { isBudgetExceeded, listReconciliationCandidates, summarizeBudgetUsage } 
 import { ActionGateway, createToolActionAdapter, toolActionRequest } from './action-gateway.js';
 import { AgentRunCoordinator, type CreateChildAgentInput } from './agent.js';
 import { ConnectorRegistry, type ConnectorPreviewInput } from './connectors.js';
+import { BrowserFixtureRegistry } from './browser-fixture.js';
 import type {
   Budget,
   ApprovalBinding,
@@ -114,6 +115,7 @@ export class RuntimeFacade {
   private readonly actionGateway: ActionGateway;
   private readonly agentCoordinator: AgentRunCoordinator;
   private readonly connectorRegistry: ConnectorRegistry;
+  private readonly browserRegistry: BrowserFixtureRegistry;
   private readonly eventListeners = new Set<RuntimeEventListener>();
   private readonly tasks = new Map<ID, Task>();
   private readonly sessions = new Map<ID, Session>();
@@ -139,6 +141,7 @@ export class RuntimeFacade {
     this.actionGateway = options.actionGateway ?? new ActionGateway({ store: this.store, clock: this.clock, ids: this.ids });
     this.agentCoordinator = new AgentRunCoordinator({ store: this.store, gateway: this.actionGateway, clock: this.clock, ids: this.ids });
     this.connectorRegistry = new ConnectorRegistry({ store: this.store, gateway: this.actionGateway, artifactStore: this.artifactStore, clock: this.clock, ids: this.ids });
+    this.browserRegistry = new BrowserFixtureRegistry({ store: this.store, gateway: this.actionGateway, artifactStore: this.artifactStore, clock: this.clock, ids: this.ids });
   }
 
   async createTask(input: TaskInput): Promise<Task> {
@@ -699,6 +702,38 @@ export class RuntimeFacade {
 
   async verifyConnectorWrite(input: Parameters<ConnectorRegistry['verifyWrite']>[0]) {
     return this.connectorRegistry.verifyWrite(input);
+  }
+
+  async createBrowserContext(input: import('./types.js').BrowserContextCreateInput) {
+    return this.browserRegistry.createContext(input);
+  }
+
+  listBrowserContexts(runId?: ID) {
+    return this.browserRegistry.listContexts(runId);
+  }
+
+  async navigateBrowser(input: import('./types.js').BrowserNavigationInput) {
+    return this.browserRegistry.navigate(input);
+  }
+
+  async approveBrowserNavigation(input: import('./types.js').BrowserNavigationInput) {
+    return this.browserRegistry.approveNavigation(input);
+  }
+
+  async assertBrowserDom(input: import('./types.js').BrowserDomAssertionInput) {
+    return this.browserRegistry.assertDom(input);
+  }
+
+  async closeBrowserContext(contextId: ID, reason?: string) {
+    return this.browserRegistry.closeContext(contextId, reason);
+  }
+
+  async reconnectBrowserContext(contextId: ID) {
+    return this.browserRegistry.reconnectContext(contextId);
+  }
+
+  async cleanupBrowserContext(contextId: ID) {
+    return this.browserRegistry.cleanupContext(contextId);
   }
 
   onEvent(listener: RuntimeEventListener): () => void {

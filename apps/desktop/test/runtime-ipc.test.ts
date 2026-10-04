@@ -90,6 +90,13 @@ test('desktop IPC starts a Runtime Run and forwards ordered events', async () =>
   assert.equal(write.receipt.target, 'loopback://records/1')
   const verification = await ipc.invoke(IPC_CHANNELS.connectorVerify, { runId: started.run.id, taskId: started.task.id, sessionId: started.session.id, actionId: 'desktop-write-1', target: 'loopback://records/1', expectedAfterHash: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a' }) as { status: string }
   assert.equal(verification.status, 'known')
+  const browserContext = await ipc.invoke(IPC_CHANNELS.browserContextCreate, { runId: started.run.id, taskId: started.task.id, sessionId: started.session.id, profile: { id: 'browser.fixture', version: 'v1', allowedOrigins: ['https://fixture.example.test'], allowedApps: ['fixture-app'], allowedWindows: ['fixture-window'] }, appId: 'fixture-app', windowId: 'fixture-window' }) as { contextId: string }
+  const browserContexts = await ipc.invoke(IPC_CHANNELS.browserContextList, { runId: started.run.id }) as Array<{ contextId: string }>
+  assert.deepEqual(browserContexts.map((item) => item.contextId), [browserContext.contextId])
+  const browserNavigation = await ipc.invoke(IPC_CHANNELS.browserNavigate, { contextId: browserContext.contextId, url: 'https://fixture.example.test/home', idempotencyKey: 'desktop-navigation-1' }) as { action: { status: string } }
+  assert.equal(browserNavigation.action.status, 'denied')
+  const closedContext = await ipc.invoke(IPC_CHANNELS.browserControl, { contextId: browserContext.contextId, action: 'close' }) as { state: string }
+  assert.equal(closedContext.state, 'closed')
   const reconciliation = await ipc.invoke(IPC_CHANNELS.runReconciliation, { runId: started.run.id, action: 'inspect' }) as { runId: string; budgetUsage: { steps: number }; candidates: unknown[] }
   assert.equal(reconciliation.runId, started.run.id)
   assert.equal(reconciliation.budgetUsage.steps, snapshot.run.steps)

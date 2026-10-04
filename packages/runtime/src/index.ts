@@ -17,3 +17,4 @@ export * from './hardening.js';
 export * from './action-gateway.js';
 export * from './agent.js';
 export * from './connectors.js';
+export * from './browser-fixture.js';

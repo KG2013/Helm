@@ -81,6 +81,10 @@ child 的实际执行、父结果聚合和 CLI/Desktop 操作入口在 #30 继�
 
 成功的 Loopback 写入自动执行 read-after-write，比较 after hash 与 version 条件，并在可用时写入只含哈希/版本元数据的受限 Artifact。断连、超时、部分成功和异步结果由 Loopback failure injection 统一映射为 UNKNOWN 与 `run.needs_reconciliation`；读取到不匹配状态则为 failed，不能依据 HTTP 状态或模型文字放行。CLI `connector verify`、Desktop `connector-verify` 支持查询验证，`reconcile --action-id` 支持携证据标记 known/failed；重复 write 使用原幂等键安全重试，不会重复改变记录。
 
+## 14. 受控浏览器 Context、Origin 与导航观测（#35：已完成）
+
+`BrowserFixtureRegistry` 为每个 context 固定 app/window/origin/download/artifact scope；未在 profile allowlist 中的 origin、app 或 window 在 ActionGateway 前拒绝。导航、DOM assertion 和 fixture screenshot 都通过 typed action 事件产生 URL/origin/context/DOM hash/screenshot Artifact evidence；导航可返回 approval_required，`approveNavigation` 继续同一个 action。close/reconnect/cleanup 写入可回放生命周期事件；CLI 与 Desktop 共用 context、navigate、approve、assert、control 入口。fixture 不获得 shell、Keychain 或原生桌面权限，真实浏览器 smoke 单独验收。
+
 ## 与原架构阶段的关系
 
 架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。

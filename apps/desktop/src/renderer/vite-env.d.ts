@@ -12,6 +12,12 @@ interface Window {
     previewConnector: (request: import('../shared/ipc.js').ConnectorPreviewRequest) => Promise<unknown>
     writeConnector: (request: import('../shared/ipc.js').ConnectorWriteRequest) => Promise<unknown>
     verifyConnector: (request: import('../shared/ipc.js').ConnectorVerifyRequest) => Promise<unknown>
+    listBrowserContexts: (request?: import('../shared/ipc.js').BrowserContextListRequest) => Promise<import('@helm/runtime').BrowserContextRecord[]>
+    createBrowserContext: (request: import('../shared/ipc.js').BrowserContextCreateRequest) => Promise<import('@helm/runtime').BrowserContextRecord>
+    navigateBrowser: (request: import('../shared/ipc.js').BrowserNavigateRequest) => Promise<import('@helm/runtime').BrowserNavigationResult>
+    approveBrowserNavigation: (request: import('../shared/ipc.js').BrowserNavigateRequest) => Promise<import('@helm/runtime').BrowserNavigationResult>
+    assertBrowserDom: (request: import('../shared/ipc.js').BrowserAssertRequest) => Promise<import('@helm/runtime').BrowserObservationResult>
+    controlBrowserContext: (request: import('../shared/ipc.js').BrowserControlRequest) => Promise<import('@helm/runtime').BrowserContextRecord>
     controlRun: (request: import('../shared/ipc.js').RunControlRequest) => Promise<import('@helm/runtime').Run>
     resolveApproval: (request: import('../shared/ipc.js').RunApprovalRequest) => Promise<import('@helm/runtime').Run>
     subscribe: (listener: (payload: import('../shared/ipc.js').RunEventPayload) => void) => () => void

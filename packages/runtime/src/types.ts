@@ -620,6 +620,94 @@ export interface ConnectorVerificationResult {
   reason?: string;
 }
 
+export type BrowserContextState = 'active' | 'closed' | 'cleaned';
+
+export interface BrowserContextProfile {
+  id: string;
+  version: string;
+  allowedOrigins: readonly string[];
+  allowedApps: readonly string[];
+  allowedWindows: readonly string[];
+  downloadDirectory?: string;
+  allowedArtifactUris?: readonly string[];
+}
+
+export interface BrowserContextRecord {
+  contextId: ID;
+  runId: ID;
+  taskId: ID;
+  sessionId: ID;
+  profile: Pick<BrowserContextProfile, 'id' | 'version'>;
+  appId: string;
+  windowId: string;
+  state: BrowserContextState;
+  origin?: string;
+  url?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BrowserContextCreateInput {
+  runId: ID;
+  taskId: ID;
+  sessionId: ID;
+  profile: BrowserContextProfile;
+  appId: string;
+  windowId: string;
+}
+
+export interface BrowserNavigationInput {
+  contextId: ID;
+  actionId?: ID;
+  url: string;
+  idempotencyKey: string;
+}
+
+export interface BrowserNavigationReceipt {
+  contextId: ID;
+  url: string;
+  origin: string;
+  windowId: string;
+  appId: string;
+  domHash: string;
+  screenshotHash: string;
+  screenshot?: ArtifactReference;
+  idempotencyKey: string;
+  replayed: boolean;
+}
+
+export interface BrowserNavigationResult {
+  action: ActionExecutionResult;
+  receipt: BrowserNavigationReceipt;
+  evidence: Evidence[];
+}
+
+export interface BrowserDomAssertionInput {
+  contextId: ID;
+  actionId?: ID;
+  expectedText?: string;
+  expectedSelector?: string;
+  idempotencyKey: string;
+}
+
+export interface BrowserObservationResult {
+  action: ActionExecutionResult;
+  contextId: ID;
+  url?: string;
+  domHash?: string;
+  screenshot?: ArtifactReference;
+  passed: boolean;
+  evidence: Evidence[];
+}
+
+export interface BrowserRegistryOptions {
+  store: EventStore;
+  gateway: import('./action-gateway.js').ActionGateway;
+  artifactStore?: ArtifactStore;
+  clock?: RuntimeClock;
+  ids?: RuntimeIdFactory;
+}
+
 export interface VerifierInput {
   task: Task;
   run: Run;
@@ -662,6 +750,12 @@ export type EventType =
   | 'connector.preview'
   | 'connector.receipt'
   | 'connector.reconciliation'
+  | 'browser.context_created'
+  | 'browser.context_closed'
+  | 'browser.context_reconnected'
+  | 'browser.context_cleaned'
+  | 'browser.navigation'
+  | 'browser.observation'
   | 'tool.call'
   | 'tool.receipt'
   | 'step.observation'

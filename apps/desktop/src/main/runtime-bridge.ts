@@ -13,6 +13,11 @@ import {
   isConnectorRegisterRequest,
   isConnectorWriteRequest,
   isConnectorVerifyRequest,
+  isBrowserContextListRequest,
+  isBrowserContextCreateRequest,
+  isBrowserNavigateRequest,
+  isBrowserAssertRequest,
+  isBrowserControlRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
@@ -30,6 +35,11 @@ import {
   type ConnectorRegisterRequest,
   type ConnectorWriteRequest,
   type ConnectorVerifyRequest,
+  type BrowserContextListRequest,
+  type BrowserContextCreateRequest,
+  type BrowserNavigateRequest,
+  type BrowserAssertRequest,
+  type BrowserControlRequest,
   type StartRunResponse,
 } from '../shared/ipc.js'
 
@@ -210,6 +220,34 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
   ipc.handle(IPC_CHANNELS.connectorVerify, async (_event, value) => {
     if (!isConnectorVerifyRequest(value)) throw new Error('Invalid Connector verification request.')
     return sanitizeValue(await runtime.verifyConnectorWrite(value as ConnectorVerifyRequest))
+  })
+  ipc.handle(IPC_CHANNELS.browserContextList, async (_event, value) => {
+    if (!isBrowserContextListRequest(value)) throw new Error('Invalid Browser context list request.')
+    return sanitizeValue(runtime.listBrowserContexts((value as BrowserContextListRequest | undefined)?.runId))
+  })
+  ipc.handle(IPC_CHANNELS.browserContextCreate, async (_event, value) => {
+    if (!isBrowserContextCreateRequest(value)) throw new Error('Invalid Browser context create request.')
+    return sanitizeValue(await runtime.createBrowserContext(value as BrowserContextCreateRequest))
+  })
+  ipc.handle(IPC_CHANNELS.browserNavigate, async (_event, value) => {
+    if (!isBrowserNavigateRequest(value)) throw new Error('Invalid Browser navigation request.')
+    return sanitizeValue(await runtime.navigateBrowser(value as BrowserNavigateRequest))
+  })
+  ipc.handle(IPC_CHANNELS.browserApprove, async (_event, value) => {
+    if (!isBrowserNavigateRequest(value)) throw new Error('Invalid Browser navigation approval request.')
+    return sanitizeValue(await runtime.approveBrowserNavigation(value as BrowserNavigateRequest))
+  })
+  ipc.handle(IPC_CHANNELS.browserAssert, async (_event, value) => {
+    if (!isBrowserAssertRequest(value)) throw new Error('Invalid Browser DOM assertion request.')
+    return sanitizeValue(await runtime.assertBrowserDom(value as BrowserAssertRequest))
+  })
+  ipc.handle(IPC_CHANNELS.browserControl, async (_event, value) => {
+    if (!isBrowserControlRequest(value)) throw new Error('Invalid Browser context control request.')
+    const request = value as BrowserControlRequest
+    const result = request.action === 'close'
+      ? await runtime.closeBrowserContext(request.contextId, request.reason)
+      : request.action === 'reconnect' ? await runtime.reconnectBrowserContext(request.contextId) : await runtime.cleanupBrowserContext(request.contextId)
+    return sanitizeValue(result)
   })
 
   return unsubscribe

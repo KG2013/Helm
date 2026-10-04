@@ -26,7 +26,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 function printHelp(): void {
-  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm agent list <run-id>  List persisted child AgentRuns\n  helm agent create <run-id> <role> <goal>  Create a bounded child AgentRun\n  helm agent cancel|recover <run-id>  Cancel or recover child AgentRuns\n  helm connector list  List registered Connector Profiles\n  helm connector register <id> <version> <connector-id>  Register a bounded Profile\n  helm connector preview <run-id> <connector-id> <profile-id> <version> <action> <target>  Create a dry-run preview\n  helm connector write <run-id> <connector-id> <profile-id> <version> <action> <target>  Request an idempotent connector write\n  helm connector verify <run-id> <action-id> <target>  Query read-after-write evidence\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
+  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm agent list <run-id>  List persisted child AgentRuns\n  helm agent create <run-id> <role> <goal>  Create a bounded child AgentRun\n  helm agent cancel|recover <run-id>  Cancel or recover child AgentRuns\n  helm connector list  List registered Connector Profiles\n  helm connector register <id> <version> <connector-id>  Register a bounded Profile\n  helm connector preview <run-id> <connector-id> <profile-id> <version> <action> <target>  Create a dry-run preview\n  helm connector write <run-id> <connector-id> <profile-id> <version> <action> <target>  Request an idempotent connector write\n  helm connector verify <run-id> <action-id> <target>  Query read-after-write evidence\n  helm browser list [run-id]  List controlled browser contexts\n  helm browser create <run-id> <app-id> <window-id>  Create a scoped fixture context\n  helm browser navigate|approve <context-id> <url>  Navigate through the ActionGateway\n  helm browser assert <context-id>  Assert fixture DOM evidence\n  helm browser close|reconnect|cleanup <context-id>  Control context lifecycle\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
 }
 
 async function printRun(runtime: RuntimeFacade, goal: string, workspaceId: string, jsonl = false): Promise<void> {
@@ -303,6 +303,54 @@ async function connectorCommand(action: 'list' | 'register' | 'preview' | 'write
   }
 }
 
+async function browserCommand(action: 'list' | 'create' | 'navigate' | 'approve' | 'assert' | 'close' | 'reconnect' | 'cleanup', args: string[]): Promise<void> {
+  const statePath = process.env.HELM_STATE_DB
+  if (!statePath) {
+    console.error('helm browser requires HELM_STATE_DB to point at the Runtime SQLite ledger')
+    process.exitCode = 2
+    return
+  }
+  const database = openSqliteEventStore(statePath)
+  const runtime = await createPersistedRuntime(database.store, process.env.HELM_WORKSPACE_ID ?? 'workspace-cli')
+  try {
+    if (action === 'list') {
+      console.log(JSON.stringify(runtime.listBrowserContexts(args[0]?.trim() || undefined), null, 2))
+      return
+    }
+    if (action === 'create') {
+      const [runId, appId, windowId] = args
+      const run = runId ? await runtime.getRun(runId) : undefined
+      const profileIndex = args.indexOf('--profile-json')
+      const profile = profileIndex >= 0 && args[profileIndex + 1] ? JSON.parse(args[profileIndex + 1]) : { id: 'browser.fixture', version: 'v1', allowedOrigins: ['https://fixture.example.test'], allowedApps: [appId], allowedWindows: [windowId] }
+      if (!run || !appId || !windowId) throw new Error('browser create requires run id, app id, and window id')
+      console.log(JSON.stringify(await runtime.createBrowserContext({ runId, taskId: run.taskId, sessionId: run.sessionId, profile, appId, windowId }), null, 2))
+      return
+    }
+    const contextId = args[0]?.trim()
+    if (!contextId) throw new Error(`browser ${action} requires a context id`)
+    if (action === 'navigate' || action === 'approve') {
+      const url = args[1]?.trim()
+      const keyIndex = args.indexOf('--idempotency-key')
+      const idempotencyKey = keyIndex >= 0 ? args[keyIndex + 1]?.trim() : `${action}:${contextId}:${url}`
+      if (!url || !idempotencyKey) throw new Error(`browser ${action} requires a URL and idempotency key`)
+      const result = action === 'navigate' ? await runtime.navigateBrowser({ contextId, url, idempotencyKey }) : await runtime.approveBrowserNavigation({ contextId, url, idempotencyKey })
+      console.log(JSON.stringify(result, null, 2))
+      return
+    }
+    if (action === 'assert') {
+      const textIndex = args.indexOf('--text')
+      const selectorIndex = args.indexOf('--selector')
+      const keyIndex = args.indexOf('--idempotency-key')
+      console.log(JSON.stringify(await runtime.assertBrowserDom({ contextId, expectedText: textIndex >= 0 ? args[textIndex + 1] : undefined, expectedSelector: selectorIndex >= 0 ? args[selectorIndex + 1] : undefined, idempotencyKey: keyIndex >= 0 ? args[keyIndex + 1] ?? `assert:${contextId}` : `assert:${contextId}` }), null, 2))
+      return
+    }
+    console.log(JSON.stringify(action === 'close' ? await runtime.closeBrowserContext(contextId) : action === 'reconnect' ? await runtime.reconnectBrowserContext(contextId) : await runtime.cleanupBrowserContext(contextId), null, 2))
+  } finally {
+    await runtime.shutdown('CLI Browser command completed')
+    await database.store.close()
+  }
+}
+
 async function run(goal: string): Promise<void> {
   const provider = createProviderFromEnv({ env: process.env, getApiKey: (service) => readKeychainSecret(service) })
     ?? new MockProvider([{ kind: 'final', content: `Completed local task: ${goal}` } satisfies ProviderResponse])
@@ -454,6 +502,14 @@ if (command === 'run') {
     process.exitCode = 2
   } else {
     await connectorCommand(action, args.slice(1))
+  }
+} else if (command === 'browser') {
+  const action = args[0] === 'list' ? 'list' : args[0] === 'create' ? 'create' : args[0] === 'navigate' ? 'navigate' : args[0] === 'approve' ? 'approve' : args[0] === 'assert' ? 'assert' : args[0] === 'close' ? 'close' : args[0] === 'reconnect' ? 'reconnect' : args[0] === 'cleanup' ? 'cleanup' : undefined
+  if (!action) {
+    console.error('helm browser requires list, create, navigate, approve, assert, close, reconnect, or cleanup')
+    process.exitCode = 2
+  } else {
+    await browserCommand(action, args.slice(1))
   }
 } else {
   printHelp()
