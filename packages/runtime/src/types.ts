@@ -700,6 +700,51 @@ export interface BrowserObservationResult {
   evidence: Evidence[];
 }
 
+export type BrowserActionName = 'click' | 'type' | 'select' | 'upload' | 'download' | 'submit' | 'send' | 'delete' | 'publish';
+
+export interface BrowserActionProfile {
+  id: string;
+  version: string;
+  actions: readonly BrowserActionName[];
+  allowedLocators: readonly string[];
+  allowedArtifactUris?: readonly string[];
+  downloadDirectory?: string;
+  highRiskActions?: readonly BrowserActionName[];
+}
+
+export interface BrowserActionInput {
+  contextId: ID;
+  profileId: string;
+  profileVersion: string;
+  action: BrowserActionName;
+  locator: string;
+  value?: string;
+  artifactUri?: string;
+  actionId?: ID;
+  idempotencyKey: string;
+}
+
+export interface BrowserActionReceipt {
+  contextId: ID;
+  action: BrowserActionName;
+  locator: string;
+  profile: Pick<BrowserActionProfile, 'id' | 'version'>;
+  domBeforeHash: string;
+  domAfterHash: string;
+  screenshotBefore?: ArtifactReference;
+  screenshotAfter?: ArtifactReference;
+  artifact?: ArtifactReference;
+  highRisk: boolean;
+  idempotencyKey: string;
+  replayed: boolean;
+}
+
+export interface BrowserActionResult {
+  action: ActionExecutionResult;
+  receipt: BrowserActionReceipt;
+  evidence: Evidence[];
+}
+
 export interface BrowserRegistryOptions {
   store: EventStore;
   gateway: import('./action-gateway.js').ActionGateway;
@@ -756,6 +801,8 @@ export type EventType =
   | 'browser.context_cleaned'
   | 'browser.navigation'
   | 'browser.observation'
+  | 'browser.profile_registered'
+  | 'browser.action'
   | 'tool.call'
   | 'tool.receipt'
   | 'step.observation'

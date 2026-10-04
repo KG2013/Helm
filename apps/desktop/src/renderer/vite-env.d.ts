@@ -18,6 +18,10 @@ interface Window {
     approveBrowserNavigation: (request: import('../shared/ipc.js').BrowserNavigateRequest) => Promise<import('@helm/runtime').BrowserNavigationResult>
     assertBrowserDom: (request: import('../shared/ipc.js').BrowserAssertRequest) => Promise<import('@helm/runtime').BrowserObservationResult>
     controlBrowserContext: (request: import('../shared/ipc.js').BrowserControlRequest) => Promise<import('@helm/runtime').BrowserContextRecord>
+    listBrowserActionProfiles: () => Promise<import('@helm/runtime').BrowserActionProfile[]>
+    registerBrowserActionProfile: (request: import('../shared/ipc.js').BrowserActionProfileRequest) => Promise<import('@helm/runtime').BrowserActionProfile>
+    executeBrowserAction: (request: import('../shared/ipc.js').BrowserActionRequest) => Promise<import('@helm/runtime').BrowserActionResult>
+    approveBrowserAction: (request: import('../shared/ipc.js').BrowserActionRequest) => Promise<import('@helm/runtime').BrowserActionResult>
     controlRun: (request: import('../shared/ipc.js').RunControlRequest) => Promise<import('@helm/runtime').Run>
     resolveApproval: (request: import('../shared/ipc.js').RunApprovalRequest) => Promise<import('@helm/runtime').Run>
     subscribe: (listener: (payload: import('../shared/ipc.js').RunEventPayload) => void) => () => void

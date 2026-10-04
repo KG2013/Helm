@@ -736,6 +736,22 @@ export class RuntimeFacade {
     return this.browserRegistry.cleanupContext(contextId);
   }
 
+  async registerBrowserActionProfile(profile: import('./types.js').BrowserActionProfile) {
+    return this.browserRegistry.registerActionProfile(profile);
+  }
+
+  listBrowserActionProfiles() {
+    return this.browserRegistry.listActionProfiles();
+  }
+
+  async executeBrowserAction(input: import('./types.js').BrowserActionInput) {
+    return this.browserRegistry.executeAction(input);
+  }
+
+  async approveBrowserAction(input: import('./types.js').BrowserActionInput) {
+    return this.browserRegistry.approveAction(input);
+  }
+
   onEvent(listener: RuntimeEventListener): () => void {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);

@@ -85,6 +85,10 @@ child 的实际执行、父结果聚合和 CLI/Desktop 操作入口在 #30 继�
 
 `BrowserFixtureRegistry` 为每个 context 固定 app/window/origin/download/artifact scope；未在 profile allowlist 中的 origin、app 或 window 在 ActionGateway 前拒绝。导航、DOM assertion 和 fixture screenshot 都通过 typed action 事件产生 URL/origin/context/DOM hash/screenshot Artifact evidence；导航可返回 approval_required，`approveNavigation` 继续同一个 action。close/reconnect/cleanup 写入可回放生命周期事件；CLI 与 Desktop 共用 context、navigate、approve、assert、control 入口。fixture 不获得 shell、Keychain 或原生桌面权限，真实浏览器 smoke 单独验收。
 
+## 15. 浏览器动作 Profile、Artifact I/O 与高风险审批（#36：已完成）
+
+浏览器动作 Profile 版本化声明 action、locator、上传 Artifact allowlist 和受控下载目录；click/type/select/upload/download 进入统一 Gateway，上传只读授权 Artifact，下载只写 ArtifactStore，不暴露宿主路径。submit/send/delete/publish 即使全局策略允许也先产生 `approval_required`，只能用同一 action 绑定继续执行。Receipt 保存 context/profile/locator、前后 DOM hash、截图和 Artifact 引用；CLI 与 Desktop 暴露 profile 与 action proposal/approval，fixture 不模拟真实浏览器权限。
+
 ## 与原架构阶段的关系
 
 架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。

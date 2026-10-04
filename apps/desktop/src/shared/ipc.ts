@@ -21,6 +21,10 @@ export const IPC_CHANNELS = {
   browserApprove: 'helm:browser-approve',
   browserAssert: 'helm:browser-assert',
   browserControl: 'helm:browser-control',
+  browserProfileList: 'helm:browser-profile-list',
+  browserProfileRegister: 'helm:browser-profile-register',
+  browserAction: 'helm:browser-action',
+  browserActionApprove: 'helm:browser-action-approve',
   runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
@@ -111,6 +115,8 @@ export type BrowserContextCreateRequest = import('@helm/runtime').BrowserContext
 export type BrowserNavigateRequest = import('@helm/runtime').BrowserNavigationInput
 export type BrowserAssertRequest = import('@helm/runtime').BrowserDomAssertionInput
 export type BrowserControlRequest = { contextId: string; action: 'close' | 'reconnect' | 'cleanup'; reason?: string }
+export type BrowserActionProfileRequest = import('@helm/runtime').BrowserActionProfile
+export type BrowserActionRequest = import('@helm/runtime').BrowserActionInput
 
 export type StartRunResponse = {
   task: Task
@@ -271,4 +277,22 @@ export function isBrowserControlRequest(value: unknown): value is BrowserControl
   const request = value as Partial<BrowserControlRequest>
   return isRunId(request.contextId) && (request.action === 'close' || request.action === 'reconnect' || request.action === 'cleanup')
     && (request.reason === undefined || (typeof request.reason === 'string' && request.reason.length <= 500))
+}
+
+export function isBrowserActionProfileRequest(value: unknown): value is BrowserActionProfileRequest {
+  if (!value || typeof value !== 'object') return false
+  const profile = value as Partial<BrowserActionProfileRequest>
+  return typeof profile.id === 'string' && typeof profile.version === 'string'
+    && Array.isArray(profile.actions) && profile.actions.every((item) => typeof item === 'string')
+    && Array.isArray(profile.allowedLocators) && profile.allowedLocators.every((item) => typeof item === 'string')
+}
+
+export function isBrowserActionRequest(value: unknown): value is BrowserActionRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<BrowserActionRequest>
+  return isRunId(request.contextId) && typeof request.profileId === 'string' && typeof request.profileVersion === 'string'
+    && typeof request.action === 'string' && typeof request.locator === 'string' && isRunId(request.idempotencyKey)
+    && (request.value === undefined || (typeof request.value === 'string' && request.value.length <= 2_000))
+    && (request.artifactUri === undefined || (typeof request.artifactUri === 'string' && request.artifactUri.length <= 500))
+    && (request.actionId === undefined || isRunId(request.actionId))
 }

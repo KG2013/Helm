@@ -7,6 +7,10 @@ import type {
   BrowserContextCreateInput,
   BrowserContextProfile,
   BrowserContextRecord,
+  BrowserActionInput,
+  BrowserActionProfile,
+  BrowserActionReceipt,
+  BrowserActionResult,
   BrowserDomAssertionInput,
   BrowserNavigationInput,
   BrowserNavigationReceipt,
@@ -34,6 +38,7 @@ export class BrowserFixtureRegistry {
   private readonly ids: RuntimeIdFactory;
   private readonly contexts = new Map<ID, BrowserContextRecord>();
   private readonly profiles = new Map<ID, BrowserContextProfile>();
+  private readonly actionProfiles = new Map<string, BrowserActionProfile>();
   private readonly pages = new Map<ID, Page>();
   private readonly screenshots = new Map<ID, ArtifactReference>();
 
@@ -70,6 +75,85 @@ export class BrowserFixtureRegistry {
 
   listContexts(runId?: ID): BrowserContextRecord[] {
     return [...this.contexts.values()].filter((context) => !runId || context.runId === runId).map((context) => ({ ...context, profile: { ...context.profile } }));
+  }
+
+  async registerActionProfile(profile: BrowserActionProfile): Promise<BrowserActionProfile> {
+    validateActionProfile(profile);
+    const key = `${profile.id}@${profile.version}`;
+    if (this.actionProfiles.has(key)) return this.actionProfiles.get(key)!;
+    const copy = { ...profile, actions: [...profile.actions], allowedLocators: [...profile.allowedLocators], allowedArtifactUris: profile.allowedArtifactUris ? [...profile.allowedArtifactUris] : undefined, highRiskActions: profile.highRiskActions ? [...profile.highRiskActions] : undefined };
+    this.actionProfiles.set(key, copy);
+    await this.store.append({ type: 'browser.profile_registered', payload: copy as unknown as Record<string, unknown> });
+    return copy;
+  }
+
+  listActionProfiles(): BrowserActionProfile[] {
+    return [...this.actionProfiles.values()].map((profile) => ({ ...profile, actions: [...profile.actions], allowedLocators: [...profile.allowedLocators] }));
+  }
+
+  async executeAction(input: BrowserActionInput, approved = false): Promise<BrowserActionResult> {
+    const context = this.requireContext(input.contextId);
+    if (context.state !== 'active') throw new Error('Browser context is not active.');
+    const profile = this.actionProfiles.get(`${input.profileId}@${input.profileVersion}`);
+    if (!profile) throw new Error('Browser action profile is not registered.');
+    validateActionInput(profile, input, this.profileFor(context));
+    const page = this.pages.get(context.contextId);
+    if (!page) throw new Error('Browser action requires an active page.');
+    const actionId = input.actionId ?? this.ids.next('action-browser');
+    const highRisk = (profile.highRiskActions ?? ['submit', 'send', 'delete', 'publish']).includes(input.action);
+    const request = {
+      actionId,
+      runId: context.runId,
+      taskId: context.taskId,
+      sessionId: context.sessionId,
+      profile: { id: profile.id, version: profile.version },
+      target: `browser:${context.contextId}/${input.locator}`,
+      scope: { contextId: context.contextId, appId: context.appId, windowId: context.windowId, locator: input.locator },
+      capabilities: [`browser.${input.action}`],
+      network: { mode: 'none' as const },
+      argsHash: hash({ action: input.action, locator: input.locator, value: input.value, artifactUri: input.artifactUri }),
+      argsSummary: `${input.action}:${input.locator};context:${context.contextId}`,
+      idempotencyKey: input.idempotencyKey,
+      dryRun: false,
+      deadline: new Date(this.clock.now().getTime() + 60_000).toISOString(),
+    };
+    let adapterReceipt: BrowserActionReceipt | undefined;
+    const adapter: ActionAdapter = {
+      id: `browser-fixture:${input.action}`,
+      execute: async () => {
+        const before = page.dom;
+        const domBeforeHash = hash(before);
+        const screenshotBefore = await this.putScreenshot(context.runId, context.contextId, hash(`screenshot:${page.url}:${domBeforeHash}`));
+        let artifact;
+        if (input.action === 'upload') {
+          const bytes = await this.readAuthorizedArtifact(input.artifactUri!, profile, context);
+          artifact = { uri: input.artifactUri!, type: 'authorized-upload', hash: hash(bytes), bytes: bytes.byteLength, sourceRunId: context.runId };
+        }
+        if (input.action === 'download') {
+          artifact = await this.artifactStore?.put({ runId: context.runId, type: 'browser-download', extension: 'txt', content: `fixture-download:${context.contextId}:${hash(input.locator)}`, path: this.profileFor(context).downloadDirectory, limitations: ['Controlled fixture download; no host filesystem path is exposed.'] });
+          if (!artifact) throw new Error('Browser download requires a configured ArtifactStore.');
+        }
+        const marker = input.action === 'type' || input.action === 'select' ? hash(input.value ?? '') : hash(`${input.action}:${input.locator}`);
+        page.dom = page.dom.replace('</main>', `<div data-action="${input.action}" data-locator="${escapeAttribute(input.locator)}" data-value-hash="${marker}"></div></main>`);
+        const domAfterHash = hash(page.dom);
+        const screenshotAfter = await this.putScreenshot(context.runId, context.contextId, hash(`screenshot:${page.url}:${domAfterHash}`));
+        adapterReceipt = { contextId: context.contextId, action: input.action, locator: input.locator, profile: { id: profile.id, version: profile.version }, domBeforeHash, domAfterHash, screenshotBefore, screenshotAfter, artifact, highRisk, idempotencyKey: input.idempotencyKey, replayed: false };
+        const evidence = this.actionEvidence(adapterReceipt);
+        await this.store.append({ type: 'browser.action', taskId: context.taskId, sessionId: context.sessionId, runId: context.runId, payload: { actionId, ...adapterReceipt, evidence } as unknown as Record<string, unknown> });
+        return { ok: true, output: { action: input.action, contextId: context.contextId, domAfterHash }, receipt: { sideEffect: 'known', ...adapterReceipt }, evidence };
+      },
+    };
+    const action = highRisk && !approved
+      ? await this.gateway.requestApproval({ request, reason: `Browser action ${input.action} requires per-action approval.` })
+      : approved ? await this.gateway.approve({ runId: request.runId, actionId, adapter, markRunNeedsReconciliation: false }) : await this.gateway.execute({ request, adapter, markRunNeedsReconciliation: false });
+    const currentHash = hash(page.dom);
+    const receipt = adapterReceipt ?? { contextId: context.contextId, action: input.action, locator: input.locator, profile: { id: profile.id, version: profile.version }, domBeforeHash: currentHash, domAfterHash: currentHash, highRisk, idempotencyKey: input.idempotencyKey, replayed: Boolean(action.replayed) };
+    const evidence = adapterReceipt ? this.actionEvidence(adapterReceipt) : [];
+    return { action, receipt, evidence };
+  }
+
+  async approveAction(input: BrowserActionInput): Promise<BrowserActionResult> {
+    return this.executeAction(input, true);
   }
 
   async closeContext(contextId: ID, reason = 'closed by user'): Promise<BrowserContextRecord> {
@@ -205,6 +289,20 @@ export class BrowserFixtureRegistry {
     return this.artifactStore.put({ runId, type: 'browser-screenshot', extension: 'txt', content: `fixture-screenshot:${contextId}:${screenshotHash}`, limitations: ['Controlled fixture screenshot representation; not a real browser pixel capture.'] });
   }
 
+  private async readAuthorizedArtifact(uri: string, profile: BrowserActionProfile, context: BrowserContextRecord): Promise<Uint8Array> {
+    if (!profile.allowedArtifactUris?.includes(uri) || !this.profileFor(context).allowedArtifactUris?.includes(uri)) throw new Error('Browser upload Artifact is outside the authorized allowlist.');
+    if (!this.artifactStore) throw new Error('Browser upload requires a configured ArtifactStore.');
+    return this.artifactStore.read(uri);
+  }
+
+  private actionEvidence(receipt: BrowserActionReceipt): Evidence[] {
+    return [
+      { type: 'browser.action', summary: `${receipt.action} executed in controlled context ${receipt.contextId}.`, uri: `browser://${receipt.contextId}/action/${receipt.action}`, hash: receipt.domAfterHash },
+      ...(receipt.screenshotAfter ? [{ type: 'browser.screenshot.after', summary: 'Post-action screenshot Artifact.', uri: receipt.screenshotAfter.uri, hash: receipt.screenshotAfter.hash }] : []),
+      ...(receipt.artifact ? [{ type: 'browser.artifact', summary: `Authorized ${receipt.action} Artifact.`, uri: receipt.artifact.uri, hash: receipt.artifact.hash }] : []),
+    ];
+  }
+
   private profileFor(context: BrowserContextRecord): BrowserContextProfile {
     const profile = this.profiles.get(context.contextId);
     if (!profile) throw new Error('Browser context profile is unavailable after cleanup.');
@@ -231,6 +329,23 @@ function parseAllowedUrl(raw: string, profile: BrowserContextProfile): URL {
   try { url = new URL(raw); } catch { throw new Error('Browser navigation URL is invalid.'); }
   if (!['http:', 'https:'].includes(url.protocol) || !profile.allowedOrigins.includes(url.origin)) throw new Error('Browser navigation origin is outside the profile allowlist.');
   return url;
+}
+
+function validateActionProfile(profile: BrowserActionProfile): void {
+  if (!profile.id || !profile.version || !profile.actions.length || !profile.allowedLocators.length) throw new Error('Browser action profile must declare versioned actions and locator allowlists.');
+  for (const action of profile.actions) if (!['click', 'type', 'select', 'upload', 'download', 'submit', 'send', 'delete', 'publish'].includes(action)) throw new Error(`Unsupported browser action: ${action}`);
+}
+
+function validateActionInput(profile: BrowserActionProfile, input: BrowserActionInput, contextProfile: BrowserContextProfile): void {
+  if (!profile.actions.includes(input.action)) throw new Error(`Browser action ${input.action} is not allowed by the profile.`);
+  if (!profile.allowedLocators.includes(input.locator)) throw new Error('Browser locator is outside the action profile allowlist.');
+  if (['type', 'select'].includes(input.action) && (!input.value || input.value.length > 2_000)) throw new Error('Browser type/select actions require a bounded value.');
+  if (input.action === 'upload' && (!input.artifactUri || !profile.allowedArtifactUris?.includes(input.artifactUri) || !contextProfile.allowedArtifactUris?.includes(input.artifactUri))) throw new Error('Browser upload requires an authorized Artifact URI.');
+  if (input.action === 'download' && !profile.downloadDirectory && !contextProfile.downloadDirectory) throw new Error('Browser download requires a controlled download directory.');
+}
+
+function escapeAttribute(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]!));
 }
 
 function hash(value: unknown): string {

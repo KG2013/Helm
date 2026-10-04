@@ -36,6 +36,15 @@ export class ActionGateway {
     return this.executeApproved(input);
   }
 
+  /** Record an approval-bound proposal without consulting a permissive policy. */
+  async requestApproval(input: { request: ActionRequest; reason: string }): Promise<ActionExecutionResult> {
+    const validation = validateRequest(input.request);
+    await this.append('action.requested', input.request, { validation });
+    if (validation) return this.denied(input.request, validation);
+    await this.append('action.approval_required', input.request, { reason: input.reason, approvalId: input.request.actionId, actionHash: actionHash(input.request) });
+    return { status: 'approval_required', actionId: input.request.actionId, approvalId: input.request.actionId, ok: false, error: input.reason };
+  }
+
   /** Execute a request after an existing typed Runtime approval. */
   async executeApproved(input: { request: ActionRequest; adapter: ActionAdapter; markRunNeedsReconciliation?: boolean }): Promise<ActionExecutionResult> {
     const priorEvents = await this.store.list(input.request.runId);

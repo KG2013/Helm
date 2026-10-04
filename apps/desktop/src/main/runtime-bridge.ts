@@ -18,6 +18,8 @@ import {
   isBrowserNavigateRequest,
   isBrowserAssertRequest,
   isBrowserControlRequest,
+  isBrowserActionProfileRequest,
+  isBrowserActionRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
@@ -40,6 +42,8 @@ import {
   type BrowserNavigateRequest,
   type BrowserAssertRequest,
   type BrowserControlRequest,
+  type BrowserActionProfileRequest,
+  type BrowserActionRequest,
   type StartRunResponse,
 } from '../shared/ipc.js'
 
@@ -248,6 +252,19 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
       ? await runtime.closeBrowserContext(request.contextId, request.reason)
       : request.action === 'reconnect' ? await runtime.reconnectBrowserContext(request.contextId) : await runtime.cleanupBrowserContext(request.contextId)
     return sanitizeValue(result)
+  })
+  ipc.handle(IPC_CHANNELS.browserProfileList, () => sanitizeValue(runtime.listBrowserActionProfiles()))
+  ipc.handle(IPC_CHANNELS.browserProfileRegister, async (_event, value) => {
+    if (!isBrowserActionProfileRequest(value)) throw new Error('Invalid Browser action profile.')
+    return sanitizeValue(await runtime.registerBrowserActionProfile(value as BrowserActionProfileRequest))
+  })
+  ipc.handle(IPC_CHANNELS.browserAction, async (_event, value) => {
+    if (!isBrowserActionRequest(value)) throw new Error('Invalid Browser action request.')
+    return sanitizeValue(await runtime.executeBrowserAction(value as BrowserActionRequest))
+  })
+  ipc.handle(IPC_CHANNELS.browserActionApprove, async (_event, value) => {
+    if (!isBrowserActionRequest(value)) throw new Error('Invalid Browser action approval request.')
+    return sanitizeValue(await runtime.approveBrowserAction(value as BrowserActionRequest))
   })
 
   return unsubscribe
