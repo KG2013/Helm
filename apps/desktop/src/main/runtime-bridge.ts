@@ -52,6 +52,7 @@ import {
   type A2AControlRequest,
   type StartRunResponse,
 } from '../shared/ipc.js'
+import { DesktopWindowRegistry } from './window-registry.js'
 
 export type RuntimeIpc = {
   handle(channel: string, handler: (event: unknown, request?: unknown) => unknown): void
@@ -63,6 +64,7 @@ export type RuntimeBridgeOptions = {
   runtimeInfo: RuntimeInfo
   emit: (event: DomainEvent) => void
   workspaceIds?: readonly string[]
+  windowRegistry?: DesktopWindowRegistry
 }
 
 const SENSITIVE_KEYS = /api[-_]?key|authorization|cookie|secret|password|token|oldText|newText/i
@@ -81,12 +83,21 @@ function sanitizeEvent(event: DomainEvent): DomainEvent {
 
 export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () => void {
   const { ipc, runtime } = options
+  const senderOf = (event: unknown) => (event as { sender?: unknown } | undefined)?.sender as Parameters<DesktopWindowRegistry['authorizeRun']>[0] | undefined
+  const authorizeRun = (event: unknown, runId: string) => {
+    const sender = senderOf(event)
+    if (options.windowRegistry && sender) options.windowRegistry.authorizeRun(sender, runId)
+  }
+  const assertRunAccess = (event: unknown, runId: string) => {
+    const sender = senderOf(event)
+    if (options.windowRegistry && (!sender || !options.windowRegistry.isAuthorized(sender, runId))) throw new Error('Run is not authorized for this window.')
+  }
   const unsubscribe = runtime.onEvent((event) => {
     if (event.runId) options.emit(sanitizeEvent(event))
   })
 
   ipc.handle(IPC_CHANNELS.runtimeInfo, () => options.runtimeInfo)
-  ipc.handle(IPC_CHANNELS.runStart, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.runStart, async (event, value) => {
     if (!isStartRunRequest(value)) throw new Error('Invalid run request: goal and workspaceId are required.')
     const request = value as StartRunRequest
     if (!(options.workspaceIds ?? ['workspace-helm']).includes(request.workspaceId)) throw new Error('Unknown workspace.')
@@ -104,13 +115,15 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
       session = await runtime.createSession({ taskId: task.id })
     }
     const run = await runtime.startRun({ taskId: task.id, sessionId: session.id })
+    authorizeRun(event, run.id)
     void runtime.run(run.id).catch(() => undefined)
     const response: StartRunResponse = { task, session, run }
     return response
   })
-  ipc.handle(IPC_CHANNELS.runControl, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.runControl, async (event, value) => {
     if (!isRunControlRequest(value)) throw new Error('Invalid Run control request.')
     const request = value as RunControlRequest
+    assertRunAccess(event, request.runId)
     const current = await runtime.getRun(request.runId)
     if (!current) throw new Error('Unknown run.')
     if (request.action === 'cancel' && ['completed', 'failed', 'cancelled', 'needs_reconciliation'].includes(current.state)) return current
@@ -124,15 +137,22 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     }
     return runtime.cancelRun(request.runId, request.reason ?? 'cancelled by user')
   })
-  ipc.handle(IPC_CHANNELS.runApproval, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.runApproval, async (event, value) => {
     if (!isRunApprovalRequest(value)) throw new Error('Invalid approval request.')
     const request = value as RunApprovalRequest
+    assertRunAccess(event, request.runId)
     const task = await runtime.loadTask((await runtime.getRun(request.runId))?.taskId ?? '')
     if (!task || task.workspaceId !== request.workspaceId) throw new Error('Approval workspace mismatch.')
     return runtime.resolveApproval(request.runId, request.approvalId, request.decision, request.workspaceId)
   })
-  ipc.handle(IPC_CHANNELS.runSnapshot, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.runSnapshot, async (event, value) => {
     if (!isRunId(value)) throw new Error('Invalid run id.')
+    const persisted = await runtime.getRun(value)
+    if (!persisted) throw new Error('Unknown run.')
+    const persistedTask = await runtime.loadTask(persisted.taskId)
+    if (!persistedTask || !(options.workspaceIds ?? ['workspace-helm']).includes(persistedTask.workspaceId)) throw new Error('Run workspace is not authorized.')
+    authorizeRun(event, value)
+    await runtime.recoverRun(value)
     const events = await runtime.getEvents(value)
     if (!events.length) throw new Error('Unknown run.')
     const run = reduceRunEvents(events, value)
@@ -149,9 +169,10 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     }
     return snapshot
   })
-  ipc.handle(IPC_CHANNELS.runExport, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.runExport, async (event, value) => {
     if (!isRunExportRequest(value)) throw new Error('Invalid Run export request.')
     const request = value as RunExportRequest
+    assertRunAccess(event, request.runId)
     const events = await runtime.getEvents(request.runId)
     if (!events.length) throw new Error('Unknown run.')
     const run = reduceRunEvents(events, request.runId)
@@ -169,9 +190,10 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     }
     return response
   })
-  ipc.handle(IPC_CHANNELS.runReconciliation, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.runReconciliation, async (event, value) => {
     if (!isRunReconciliationRequest(value)) throw new Error('Invalid Run reconciliation request.')
     const request = value as RunReconciliationRequest
+    assertRunAccess(event, request.runId)
     const run = await runtime.getRun(request.runId)
     if (!run) throw new Error('Unknown run.')
     let record

@@ -12,16 +12,18 @@ import { openSqliteEventStore } from '@helm/runtime/sqlite-node'
 import { createCodingRuntime, createDockerCodingSandboxFromEnv, createWorkspaceInspectionRuntime } from '@helm/runtime/tools'
 import { createProviderFromEnv } from '@helm/providers'
 import { registerRuntimeIpcHandlers } from './runtime-bridge.js'
+import { DesktopWindowRegistry } from './window-registry.js'
 import { readKeychainSecret } from './keychain.js'
 
 const devServerUrl = process.env.HELM_DEV_SERVER_URL
 let mainWindow: BrowserWindow | null = null
+const windowRegistry = new DesktopWindowRegistry()
 let activeRuntime: RuntimeFacade | undefined
 let activeStore: { close(): Promise<void> | void } | undefined
 let isQuitting = false
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 1080,
@@ -37,19 +39,22 @@ function createWindow() {
   })
 
   if (devServerUrl) {
-    void mainWindow.loadURL(devServerUrl)
-    mainWindow.webContents.openDevTools({ mode: 'detach' })
+    void window.loadURL(devServerUrl)
+    window.webContents.openDevTools({ mode: 'detach' })
   } else {
-    void mainWindow.loadFile(join(__dirname, '../dist/index.html'))
+    void window.loadFile(join(__dirname, '../dist/index.html'))
   }
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  window.webContents.setWindowOpenHandler(({ url }) => {
     return { action: 'deny' }
   })
-  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
+  window.webContents.on('will-navigate', (event) => event.preventDefault())
+  windowRegistry.register(window.webContents)
+  if (!mainWindow) mainWindow = window
 
-  mainWindow.on('closed', () => {
-    mainWindow = null
+  window.on('closed', () => {
+    windowRegistry.unregister(window.webContents)
+    if (mainWindow === window) mainWindow = BrowserWindow.getAllWindows().find((candidate) => candidate !== window) ?? null
   })
 }
 
@@ -103,7 +108,7 @@ app.whenReady().then(async () => {
   registerRuntimeIpcHandlers({
     ipc: {
       handle: (channel, handler) => ipcMain.handle(channel, (event, request) => {
-        if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+        if (!windowRegistry.has(event.sender) || event.senderFrame !== event.sender.mainFrame) {
           throw new Error('IPC source rejected.')
         }
         return handler(event, request)
@@ -111,15 +116,14 @@ app.whenReady().then(async () => {
     },
     runtime,
     workspaceIds: [workspaceId],
+    windowRegistry,
     runtimeInfo: {
       appVersion: app.getVersion(),
       platform: process.platform,
       isPackaged: app.isPackaged,
       officePreflight,
     },
-    emit: (event) => {
-      if (mainWindow && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('helm:run-event', event)
-    },
+    emit: (event) => windowRegistry.publish(event),
   })
 
   app.on('before-quit', (event) => {

@@ -6,6 +6,7 @@ import { createReadOnlyWorkspacePolicy, createWorkspaceInspectionExecutor, Stati
 import { WorkspaceInspectVerifier } from '@helm/runtime'
 import { IPC_CHANNELS } from '../src/shared/ipc.js'
 import { registerRuntimeIpcHandlers, type RuntimeIpc } from '../src/main/runtime-bridge.js'
+import { DesktopWindowRegistry, type WebContentsLike } from '../src/main/window-registry.js'
 
 const registeredTestTools = {
   get: (id: string) => ({ id, version: 'test-v1', readOnly: false, scope: 'workspace' as const, network: 'none' as const, maxOutputBytes: 32_000 }),
@@ -18,12 +19,53 @@ class FakeIpcMain implements RuntimeIpc {
     this.handlers.set(channel, handler)
   }
 
-  invoke(channel: string, request?: unknown): Promise<unknown> {
+  invoke(channel: string, request?: unknown, event: unknown = {}): Promise<unknown> {
     const handler = this.handlers.get(channel)
     if (!handler) throw new Error(`No handler registered for ${channel}`)
-    return Promise.resolve(handler({}, request))
+    return Promise.resolve(handler(event, request))
   }
 }
+
+function fakeSender(): WebContentsLike {
+  return { isDestroyed: () => false, send: () => undefined }
+}
+
+test('desktop IPC authorizes a Run per window and recovery is triggered by reconnect snapshot', async () => {
+  const ipc = new FakeIpcMain()
+  const registry = new DesktopWindowRegistry()
+  const first = fakeSender()
+  const second = fakeSender()
+  registry.register(first)
+  registry.register(second)
+  const runtime = new RuntimeFacade({
+    store: new InMemoryEventStore(),
+    provider: new MockProvider([{ kind: 'final', content: 'reconnectable' }]),
+  })
+  const stop = registerRuntimeIpcHandlers({
+    ipc,
+    runtime,
+    windowRegistry: registry,
+    workspaceIds: ['workspace-test'],
+    runtimeInfo: { appVersion: '0.1.0', platform: 'test', isPackaged: true },
+    emit: (event) => registry.publish(event),
+  })
+  const started = await ipc.invoke(IPC_CHANNELS.runStart, { goal: 'restart recovery', workspaceId: 'workspace-test' }, { sender: first }) as { run: { id: string } }
+  await new Promise<void>((resolve, reject) => {
+    const deadline = Date.now() + 1_000
+    const poll = () => void runtime.getRun(started.run.id).then((run) => {
+      if (run?.state === 'completed') return resolve()
+      if (Date.now() >= deadline) return reject(new Error(`Run did not complete: ${run?.state}`))
+      setTimeout(poll, 5)
+    })
+    poll()
+  })
+  await assert.rejects(() => ipc.invoke(IPC_CHANNELS.runControl, { runId: started.run.id, action: 'pause' }, { sender: second }), /not authorized|source/i)
+  const snapshot = await ipc.invoke(IPC_CHANNELS.runSnapshot, started.run.id, { sender: second }) as { run: { id: string; state: string }; events: Array<{ sequence: number }> }
+  assert.equal(snapshot.run.id, started.run.id)
+  assert.equal(snapshot.run.state, 'completed')
+  assert.deepEqual(snapshot.events.map((event) => event.sequence), [...snapshot.events].map((event) => event.sequence).sort((a, b) => a - b))
+  stop()
+})
 
 test('desktop IPC starts a Runtime Run and forwards ordered events', async () => {
   const ipc = new FakeIpcMain()

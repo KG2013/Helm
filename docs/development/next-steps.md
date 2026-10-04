@@ -33,7 +33,7 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 原生 Node SQLite adapter 已提供版本化迁移、WAL/事务、append-only sequence、durable projections、checkpoint、pending approval/receipt 恢复、未知工具对账和 JSONL 脱敏导出。CLI 通过 `HELM_STATE_DB` 接入，Desktop 主进程默认使用用户数据目录数据库。
 
-原生 SQLite contract tests 已覆盖迁移、事务、序列、projection 和恢复核心；Runtime owner/lease、stale owner 控制拒绝、shutdown 安全暂停，以及独立 Node 进程的 owner arbitration、Approval reconnect 和 reconciliation smoke 已由 T9/#14 覆盖。Electron 打包重启回归仍需目标环境执行。
+原生 SQLite contract tests 已覆盖迁移、事务、序列、projection 和恢复核心；Runtime owner/lease、stale owner 控制拒绝、shutdown 安全暂停，以及独立 Node 进程的 owner arbitration、Approval reconnect 和 reconciliation smoke 已由 T9/#14 覆盖。Electron 已增加 packaged restart/multi-window registry smoke；目标环境仍需真实长任务和跨平台安装包回归。
 
 ## 5. Office Worker Runtime 与交付已接线
 
