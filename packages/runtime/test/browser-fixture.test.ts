@@ -78,7 +78,34 @@ test('BrowserFixtureRegistry enforces action profile locators, Artifact I/O, and
   const approved = await registry.approveAction(submitRequest);
   assert.equal(approved.action.status, 'executed');
   assert.equal(approved.receipt.highRisk, true);
+  assert.equal(approved.verification?.status, 'known');
   const uploaded = await registry.executeAction({ contextId: context.contextId, profileId: 'browser.form', profileVersion: 'v1', action: 'upload', locator: '#name', artifactUri: upload.uri, idempotencyKey: 'upload-once' });
   assert.equal(uploaded.action.status, 'approval_required');
   await assert.rejects(() => registry.executeAction({ contextId: context.contextId, profileId: 'browser.form', profileVersion: 'v1', action: 'click', locator: '#outside', idempotencyKey: 'bad-locator' }), /locator/i);
+});
+
+test('BrowserFixtureRegistry keeps interrupted effects UNKNOWN and requires evidence-backed postcondition reconciliation', async () => {
+  const store = new InMemoryEventStore();
+  const registry = new BrowserFixtureRegistry({ store, gateway: new ActionGateway({ store, policy: () => ({ decision: 'allow' as const, reason: 'fixture browser policy' }) }) });
+  const context = await registry.createContext({ runId: 'run-browser-reconcile', taskId: 'task-browser-reconcile', sessionId: 'session-browser-reconcile', profile, appId: 'fixture-app', windowId: 'fixture-window' });
+  await registry.registerActionProfile({ id: 'browser.reconcile', version: 'v1', actions: ['click'], allowedLocators: ['#save'] });
+  await registry.navigate({ contextId: context.contextId, url: 'https://fixture.example.test/reconcile', idempotencyKey: 'reconcile-navigation' });
+  const known = await registry.executeAction({ contextId: context.contextId, actionId: 'action-known', profileId: 'browser.reconcile', profileVersion: 'v1', action: 'click', locator: '#save', idempotencyKey: 'click-known' });
+  assert.equal(known.action.status, 'executed');
+  assert.equal(known.verification?.status, 'known');
+  const mismatch = await registry.verifyAction({ contextId: context.contextId, actionId: 'action-known', expectedDomAfterHash: 'f'.repeat(64) });
+  assert.equal(mismatch.status, 'failed');
+  assert.ok(mismatch.reason);
+
+  registry.injectFailure(context.contextId, 'network-disconnect');
+  const interruptedRequest = { contextId: context.contextId, actionId: 'action-interrupted', profileId: 'browser.reconcile', profileVersion: 'v1', action: 'click' as const, locator: '#save', idempotencyKey: 'click-interrupted' };
+  const unknown = await registry.executeAction(interruptedRequest);
+  assert.equal(unknown.action.status, 'unknown');
+  const browserActionsAfterUnknown = (await store.list(context.runId)).filter((event) => event.type === 'browser.action').length;
+  const replayedUnknown = await registry.executeAction(interruptedRequest);
+  assert.equal(replayedUnknown.action.status, 'unknown');
+  assert.equal(replayedUnknown.action.replayed, true);
+  assert.equal((await store.list(context.runId)).filter((event) => event.type === 'browser.action').length, browserActionsAfterUnknown);
+  assert.ok((await store.list(context.runId)).some((event) => event.type === 'browser.reconciliation' && event.payload.status === 'unknown'));
+  assert.ok((await store.list(context.runId)).some((event) => event.type === 'run.needs_reconciliation'));
 });

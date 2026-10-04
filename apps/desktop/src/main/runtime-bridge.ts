@@ -20,6 +20,7 @@ import {
   isBrowserControlRequest,
   isBrowserActionProfileRequest,
   isBrowserActionRequest,
+  isBrowserVerifyRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
@@ -44,6 +45,7 @@ import {
   type BrowserControlRequest,
   type BrowserActionProfileRequest,
   type BrowserActionRequest,
+  type BrowserVerifyRequest,
   type StartRunResponse,
 } from '../shared/ipc.js'
 
@@ -265,6 +267,10 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
   ipc.handle(IPC_CHANNELS.browserActionApprove, async (_event, value) => {
     if (!isBrowserActionRequest(value)) throw new Error('Invalid Browser action approval request.')
     return sanitizeValue(await runtime.approveBrowserAction(value as BrowserActionRequest))
+  })
+  ipc.handle(IPC_CHANNELS.browserVerify, async (_event, value) => {
+    if (!isBrowserVerifyRequest(value)) throw new Error('Invalid Browser postcondition verification request.')
+    return sanitizeValue(await runtime.verifyBrowserAction(value as BrowserVerifyRequest))
   })
 
   return unsubscribe

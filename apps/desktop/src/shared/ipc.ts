@@ -25,6 +25,7 @@ export const IPC_CHANNELS = {
   browserProfileRegister: 'helm:browser-profile-register',
   browserAction: 'helm:browser-action',
   browserActionApprove: 'helm:browser-action-approve',
+  browserVerify: 'helm:browser-verify',
   runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
@@ -117,6 +118,7 @@ export type BrowserAssertRequest = import('@helm/runtime').BrowserDomAssertionIn
 export type BrowserControlRequest = { contextId: string; action: 'close' | 'reconnect' | 'cleanup'; reason?: string }
 export type BrowserActionProfileRequest = import('@helm/runtime').BrowserActionProfile
 export type BrowserActionRequest = import('@helm/runtime').BrowserActionInput
+export type BrowserVerifyRequest = { contextId: string; actionId: string; expectedDomAfterHash: string }
 
 export type StartRunResponse = {
   task: Task
@@ -295,4 +297,11 @@ export function isBrowserActionRequest(value: unknown): value is BrowserActionRe
     && (request.value === undefined || (typeof request.value === 'string' && request.value.length <= 2_000))
     && (request.artifactUri === undefined || (typeof request.artifactUri === 'string' && request.artifactUri.length <= 500))
     && (request.actionId === undefined || isRunId(request.actionId))
+}
+
+export function isBrowserVerifyRequest(value: unknown): value is BrowserVerifyRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<BrowserVerifyRequest>
+  return isRunId(request.contextId) && isRunId(request.actionId)
+    && typeof request.expectedDomAfterHash === 'string' && /^[a-f0-9]{64}$/i.test(request.expectedDomAfterHash)
 }

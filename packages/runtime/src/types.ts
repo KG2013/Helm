@@ -743,6 +743,19 @@ export interface BrowserActionResult {
   action: ActionExecutionResult;
   receipt: BrowserActionReceipt;
   evidence: Evidence[];
+  verification?: BrowserPostconditionResult;
+}
+
+export type BrowserFailureMode = 'page-change' | 'window-lost' | 'browser-restart' | 'network-disconnect' | 'unknown-submit' | 'duplicate-response';
+
+export interface BrowserPostconditionResult {
+  actionId: ID;
+  contextId: ID;
+  status: 'known' | 'failed' | 'unknown';
+  expectedDomAfterHash: string;
+  observedDomHash?: string;
+  evidence: Evidence[];
+  reason?: string;
 }
 
 export interface BrowserRegistryOptions {
@@ -803,6 +816,7 @@ export type EventType =
   | 'browser.observation'
   | 'browser.profile_registered'
   | 'browser.action'
+  | 'browser.reconciliation'
   | 'tool.call'
   | 'tool.receipt'
   | 'step.observation'

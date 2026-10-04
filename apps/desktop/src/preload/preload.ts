@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type AgentControlRequest, type AgentCreateRequest, type AgentListRequest, type BrowserActionProfileRequest, type BrowserActionRequest, type BrowserAssertRequest, type BrowserContextCreateRequest, type BrowserContextListRequest, type BrowserControlRequest, type BrowserNavigateRequest, type ConnectorPreviewRequest, type ConnectorRegisterRequest, type ConnectorVerifyRequest, type ConnectorWriteRequest, type RunApprovalRequest, type RunControlRequest, type RunExportRequest, type RunExportResponse, type RunReconciliationRequest, type RunReconciliationResponse, type RunSnapshot, type RuntimeInfo, type RunEventPayload, type StartRunRequest, type StartRunResponse } from '../shared/ipc.js'
+import { IPC_CHANNELS, type AgentControlRequest, type AgentCreateRequest, type AgentListRequest, type BrowserActionProfileRequest, type BrowserActionRequest, type BrowserAssertRequest, type BrowserContextCreateRequest, type BrowserContextListRequest, type BrowserControlRequest, type BrowserNavigateRequest, type BrowserVerifyRequest, type ConnectorPreviewRequest, type ConnectorRegisterRequest, type ConnectorVerifyRequest, type ConnectorWriteRequest, type RunApprovalRequest, type RunControlRequest, type RunExportRequest, type RunExportResponse, type RunReconciliationRequest, type RunReconciliationResponse, type RunSnapshot, type RuntimeInfo, type RunEventPayload, type StartRunRequest, type StartRunResponse } from '../shared/ipc.js'
 
 contextBridge.exposeInMainWorld('helm', {
   runtimeInfo: (): Promise<RuntimeInfo> => ipcRenderer.invoke(IPC_CHANNELS.runtimeInfo),
@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('helm', {
   registerBrowserActionProfile: (request: BrowserActionProfileRequest) => ipcRenderer.invoke(IPC_CHANNELS.browserProfileRegister, request),
   executeBrowserAction: (request: BrowserActionRequest) => ipcRenderer.invoke(IPC_CHANNELS.browserAction, request),
   approveBrowserAction: (request: BrowserActionRequest) => ipcRenderer.invoke(IPC_CHANNELS.browserActionApprove, request),
+  verifyBrowserAction: (request: BrowserVerifyRequest) => ipcRenderer.invoke(IPC_CHANNELS.browserVerify, request),
   controlRun: (request: RunControlRequest) => ipcRenderer.invoke(IPC_CHANNELS.runControl, request),
   resolveApproval: (request: RunApprovalRequest) => ipcRenderer.invoke(IPC_CHANNELS.runApproval, request),
   subscribe: (listener: (payload: RunEventPayload) => void) => {

@@ -11,11 +11,13 @@ import type {
   BrowserActionProfile,
   BrowserActionReceipt,
   BrowserActionResult,
+  BrowserFailureMode,
   BrowserDomAssertionInput,
   BrowserNavigationInput,
   BrowserNavigationReceipt,
   BrowserNavigationResult,
   BrowserObservationResult,
+  BrowserPostconditionResult,
   BrowserRegistryOptions,
   Evidence,
   EventStore,
@@ -41,6 +43,7 @@ export class BrowserFixtureRegistry {
   private readonly actionProfiles = new Map<string, BrowserActionProfile>();
   private readonly pages = new Map<ID, Page>();
   private readonly screenshots = new Map<ID, ArtifactReference>();
+  private readonly failures = new Map<ID, BrowserFailureMode>();
 
   constructor(options: BrowserRegistryOptions) {
     this.store = options.store;
@@ -121,6 +124,11 @@ export class BrowserFixtureRegistry {
     const adapter: ActionAdapter = {
       id: `browser-fixture:${input.action}`,
       execute: async () => {
+        const failure = this.failures.get(context.contextId);
+        if (failure) {
+          this.failures.delete(context.contextId);
+          return { ok: false, error: `Browser ${failure} interrupted the action.`, receipt: { sideEffect: 'unknown', reason: failure } };
+        }
         const before = page.dom;
         const domBeforeHash = hash(before);
         const screenshotBefore = await this.putScreenshot(context.runId, context.contextId, hash(`screenshot:${page.url}:${domBeforeHash}`));
@@ -149,11 +157,88 @@ export class BrowserFixtureRegistry {
     const currentHash = hash(page.dom);
     const receipt = adapterReceipt ?? { contextId: context.contextId, action: input.action, locator: input.locator, profile: { id: profile.id, version: profile.version }, domBeforeHash: currentHash, domAfterHash: currentHash, highRisk, idempotencyKey: input.idempotencyKey, replayed: Boolean(action.replayed) };
     const evidence = adapterReceipt ? this.actionEvidence(adapterReceipt) : [];
-    return { action, receipt, evidence };
+    if (action.status === 'unknown') {
+      await this.store.append({ type: 'browser.reconciliation', taskId: context.taskId, sessionId: context.sessionId, runId: context.runId, payload: { actionId, contextId: context.contextId, status: 'unknown', expectedDomAfterHash: receipt.domAfterHash, reason: action.error ?? 'Browser action effect is unknown.' } });
+      await this.store.append({ type: 'run.needs_reconciliation', taskId: context.taskId, sessionId: context.sessionId, runId: context.runId, payload: { state: 'needs_reconciliation', reason: action.error ?? 'Browser action effect is unknown.', actionId } });
+    }
+    const verification = action.status === 'executed'
+      ? await this.verifyAction({ contextId: context.contextId, actionId, expectedDomAfterHash: receipt.domAfterHash })
+      : undefined;
+    return { action, receipt, evidence, verification };
   }
 
   async approveAction(input: BrowserActionInput): Promise<BrowserActionResult> {
     return this.executeAction(input, true);
+  }
+
+  injectFailure(contextId: ID, mode: BrowserFailureMode): void {
+    this.requireContext(contextId);
+    this.failures.set(contextId, mode);
+  }
+
+  clearFailure(contextId: ID): void {
+    this.failures.delete(contextId);
+  }
+
+  async verifyAction(input: { contextId: ID; actionId: ID; expectedDomAfterHash: string }): Promise<BrowserPostconditionResult> {
+    const context = this.requireContext(input.contextId);
+    const actionEvent = [...await this.store.list(context.runId)].reverse().find((event) => event.type === 'browser.action' && event.payload.actionId === input.actionId);
+    if (!actionEvent) {
+      return this.recordPostcondition(context, {
+        actionId: input.actionId,
+        contextId: input.contextId,
+        status: 'unknown',
+        expectedDomAfterHash: input.expectedDomAfterHash,
+        evidence: [],
+        reason: 'Browser action receipt is unavailable for postcondition verification.',
+      });
+    }
+    const recordedHash = typeof actionEvent.payload.domAfterHash === 'string' ? actionEvent.payload.domAfterHash : undefined;
+    if (!recordedHash || recordedHash !== input.expectedDomAfterHash) {
+      return this.recordPostcondition(context, {
+        actionId: input.actionId,
+        contextId: input.contextId,
+        status: 'failed',
+        expectedDomAfterHash: input.expectedDomAfterHash,
+        evidence: recordedHash ? [{ type: 'browser.postcondition.receipt', summary: 'Recorded browser action receipt does not match the requested postcondition.', uri: `browser://${context.contextId}/postcondition`, hash: recordedHash }] : [],
+        reason: 'Expected postcondition does not match the recorded browser action receipt.',
+      });
+    }
+    const failure = this.failures.get(input.contextId);
+    if (failure) {
+      this.failures.delete(input.contextId);
+      return this.recordPostcondition(context, {
+        actionId: input.actionId,
+        contextId: input.contextId,
+        status: 'unknown',
+        expectedDomAfterHash: input.expectedDomAfterHash,
+        evidence: [],
+        reason: `Browser ${failure} prevented a trustworthy postcondition read.`,
+      });
+    }
+    const page = this.pages.get(input.contextId);
+    if (!page || context.state !== 'active') {
+      return this.recordPostcondition(context, {
+        actionId: input.actionId,
+        contextId: input.contextId,
+        status: 'unknown',
+        expectedDomAfterHash: input.expectedDomAfterHash,
+        evidence: [],
+        reason: !page ? 'Browser page is unavailable for postcondition verification.' : 'Browser context is not active for postcondition verification.',
+      });
+    }
+    const observedDomHash = hash(page.dom);
+    const status = observedDomHash === input.expectedDomAfterHash ? 'known' : 'failed';
+    const evidence: Evidence[] = [{ type: 'browser.postcondition', summary: status === 'known' ? 'Browser postcondition DOM hash verified.' : 'Browser postcondition DOM hash differs from the expected action result.', uri: `browser://${context.contextId}/postcondition`, hash: observedDomHash }];
+    return this.recordPostcondition(context, {
+      actionId: input.actionId,
+      contextId: input.contextId,
+      status,
+      expectedDomAfterHash: input.expectedDomAfterHash,
+      observedDomHash,
+      evidence,
+      ...(status === 'failed' ? { reason: 'Observed browser DOM does not match the action postcondition.' } : {}),
+    });
   }
 
   async closeContext(contextId: ID, reason = 'closed by user'): Promise<BrowserContextRecord> {
@@ -301,6 +386,19 @@ export class BrowserFixtureRegistry {
       ...(receipt.screenshotAfter ? [{ type: 'browser.screenshot.after', summary: 'Post-action screenshot Artifact.', uri: receipt.screenshotAfter.uri, hash: receipt.screenshotAfter.hash }] : []),
       ...(receipt.artifact ? [{ type: 'browser.artifact', summary: `Authorized ${receipt.action} Artifact.`, uri: receipt.artifact.uri, hash: receipt.artifact.hash }] : []),
     ];
+  }
+
+  private async recordPostcondition(context: BrowserContextRecord, result: BrowserPostconditionResult): Promise<BrowserPostconditionResult> {
+    if ((result.status === 'known' || result.status === 'failed') && result.evidence.length === 0) {
+      result = { ...result, status: 'unknown', reason: result.reason ?? 'Browser postcondition has no verifiable evidence.' };
+    }
+    await this.store.append({ type: 'browser.reconciliation', taskId: context.taskId, sessionId: context.sessionId, runId: context.runId, payload: result as unknown as Record<string, unknown> });
+    if (result.status === 'known' || result.status === 'failed') {
+      await this.store.append({ type: 'run.reconciled', taskId: context.taskId, sessionId: context.sessionId, runId: context.runId, payload: { reconciliationId: this.ids.next('reconciliation'), actionId: result.actionId, outcome: result.status, evidence: result.evidence, reason: result.reason } });
+    } else {
+      await this.store.append({ type: 'run.needs_reconciliation', taskId: context.taskId, sessionId: context.sessionId, runId: context.runId, payload: { state: 'needs_reconciliation', reason: result.reason ?? 'Browser postcondition is unknown.', actionId: result.actionId } });
+    }
+    return result;
   }
 
   private profileFor(context: BrowserContextRecord): BrowserContextProfile {

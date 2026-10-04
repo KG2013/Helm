@@ -27,7 +27,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 function printHelp(): void {
-  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm agent list <run-id>  List persisted child AgentRuns\n  helm agent create <run-id> <role> <goal>  Create a bounded child AgentRun\n  helm agent cancel|recover <run-id>  Cancel or recover child AgentRuns\n  helm connector list  List registered Connector Profiles\n  helm connector register <id> <version> <connector-id>  Register a bounded Profile\n  helm connector preview <run-id> <connector-id> <profile-id> <version> <action> <target>  Create a dry-run preview\n  helm connector write <run-id> <connector-id> <profile-id> <version> <action> <target>  Request an idempotent connector write\n  helm connector verify <run-id> <action-id> <target>  Query read-after-write evidence\n  helm browser list [run-id]  List controlled browser contexts\n  helm browser create <run-id> <app-id> <window-id>  Create a scoped fixture context\n  helm browser navigate|approve <context-id> <url>  Navigate through the ActionGateway\n  helm browser assert <context-id>  Assert fixture DOM evidence\n  helm browser close|reconnect|cleanup <context-id>  Control context lifecycle\n  helm browser profile-list|profile-register  Manage versioned browser action profiles\n  helm browser action|action-approve <context-id> <profile-id> <version> <action> <locator>  Execute or approve an action\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
+  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm agent list <run-id>  List persisted child AgentRuns\n  helm agent create <run-id> <role> <goal>  Create a bounded child AgentRun\n  helm agent cancel|recover <run-id>  Cancel or recover child AgentRuns\n  helm connector list  List registered Connector Profiles\n  helm connector register <id> <version> <connector-id>  Register a bounded Profile\n  helm connector preview <run-id> <connector-id> <profile-id> <version> <action> <target>  Create a dry-run preview\n  helm connector write <run-id> <connector-id> <profile-id> <version> <action> <target>  Request an idempotent connector write\n  helm connector verify <run-id> <action-id> <target>  Query read-after-write evidence\n  helm browser list [run-id]  List controlled browser contexts\n  helm browser create <run-id> <app-id> <window-id>  Create a scoped fixture context\n  helm browser navigate|approve <context-id> <url>  Navigate through the ActionGateway\n  helm browser assert <context-id>  Assert fixture DOM evidence\n  helm browser close|reconnect|cleanup <context-id>  Control context lifecycle\n  helm browser profile-list|profile-register  Manage versioned browser action profiles\n  helm browser action|action-approve <context-id> <profile-id> <version> <action> <locator>  Execute or approve an action\n  helm browser verify <context-id> <action-id> --expected-hash <sha256>  Verify an action postcondition\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
 }
 
 async function printRun(runtime: RuntimeFacade, goal: string, workspaceId: string, jsonl = false): Promise<void> {
@@ -304,7 +304,7 @@ async function connectorCommand(action: 'list' | 'register' | 'preview' | 'write
   }
 }
 
-async function browserCommand(action: 'list' | 'create' | 'navigate' | 'approve' | 'assert' | 'close' | 'reconnect' | 'cleanup' | 'profile-list' | 'profile-register' | 'action' | 'action-approve', args: string[]): Promise<void> {
+async function browserCommand(action: 'list' | 'create' | 'navigate' | 'approve' | 'assert' | 'close' | 'reconnect' | 'cleanup' | 'profile-list' | 'profile-register' | 'action' | 'action-approve' | 'verify', args: string[]): Promise<void> {
   const statePath = process.env.HELM_STATE_DB
   if (!statePath) {
     console.error('helm browser requires HELM_STATE_DB to point at the Runtime SQLite ledger')
@@ -330,6 +330,14 @@ async function browserCommand(action: 'list' | 'create' | 'navigate' | 'approve'
       const artifacts = (args[args.indexOf('--artifacts') + 1] ?? '').split(',').map((item) => item.trim()).filter(Boolean)
       if (!id || !version || !actions.length || !locators.length) throw new Error('browser profile-register requires id, version, --actions, and --locators')
       console.log(JSON.stringify(await runtime.registerBrowserActionProfile({ id, version, actions: actions as BrowserActionName[], allowedLocators: locators, highRiskActions: highRisk as BrowserActionName[], allowedArtifactUris: artifacts }), null, 2))
+      return
+    }
+    if (action === 'verify') {
+      const [contextId, actionId] = args
+      const hashIndex = args.indexOf('--expected-hash')
+      const expectedDomAfterHash = hashIndex >= 0 ? args[hashIndex + 1]?.trim() : undefined
+      if (!contextId || !actionId || !expectedDomAfterHash || !/^[a-f0-9]{64}$/i.test(expectedDomAfterHash)) throw new Error('browser verify requires context id, action id, and --expected-hash sha256')
+      console.log(JSON.stringify(await runtime.verifyBrowserAction({ contextId, actionId, expectedDomAfterHash }), null, 2))
       return
     }
     if (action === 'create') {
@@ -529,9 +537,9 @@ if (command === 'run') {
     await connectorCommand(action, args.slice(1))
   }
 } else if (command === 'browser') {
-  const action = args[0] === 'list' ? 'list' : args[0] === 'create' ? 'create' : args[0] === 'navigate' ? 'navigate' : args[0] === 'approve' ? 'approve' : args[0] === 'assert' ? 'assert' : args[0] === 'close' ? 'close' : args[0] === 'reconnect' ? 'reconnect' : args[0] === 'cleanup' ? 'cleanup' : args[0] === 'profile-list' ? 'profile-list' : args[0] === 'profile-register' ? 'profile-register' : args[0] === 'action' ? 'action' : args[0] === 'action-approve' ? 'action-approve' : undefined
+  const action = args[0] === 'list' ? 'list' : args[0] === 'create' ? 'create' : args[0] === 'navigate' ? 'navigate' : args[0] === 'approve' ? 'approve' : args[0] === 'assert' ? 'assert' : args[0] === 'close' ? 'close' : args[0] === 'reconnect' ? 'reconnect' : args[0] === 'cleanup' ? 'cleanup' : args[0] === 'profile-list' ? 'profile-list' : args[0] === 'profile-register' ? 'profile-register' : args[0] === 'action' ? 'action' : args[0] === 'action-approve' ? 'action-approve' : args[0] === 'verify' ? 'verify' : undefined
   if (!action) {
-    console.error('helm browser requires list, create, navigate, approve, assert, close, reconnect, cleanup, profile-list, profile-register, action, or action-approve')
+    console.error('helm browser requires list, create, navigate, approve, assert, close, reconnect, cleanup, profile-list, profile-register, action, action-approve, or verify')
     process.exitCode = 2
   } else {
     await browserCommand(action, args.slice(1))

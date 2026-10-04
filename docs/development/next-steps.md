@@ -89,6 +89,10 @@ child 的实际执行、父结果聚合和 CLI/Desktop 操作入口在 #30 继�
 
 浏览器动作 Profile 版本化声明 action、locator、上传 Artifact allowlist 和受控下载目录；click/type/select/upload/download 进入统一 Gateway，上传只读授权 Artifact，下载只写 ArtifactStore，不暴露宿主路径。submit/send/delete/publish 即使全局策略允许也先产生 `approval_required`，只能用同一 action 绑定继续执行。Receipt 保存 context/profile/locator、前后 DOM hash、截图和 Artifact 引用；CLI 与 Desktop 暴露 profile 与 action proposal/approval，fixture 不模拟真实浏览器权限。
 
+## 16. GUI 后置条件、故障恢复与 UNKNOWN 对账（#37：已完成）
+
+每个已执行的 Browser Action 都必须回读受控页面 DOM hash，并将后置条件状态记录为 known、failed 或 unknown；只有带 DOM/screenshot/Artifact evidence 的 known 或 failed 结果可进入 `run.reconciled`。页面变化、窗口/页面丢失、浏览器重启、网络断开、重复响应和提交结果不明可通过故障注入进入 UNKNOWN 与 `run.needs_reconciliation`；相同幂等键会回放 UNKNOWN receipt，不会重新执行动作。CLI `browser verify` 与 Desktop `browser-verify` 暴露证据查询；原生任意桌面自动化和真实浏览器像素 smoke 仍在范围之外。
+
 ## 与原架构阶段的关系
 
 架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。

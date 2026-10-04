@@ -752,6 +752,18 @@ export class RuntimeFacade {
     return this.browserRegistry.approveAction(input);
   }
 
+  async verifyBrowserAction(input: Parameters<BrowserFixtureRegistry['verifyAction']>[0]) {
+    return this.browserRegistry.verifyAction(input);
+  }
+
+  injectBrowserFailure(contextId: ID, mode: import('./types.js').BrowserFailureMode) {
+    this.browserRegistry.injectFailure(contextId, mode);
+  }
+
+  clearBrowserFailure(contextId: ID) {
+    this.browserRegistry.clearFailure(contextId);
+  }
+
   onEvent(listener: RuntimeEventListener): () => void {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);
