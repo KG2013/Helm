@@ -2,6 +2,15 @@
 
 CLI 与桌面端共用 `@helm/runtime`。默认命令使用 `MockProvider` 验证 Task → Session → Run → Event Ledger → Verification；设置 `HELM_STATE_DB=/absolute/path/state.sqlite` 可启用原生 SQLite 重启账本。设置 `HELM_PROVIDER=deepseek|zhipu|kimi` 后会从 macOS Keychain 读取对应凭据，并通过 `OpenAICompatibleProvider` 发起真实请求；DeepSeek/智谱默认走 Runtime SSE stream seam。Keychain 凭据缺失时请求会 fail-closed 并返回脱敏认证诊断，不会发起 HTTP 请求。
 
+运行 G0 环境验收矩阵：
+
+```bash
+node apps/cli/dist/main.js acceptance preflight
+node apps/cli/dist/main.js acceptance preflight --json
+```
+
+该命令只执行 Docker/Provider/Office/OCR/Electron 的 bounded preflight，不发起真实 Provider 请求或编码任务。默认输出人类摘要，`--json` 输出同一份机器可读矩阵；任何 `unknown`、`unverified` 或 `failed` 都以非零退出码阻断 release gate。API Key、Authorization header 和私有文件内容不会进入输出。
+
 ```bash
 pnpm --filter @helm/cli dev -- run "inspect the Helm workspace"
 pnpm --filter @helm/cli build
