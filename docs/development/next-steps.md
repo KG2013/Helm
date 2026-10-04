@@ -1,6 +1,6 @@
 # 下一步实施计划
 
-更新日期：2026-10-04。架构已确认；#1–#4、T1/#6 至 T10/#15 的 Runtime 核心、Office worker、Episode/release gate、ownership/reconnect 和 Experience Candidate 已接入，#23 已补齐 CLI、Desktop IPC 与候选审核面板。当前剩余工作集中在真实 coding sandbox、厂商联调、目标环境 Office/OCR smoke 和打包重启回归。当前能力参见 [实现状态](implementation-status.md)。
+更新日期：2026-10-04。架构已确认；#1–#4、T1/#6 至 T10/#15 的 Runtime 核心、Office worker、Episode/release gate、ownership/reconnect 和 Experience Candidate 已接入，#23 已补齐 CLI、Desktop IPC 与候选审核面板，#19 已补齐 digest/non-root Docker sandbox 合同与 fixture。当前剩余工作集中在真实 Docker daemon/image smoke、厂商联调、目标环境 Office/OCR smoke 和打包重启回归。当前能力参见 [实现状态](implementation-status.md)。
 
 ## 1. 对话界面接入 Runtime：已完成（#1–#4）
 
@@ -19,7 +19,7 @@
 
 目标链路：inspect → read → proposal → policy/approval → edit → test → diff → verification。
 
-确定性 fixture 已覆盖 read → approval → edit/patch → test → diff → verification；工具已注册 schema、采用 workspace 路径守卫、受控测试命令和可替换 sandbox；新增可选 Docker backend，network/privilege/image/daemon 不满足时拒绝执行。禁止将工作区目录或 Git worktree 当作执行隔离。Runtime 的同一 Run/Artifact/Approval/Verification projection 已接入 CLI JSON、`export` 和 Desktop snapshot/export。目标环境 Docker image smoke 仍待补；Renderer 已通过共享 projection 展示 Coding diff、测试结果、冲突 Artifact 和证据引用。
+确定性 fixture 已覆盖 read → approval → edit/patch → test → diff → verification；工具已注册 schema、采用 workspace 路径守卫、受控测试命令和可替换 sandbox；Docker backend 现在要求 digest 镜像、`--pull=never`、network/privilege/read-only/resource/rprivate mount 与 preflight，约束不满足时拒绝执行。禁止将工作区目录或 Git worktree 当作执行隔离。Runtime 的同一 Run/Artifact/Approval/Verification projection 已接入 CLI JSON、`export` 和 Desktop snapshot/export。目标环境 Docker image/daemon smoke 仍待补；Renderer 已通过共享 projection 展示 Coding diff、测试结果、冲突 Artifact 和证据引用。
 
 核心完成条件已由 Runtime fixture 覆盖：一次小修改有可审阅 diff、测试退出码、Coding Artifact 和 Coding Verifier；越界路径、拒绝授权和 sandbox 缺失分别进入明确结果。CLI/Desktop 已读取同一事件投影并提供脱敏导出；Coding 入口调度和完整 UI 交付仍属于后续切片。
 
