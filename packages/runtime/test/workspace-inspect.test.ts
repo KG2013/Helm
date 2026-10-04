@@ -22,6 +22,7 @@ import {
   createCodingPolicy,
   createCodingRuntime,
 } from '../src/tools.js'
+import { MemoryArtifactStore } from '../src/artifacts.js'
 
 async function createInspectionRuntime(root: string, responses: ConstructorParameters<typeof MockProvider>[0]) {
   const workspaceId = 'workspace-test'
@@ -289,4 +290,65 @@ test('coding policy and executor fail closed when sandbox is unavailable', async
   assert.equal(result.ok, false)
   assert.match(result.error ?? '', /sandbox/i)
   assert.equal(new CodingVerifier().id, 'coding-v1')
+})
+
+test('coding patch conflicts produce bounded Artifacts without mutating the workspace', async () => {
+  const root = await mkdtemp('/tmp/helm-coding-conflict-')
+  try {
+    const target = join(root, 'README.md')
+    await writeFile(target, 'before\nbefore\n')
+    let writes = 0
+    const sandbox = {
+      run: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      writeFile: async () => { writes += 1 },
+    }
+    const artifactStore = new MemoryArtifactStore()
+    const executor = createCodingExecutor({ roots: { 'workspace-coding': root }, sandbox, artifactStore })
+    const request = { task: { workspaceId: 'workspace-coding' }, run: { id: 'run-conflict' } } as never
+    const cases = [
+      { reason: 'base-hash-stale', arguments: { path: 'README.md', oldText: 'before', newText: 'after', baseHash: '0'.repeat(64) } },
+      { reason: 'non-unique-match', arguments: { path: 'README.md', oldText: 'before', newText: 'after' } },
+      { reason: 'context-mismatch', arguments: { path: 'README.md', oldText: 'missing', newText: 'after' } },
+    ]
+    for (const item of cases) {
+      const result = await executor({ id: 'patch-' + item.reason, runId: 'run-conflict', stepId: 'step-1', name: 'workspace.patch', arguments: item.arguments }, request)
+      assert.equal(result.ok, false)
+      assert.match(result.error ?? '', /conflict/i)
+      assert.equal(result.receipt?.sideEffect, 'none')
+      assert.equal(result.receipt?.conflict, true)
+      const artifact = result.receipt?.artifact as { type?: string; uri?: string; hash?: string; conflict?: { reason?: string; candidates?: unknown[] } } | undefined
+      assert.equal(artifact?.type, 'coding-conflict')
+      assert.equal(artifact?.conflict?.reason, item.reason)
+      assert.match(artifact?.uri ?? '', /^artifact:\/\//)
+      assert.match(artifact?.hash ?? '', /^[a-f0-9]{64}$/)
+      assert.ok(Array.isArray(artifact?.conflict?.candidates))
+    }
+    assert.equal(writes, 0)
+    assert.equal(await import('node:fs/promises').then(({ readFile: read }) => read(target, 'utf8')), 'before\nbefore\n')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('coding verifier turns conflict receipts into UNKNOWN with artifact evidence', async () => {
+  const verification = await new CodingVerifier().verify({
+    task: {} as never,
+    run: {} as never,
+    output: 'model claimed a patch was applied',
+    context: [{
+      type: 'tool.receipt',
+      payload: {
+        ok: false,
+        receipt: {
+          conflict: true,
+          artifact: { type: 'coding-conflict', uri: 'artifact://run-conflict/conflict.json', hash: 'a'.repeat(64) },
+        },
+      },
+    }] as never,
+  })
+  assert.equal(verification.result, 'unknown')
+  assert.equal(verification.verifier, 'coding-v1')
+  assert.equal(verification.evidence[0]?.type, 'coding-conflict')
+  assert.equal(verification.evidence[0]?.uri, 'artifact://run-conflict/conflict.json')
+  assert.match(verification.message ?? '', /manual review/i)
 })

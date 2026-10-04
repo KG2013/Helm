@@ -32,6 +32,7 @@ export interface ProjectedArtifact {
     output?: string;
     outputHash?: string;
   };
+  conflict?: Record<string, unknown>;
   receipt: Record<string, unknown>;
 }
 
@@ -56,6 +57,7 @@ export interface CodingDeliveryProjection {
   hasEdit: boolean;
   hasPassingTest: boolean;
   hasDiff: boolean;
+  conflicts: ProjectedArtifact[];
   ready: boolean;
 }
 
@@ -140,6 +142,7 @@ function buildCodingDelivery(runId: ID, artifacts: readonly ProjectedArtifact[])
   const hasEdit = coding.some((artifact) => artifact.ok && (artifact.tool === 'workspace.edit' || artifact.tool === 'workspace.patch'));
   const hasPassingTest = tests.some((test) => test.exitCode === 0);
   const hasDiff = coding.some((artifact) => artifact.ok && artifact.tool === 'workspace.diff' && Boolean(artifact.diff));
+  const conflicts = coding.filter((artifact) => artifact.conflict || artifact.type === 'coding-conflict');
   return {
     sourceRunId: runId,
     changedFiles,
@@ -150,7 +153,8 @@ function buildCodingDelivery(runId: ID, artifacts: readonly ProjectedArtifact[])
     hasEdit,
     hasPassingTest,
     hasDiff,
-    ready: hasRead && hasEdit && hasPassingTest && hasDiff,
+    conflicts,
+    ready: conflicts.length === 0 && hasRead && hasEdit && hasPassingTest && hasDiff,
   };
 }
 
@@ -183,6 +187,7 @@ function projectReceipt(event: DomainEvent): ProjectedArtifact | undefined {
       }
     : undefined;
   const diff = tool === 'workspace.diff' ? { text: output, hash } : undefined;
+  const conflict = asRecord(artifact?.conflict);
   return {
     id: event.id,
     runId: event.runId ?? String(artifact?.sourceRunId ?? ''),
@@ -198,6 +203,7 @@ function projectReceipt(event: DomainEvent): ProjectedArtifact | undefined {
     bytes: typeof artifact?.bytes === 'number' ? artifact.bytes : undefined,
     diff,
     test,
+    conflict,
     receipt,
   };
 }

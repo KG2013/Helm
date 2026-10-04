@@ -222,3 +222,25 @@ h1 { color: var(--text); font-size: 23px; line-height: 1.25; letter-spacing: -.0
 .verification-failed .verification-row strong,
 .verification-unknown .verification-row strong,
 .verification-needs_reconciliation .verification-row strong { color: #ef9b9b; }
+
+.coding-evidence { margin-top: 18px; }
+.coding-detail-card { border: 1px solid var(--border-soft); border-radius: 8px; background: rgba(14, 27, 44, .62); padding: 10px; }
+.coding-detail-meta { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 10px; }
+.coding-detail-meta code, .coding-evidence-ref code { color: var(--cyan); font-size: 9px; overflow-wrap: anywhere; }
+.evidence-state { font-size: 9px; text-transform: uppercase; }
+.evidence-state.ready, .test-pass { color: var(--green); }
+.evidence-state.blocked, .test-fail { color: #ef9b9b; }
+.coding-output { margin-top: 10px; }
+.coding-output label { display: block; color: var(--faint); font-size: 8px; letter-spacing: .08em; margin-bottom: 5px; }
+.coding-output pre { max-height: 150px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 7px; border-radius: 5px; color: #b9cde0; background: rgba(3, 10, 18, .65); font: 9px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.coding-test-row { border-top: 1px solid var(--border-soft); padding-top: 7px; margin-top: 7px; }
+.coding-test-row > code { display: block; color: var(--text); font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.coding-test-row > span { display: block; margin: 4px 0; font-size: 9px; }
+.coding-conflict { margin-top: 10px; padding: 8px; border: 1px solid rgba(239, 155, 155, .32); border-radius: 6px; background: rgba(137, 57, 57, .12); color: #efaaaa; font-size: 9px; }
+.coding-conflict strong { display: block; color: #ffd1d1; }
+.coding-conflict p { margin: 5px 0; line-height: 1.45; }
+.coding-conflict span, .coding-empty { color: var(--faint); }
+.coding-evidence-refs { border-top: 1px solid var(--border-soft); padding-top: 8px; }
+.coding-evidence-ref { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; color: var(--muted); font-size: 9px; }
+.coding-candidates { display: grid; gap: 3px; margin-top: 6px; }
+.coding-candidates code { color: #d1b4b4; font: 8px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }

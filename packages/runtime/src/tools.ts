@@ -56,9 +56,9 @@ export const codingToolProfiles: readonly ToolProfile[] = [
     inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string', maxLength: 64_000 } }, required: ['path', 'content'], additionalProperties: false },
   },
   {
-    id: 'workspace.patch', version: 'v1', allowedArguments: ['path', 'oldText', 'newText'], readOnly: false, scope: 'workspace', network: 'none', maxOutputBytes: 64_000,
+    id: 'workspace.patch', version: 'v1', allowedArguments: ['path', 'oldText', 'newText', 'baseHash'], readOnly: false, scope: 'workspace', network: 'none', maxOutputBytes: 64_000,
     description: 'Apply one exact text replacement under an explicit approval and sandbox boundary.',
-    inputSchema: { type: 'object', properties: { path: { type: 'string' }, oldText: { type: 'string' }, newText: { type: 'string' } }, required: ['path', 'oldText', 'newText'], additionalProperties: false },
+    inputSchema: { type: 'object', properties: { path: { type: 'string' }, oldText: { type: 'string' }, newText: { type: 'string' }, baseHash: { type: 'string', pattern: '^[a-f0-9]{64}$' } }, required: ['path', 'oldText', 'newText'], additionalProperties: false },
   },
   {
     id: 'workspace.test', version: 'v1', allowedArguments: ['command', 'args'], readOnly: false, scope: 'workspace', network: 'none', maxOutputBytes: 64_000,
@@ -136,7 +136,7 @@ export function createCodingRuntime(options: { store: EventStore; provider: Prov
     provider: options.provider,
     toolRegistry: registry,
     policy: createCodingPolicy(registry, { roots: { [options.workspaceId]: options.root }, sandboxAvailable: Boolean(options.sandbox) }),
-    executor: createCodingExecutor({ roots: { [options.workspaceId]: options.root }, sandbox: options.sandbox }),
+    executor: createCodingExecutor({ roots: { [options.workspaceId]: options.root }, sandbox: options.sandbox, artifactStore: options.artifactStore }),
     verifier: new CodingVerifier(),
     artifactStore: options.artifactStore,
     ownerId: options.ownerId,
@@ -173,7 +173,7 @@ export function createCodingPolicy(registry: ToolRegistry, options: { roots: Rea
   };
 }
 
-export function createCodingExecutor(options: { roots: Readonly<Record<string, string>>; sandbox?: CodingSandbox }): ToolExecutor {
+export function createCodingExecutor(options: { roots: Readonly<Record<string, string>>; sandbox?: CodingSandbox; artifactStore?: ArtifactStore }): ToolExecutor {
   return async (call, request) => {
     const rootPath = options.roots[request.task.workspaceId];
     if (!rootPath) return failedCoding('Workspace is not registered for coding.');
@@ -200,9 +200,21 @@ export function createCodingExecutor(options: { roots: Readonly<Record<string, s
     let after: string;
     if (call.name === 'workspace.edit' && typeof call.arguments.content === 'string') after = call.arguments.content;
     else if (call.name === 'workspace.patch' && typeof call.arguments.oldText === 'string' && typeof call.arguments.newText === 'string') {
-      const first = before.indexOf(call.arguments.oldText);
-      if (first < 0 || before.indexOf(call.arguments.oldText, first + 1) >= 0) return failedCoding('Patch must match exactly one existing text region.');
-      after = `${before.slice(0, first)}${call.arguments.newText}${before.slice(first + call.arguments.oldText.length)}`;
+      const oldText = call.arguments.oldText;
+      const currentHash = sha256(before);
+      const baseHash = typeof call.arguments.baseHash === 'string' ? call.arguments.baseHash : undefined;
+      const matches = findTextMatches(before, oldText);
+      if (baseHash && baseHash !== currentHash) {
+        return conflictCoding({ call, runId: request.run.id, artifactStore: options.artifactStore, path: pathValue, reason: 'base-hash-stale', expectedBaseHash: baseHash, actualBaseHash: currentHash, requestedTextHash: sha256(oldText), matches });
+      }
+      if (matches.length === 0) {
+        return conflictCoding({ call, runId: request.run.id, artifactStore: options.artifactStore, path: pathValue, reason: 'context-mismatch', actualBaseHash: currentHash, requestedTextHash: sha256(oldText), matches });
+      }
+      if (matches.length > 1) {
+        return conflictCoding({ call, runId: request.run.id, artifactStore: options.artifactStore, path: pathValue, reason: 'non-unique-match', actualBaseHash: currentHash, requestedTextHash: sha256(oldText), matches });
+      }
+      const first = matches[0]!.start;
+      after = before.slice(0, first) + call.arguments.newText + before.slice(first + oldText.length);
     } else return failedCoding('Coding edit arguments are invalid.');
     if (Buffer.byteLength(after, 'utf8') > 64_000) return failedCoding('Edited file exceeds the bounded limit.');
     const targetBeforeWrite = await resolveCodingPath(rootPath, pathValue, true);
@@ -223,6 +235,20 @@ export class CodingVerifier implements Verifier {
       ...receipt,
       ...(receipt.receipt && typeof receipt.receipt === 'object' ? receipt.receipt as Record<string, unknown> : {}),
     }));
+    const conflictReceipt = receipts.find((receipt) => {
+      const nested = receipt.receipt && typeof receipt.receipt === 'object' ? receipt.receipt as Record<string, unknown> : undefined;
+      return nested?.conflict === true;
+    });
+    if (conflictReceipt) {
+      const nested = conflictReceipt.receipt as Record<string, unknown> | undefined;
+      const artifact = nested?.artifact && typeof nested.artifact === 'object' ? nested.artifact as Record<string, unknown> : undefined;
+      return {
+        result: 'unknown' as const,
+        verifier: this.id,
+        evidence: artifact?.hash ? [{ type: 'coding-conflict', summary: 'Patch conflict requires manual review before delivery.', uri: typeof artifact.uri === 'string' ? artifact.uri : undefined, hash: String(artifact.hash) }] : [],
+        message: 'Coding patch conflict requires manual review; no file mutation was applied.',
+      };
+    }
     const hasRead = successful.some((receipt) => receipt.name === 'workspace.read' || receipt.tool === 'workspace.read');
     const edit = successful.find((receipt) => receipt.name === 'workspace.edit' || receipt.name === 'workspace.patch' || receipt.tool === 'workspace.edit' || receipt.tool === 'workspace.patch');
     const hasEdit = Boolean(edit);
@@ -388,6 +414,92 @@ function failedCoding(error: string) {
   return { ok: false, error, receipt: { sideEffect: 'none', tool: 'coding', profile: 'coding@v1' } };
 }
 
+type CodingMatch = { start: number; end: number; line: number; contextHash: string };
+
+function findTextMatches(content: string, needle: string): CodingMatch[] {
+  if (!needle) return [];
+  const matches: CodingMatch[] = [];
+  let offset = 0;
+  while (offset <= content.length - needle.length) {
+    const start = content.indexOf(needle, offset);
+    if (start < 0) break;
+    const end = start + needle.length;
+    const contextStart = Math.max(0, start - 120);
+    const contextEnd = Math.min(content.length, end + 120);
+    matches.push({
+      start,
+      end,
+      line: content.slice(0, start).split('\n').length,
+      contextHash: sha256(content.slice(contextStart, contextEnd)),
+    });
+    offset = end;
+  }
+  return matches.slice(0, 16);
+}
+
+async function conflictCoding(input: {
+  call: ToolCall;
+  runId: string;
+  artifactStore?: ArtifactStore;
+  path: string;
+  reason: 'base-hash-stale' | 'context-mismatch' | 'non-unique-match';
+  expectedBaseHash?: string;
+  actualBaseHash: string;
+  requestedTextHash: string;
+  matches: CodingMatch[];
+}) {
+  const conflict = {
+    reason: input.reason,
+    path: input.path,
+    expectedBaseHash: input.expectedBaseHash,
+    actualBaseHash: input.actualBaseHash,
+    requestedTextHash: input.requestedTextHash,
+    matchCount: input.matches.length,
+    candidatesTruncated: input.matches.length === 16,
+    candidates: input.matches,
+    context: {
+      candidateCount: input.matches.length,
+      candidatesTruncated: input.matches.length === 16,
+      currentFileHash: input.actualBaseHash,
+      note: 'Only bounded offsets, line numbers, and context hashes are retained; file text is not copied into the ledger.',
+    },
+    manualAction: 'Refresh the file, inspect the candidate ranges, then submit a new patch with a current baseHash.',
+  };
+  const content = JSON.stringify(conflict);
+  const limitations = ['Bounded conflict metadata only; the original file text remains outside the event ledger.'];
+  let artifact: Record<string, unknown> = {
+    type: 'coding-conflict',
+    sourceRunId: input.runId,
+    action: input.call.name,
+    path: input.path,
+    changedFiles: [input.path],
+    hash: sha256(content),
+    bytes: Buffer.byteLength(content, 'utf8'),
+    conflict,
+    limitations,
+  };
+  if (input.artifactStore) {
+    try {
+      const stored = await input.artifactStore.put({ runId: input.runId, type: 'coding-conflict', content, path: input.path, limitations });
+      artifact = { ...stored, conflict };
+    } catch {
+      artifact = { ...artifact, artifactStoreError: 'artifact store unavailable' };
+    }
+  }
+  return {
+    ok: false,
+    error: 'Patch conflict (' + input.reason + '); manual review is required.',
+    receipt: {
+      tool: input.call.name,
+      profile: input.call.name + '@v1',
+      sideEffect: 'none',
+      path: input.path,
+      conflict: true,
+      artifact,
+    },
+  };
+}
+
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -408,7 +520,8 @@ function validateCodingArguments(call: ToolCall): string | undefined {
     if (typeof args.path !== 'string' || !args.path) return 'Coding file actions require a path.';
   }
   if (call.name === 'workspace.edit' && typeof args.content !== 'string') return 'Coding edit requires string content.';
-  if (call.name === 'workspace.patch' && (typeof args.oldText !== 'string' || typeof args.newText !== 'string')) return 'Coding patch requires oldText and newText.';
+  if (call.name === 'workspace.patch' && (typeof args.oldText !== 'string' || !args.oldText || typeof args.newText !== 'string')) return 'Coding patch requires non-empty oldText and a string newText.';
+  if (call.name === 'workspace.patch' && args.baseHash !== undefined && (typeof args.baseHash !== 'string' || !/^[a-f0-9]{64}$/.test(args.baseHash))) return 'Coding patch baseHash must be a SHA-256 hash.';
   if (call.name === 'workspace.test') {
     if (typeof args.command !== 'string' || !isAllowedTestCommand(args.command)) return 'Test command is outside the bounded Coding profile.';
     if (args.args !== undefined && (!Array.isArray(args.args) || !args.args.every((arg) => typeof arg === 'string'))) return 'Test arguments must be strings.';

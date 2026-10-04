@@ -43,7 +43,28 @@ test('Run projection derives coding artifacts, approvals, and verification from 
   assert.equal(projection.codingDelivery?.hasEdit, true)
   assert.equal(projection.codingDelivery?.hasPassingTest, true)
   assert.equal(projection.codingDelivery?.hasDiff, true)
+  assert.deepEqual(projection.codingDelivery?.conflicts, [])
   assert.equal(projection.codingDelivery?.ready, true)
+})
+
+test('Run projection preserves bounded coding conflict Artifacts and blocks delivery', () => {
+  const conflict = {
+    reason: 'non-unique-match',
+    path: 'src/app.ts',
+    matchCount: 2,
+    candidates: [{ start: 0, end: 5, line: 1, contextHash: 'a'.repeat(64) }],
+    manualAction: 'Refresh the file and submit a new patch.',
+  }
+  const projection = buildRunProjection([
+    event({ sequence: 1, type: 'run.created', payload: { id: 'run-conflict', taskId: 'task-coding', sessionId: 'session-coding', state: 'ready', createdAt: 'now', updatedAt: 'now', steps: 1, reviewerRounds: 0, budget: { maxSteps: 30, maxDurationMs: 1000, maxReviewerRounds: 1 } } }),
+    event({ sequence: 2, type: 'tool.receipt', payload: { toolCallId: 'tool-patch', name: 'workspace.patch', ok: false, error: 'Patch conflict (non-unique-match).', receipt: { tool: 'workspace.patch', profile: 'workspace.patch@v1', sideEffect: 'none', conflict: true, artifact: { type: 'coding-conflict', sourceRunId: 'run-conflict', path: 'src/app.ts', changedFiles: ['src/app.ts'], hash: 'b'.repeat(64), bytes: 240, conflict } } } }),
+  ])
+
+  assert.equal(projection.artifacts[0]?.type, 'coding-conflict')
+  assert.equal(projection.artifacts[0]?.ok, false)
+  assert.equal(projection.artifacts[0]?.conflict?.reason, 'non-unique-match')
+  assert.equal(projection.codingDelivery?.conflicts.length, 1)
+  assert.equal(projection.codingDelivery?.ready, false)
 })
 
 test('Run export redacts credential markers and private content consistently', () => {

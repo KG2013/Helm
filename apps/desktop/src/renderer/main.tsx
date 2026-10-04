@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { reduceRunEvents } from '@helm/runtime'
+import { buildRunProjection, reduceRunEvents } from '@helm/runtime'
 import type { DomainEvent, Run, Session, Task } from '@helm/runtime'
 import type { RunEventPayload, RunSnapshot } from '../shared/ipc.js'
 import './styles.css'
@@ -131,12 +131,27 @@ function pendingApproval(events: readonly DomainEvent[]): PendingApproval | unde
   return undefined
 }
 
+function CodingEvidence({ delivery, verification }: { delivery: NonNullable<RunSnapshot['projection']['codingDelivery']>; verification: RunSnapshot['projection']['verification'] }) {
+  const conflicts = delivery.conflicts
+  return <div className="coding-evidence" data-testid="coding-evidence">
+    <div className="section-heading"><span>CODING EVIDENCE</span><span className={delivery.ready ? 'evidence-state ready' : 'evidence-state blocked'}>{delivery.ready ? 'ready' : 'blocked'}</span></div>
+    <div className="coding-detail-card">
+      <div className="coding-detail-meta"><span>Files</span><code>{delivery.changedFiles.join(', ') || 'No changed files'}</code></div>
+      {conflicts.map((conflict, index) => { const detail = conflict.conflict; const candidates = Array.isArray(detail?.candidates) ? detail.candidates : []; return <div className="coding-conflict" data-testid="coding-conflict" key={conflict.id}><strong>Patch conflict {conflicts.length > 1 ? `${index + 1}/${conflicts.length}` : ''} · {String(detail?.reason ?? 'manual review')}</strong><p>{String(detail?.manualAction ?? 'Refresh the file and submit a new patch.')}</p><span>Candidate ranges: {String(detail?.matchCount ?? candidates.length)} · no mutation applied</span>{candidates.length > 0 && <div className="coding-candidates">{candidates.map((candidate, candidateIndex) => { const item = candidate && typeof candidate === 'object' ? candidate as Record<string, unknown> : {}; return <code key={candidateIndex}>line {String(item.line ?? '?')} · {String(item.start ?? '?')}-{String(item.end ?? '?')} · {String(item.contextHash ?? 'context hash unavailable')}</code> })}</div>}</div> })}
+      {delivery.diff?.text && <div className="coding-output" data-testid="coding-diff"><label>DIFF</label><pre>{delivery.diff.text}</pre></div>}
+      {delivery.tests.length > 0 && <div className="coding-output" data-testid="coding-tests"><label>TESTS</label>{delivery.tests.map((test, index) => <div className="coding-test-row" key={String(test.outputHash ?? index)}><code>{[test.command, ...(test.args ?? [])].filter(Boolean).join(' ') || 'test command'}</code><span className={test.exitCode === 0 ? 'test-pass' : 'test-fail'}>{test.exitCode === 0 ? 'passed' : 'exit ' + String(test.exitCode ?? 'unknown')}</span><pre>{test.output ?? 'No test output recorded.'}</pre></div>)}</div>}
+      {verification?.evidence?.length ? <div className="coding-output coding-evidence-refs" data-testid="coding-evidence-refs"><label>EVIDENCE REFERENCES</label>{verification.evidence.map((evidence, index) => <div className="coding-evidence-ref" key={evidence.type + '-' + String(evidence.hash ?? index)}><span>{evidence.type}</span><code>{evidence.uri ?? evidence.hash ?? evidence.summary}</code></div>)}</div> : <div className="coding-empty">Verification evidence will appear after Runtime checks.</div>}
+    </div>
+  </div>
+}
+
 function App() {
   const [runtime, setRuntime] = useState('local runtime')
   const [task, setTask] = useState<Task>()
   const [session, setSession] = useState<Session>()
   const [run, setRun] = useState<Run>()
   const [events, setEvents] = useState<DomainEvent[]>([])
+  const [projection, setProjection] = useState<RunSnapshot['projection']>()
   const [history, setHistory] = useState<ChatMessage[]>([])
   const [inputValue, setInputValue] = useState('')
   const [error, setError] = useState<string>()
@@ -168,6 +183,7 @@ function App() {
     const merged = mergeEvents(snapshot.run.id, snapshot.events)
     setTask(snapshot.task)
     setSession(snapshot.session)
+    setProjection(snapshot.projection)
     setEvents(merged)
     setRun((previous) => projectRun(merged, snapshot.run) ?? previous ?? snapshot.run)
   }, [mergeEvents])
@@ -199,7 +215,11 @@ function App() {
       if (!runId || runId !== activeRunIdRef.current) return
       const merged = mergeEvents(runId, [payload])
       setEvents(merged)
-      setRun((previous) => projectRun(merged, previous) ?? previous)
+      setRun((previous) => {
+        const next = projectRun(merged, previous) ?? previous
+        setProjection(buildRunProjection(merged, next))
+        return next
+      })
     })
     return unsubscribe
   }, [mergeEvents])
@@ -211,6 +231,7 @@ function App() {
   const canSend = Boolean(inputValue.trim()) && !isSubmitting && (!run || isTerminal(run.state))
   const verificationResult = run?.state === 'needs_reconciliation' ? 'needs_reconciliation' : run?.verification?.result ?? 'pending'
   const approval = useMemo(() => pendingApproval(events), [events])
+  const codingDelivery = projection?.codingDelivery
 
   async function sendMessage() {
     const goal = inputValue.trim()
@@ -239,6 +260,7 @@ function App() {
       setTask(response.task)
       setSession(response.session)
       setRun(response.run)
+      setProjection(undefined)
       setEvents([])
       await refreshSnapshot(response.run.id, requestId)
     } catch (cause) {
@@ -317,7 +339,7 @@ function App() {
 
         <aside className="right-panel panel">
           <div className="right-tabs"><button className="right-tab active">Run evidence <span>{events.length}</span></button><button className="right-tab">Trace</button></div>
-          <div className="artifact-section"><div className="section-heading"><span>RUN CONTEXT</span><span className="muted">{run?.id ?? 'none'}</span></div><div className="artifact-card"><div className="artifact-icon code-icon"><Icon name="code" /></div><div className="artifact-copy"><strong>{task?.workspaceId ?? 'workspace-helm'}</strong><span>{task ? 'Workspace selected · no file changes' : 'Waiting for task input'}</span></div></div></div>
+          <div className="artifact-section"><div className="section-heading"><span>RUN CONTEXT</span><span className="muted">{run?.id ?? 'none'}</span></div><div className="artifact-card"><div className="artifact-icon code-icon"><Icon name="code" /></div><div className="artifact-copy"><strong>{task?.workspaceId ?? 'workspace-helm'}</strong><span>{task ? 'Workspace selected · no file changes' : 'Waiting for task input'}</span></div></div></div>{codingDelivery && <CodingEvidence delivery={codingDelivery} verification={projection?.verification} />}
           <div className="approval-section"><div className="section-heading"><span>APPROVAL</span><span className="approval-state">Runtime owned</span></div><div className={`approval-card ${approval ? 'approval-card-pending' : ''}`}><div className="approval-icon"><Icon name="shield" /></div><div>{approval ? <><strong>Approval required: {approval.call.name}</strong><p>{approval.reason}</p><code>{JSON.stringify(approval.call.arguments)}</code><div className="approval-actions"><button className="inline-action" disabled={controlPending} onClick={() => void decideApproval('approve')}>Approve</button><button className="inline-action danger" disabled={controlPending} onClick={() => void decideApproval('deny')}>Deny</button></div></> : <><strong>{events.some((event) => event.type === 'policy.decision') ? 'Policy decision recorded' : 'No pending approval'}</strong><p>Approval appears here only for a concrete Runtime tool proposal.</p></>}</div></div></div>
           <div className="verification-section"><div className="section-heading"><span>VERIFICATION</span><span className="muted">Runtime evidence</span></div><div className={`verification-card verification-${verificationResult}`} data-testid="verification"><div className="verification-row"><span className={`verification-icon ${verificationResult === 'passed' ? 'passed' : verificationResult === 'failed' || verificationResult === 'needs_reconciliation' ? 'failed' : 'pending'}`}><Icon name={verificationResult === 'passed' ? 'check' : 'clock'} /></span><span>{run?.state === 'needs_reconciliation' ? 'Unknown side effect; reconciliation required.' : run?.verification?.message ?? (run?.lastError ?? 'Waiting for final output')}</span><strong>{verificationResult}</strong></div></div></div>
         </aside>

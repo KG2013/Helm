@@ -19,7 +19,7 @@
 
 目标链路：inspect → read → proposal → policy/approval → edit → test → diff → verification。
 
-确定性 fixture 已覆盖 read → approval → edit/patch → test → diff → verification；工具已注册 schema、采用 workspace 路径守卫、受控测试命令和可替换 sandbox；新增可选 Docker backend，network/privilege/image/daemon 不满足时拒绝执行。禁止将工作区目录或 Git worktree 当作执行隔离。Runtime 的同一 Run/Artifact/Approval/Verification projection 已接入 CLI JSON、`export` 和 Desktop snapshot/export。目标环境 Docker image smoke 和 Renderer 的 Coding diff/test 细节面板仍待补。
+确定性 fixture 已覆盖 read → approval → edit/patch → test → diff → verification；工具已注册 schema、采用 workspace 路径守卫、受控测试命令和可替换 sandbox；新增可选 Docker backend，network/privilege/image/daemon 不满足时拒绝执行。禁止将工作区目录或 Git worktree 当作执行隔离。Runtime 的同一 Run/Artifact/Approval/Verification projection 已接入 CLI JSON、`export` 和 Desktop snapshot/export。目标环境 Docker image smoke 仍待补；Renderer 已通过共享 projection 展示 Coding diff、测试结果、冲突 Artifact 和证据引用。
 
 核心完成条件已由 Runtime fixture 覆盖：一次小修改有可审阅 diff、测试退出码、Coding Artifact 和 Coding Verifier；越界路径、拒绝授权和 sandbox 缺失分别进入明确结果。CLI/Desktop 已读取同一事件投影并提供脱敏导出；Coding 入口调度和完整 UI 交付仍属于后续切片。
 
