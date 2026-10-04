@@ -167,6 +167,7 @@ test('desktop IPC exposes the same Office artifact and verification projection a
   const root = await mkdtemp('/tmp/helm-desktop-office-')
   try {
     const worker: OfficeWorkerClient = {
+      health: async () => ({ worker: 'document-worker', version: '0.3.0', tools: {}, python: {}, missing: [], checks: { docxRendering: 'passed', pdfOcr: 'unknown' }, limitations: [] }),
       execute: async (request: OfficeWorkerRequest): Promise<OfficeWorkerResponse> => ({
         id: request.id,
         ok: true,

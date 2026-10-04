@@ -22,8 +22,8 @@ import { StaticToolRegistry } from './tools.js';
 export interface OfficeWorkerRequest {
   id: string;
   runId: string;
-  operation: 'docx_create' | 'xlsx_read_range' | 'xlsx_write_range' | 'pdf_extract';
-  path: string;
+  operation: 'health' | 'docx_create' | 'xlsx_read_range' | 'xlsx_write_range' | 'pdf_extract';
+  path?: string;
   [key: string]: unknown;
 }
 
@@ -35,8 +35,19 @@ export interface OfficeWorkerResponse {
   receipt?: Record<string, unknown>;
 }
 
+export interface OfficeHealthSnapshot {
+  worker: string;
+  version: string;
+  tools: Record<string, { status: 'available' | 'unavailable'; path?: string; version?: string }>;
+  python: Record<string, { status: 'available' | 'unavailable'; version?: string }>;
+  missing?: string[];
+  checks: Record<string, 'passed' | 'unknown'>;
+  limitations: string[];
+}
+
 export interface OfficeWorkerClient {
   execute(request: OfficeWorkerRequest, signal?: AbortSignal): Promise<OfficeWorkerResponse>;
+  health(signal?: AbortSignal): Promise<OfficeHealthSnapshot>;
 }
 
 export interface PythonDocumentWorkerOptions {
@@ -121,6 +132,14 @@ export class PythonDocumentWorkerClient implements OfficeWorkerClient {
       child.stdin.end(`${JSON.stringify(request)}\n`);
     });
   }
+
+  async health(signal?: AbortSignal): Promise<OfficeHealthSnapshot> {
+    const response = await this.execute({ id: `preflight-${Date.now()}`, runId: 'preflight', operation: 'health' }, signal);
+    if (!response.ok || !response.result || typeof response.result !== 'object') {
+      throw new Error('Document Worker preflight failed.');
+    }
+    return response.result as OfficeHealthSnapshot;
+  }
 }
 
 export const officeToolProfiles: readonly ToolProfile[] = [
@@ -200,6 +219,7 @@ export interface OfficeRuntimeOptions {
   root: string;
   ownerId?: string;
   artifactStore?: ArtifactStore;
+  preflight?: OfficeHealthSnapshot;
 }
 
 export function createOfficeRuntime(options: OfficeRuntimeOptions): RuntimeFacade {
@@ -209,7 +229,7 @@ export function createOfficeRuntime(options: OfficeRuntimeOptions): RuntimeFacad
     provider: options.provider,
     toolRegistry: registry,
     policy: createOfficePolicy(registry, { roots: { [options.workspaceId]: options.root } }),
-    executor: createOfficeExecutor({ roots: { [options.workspaceId]: options.root }, worker: options.worker }),
+    executor: createOfficeExecutor({ roots: { [options.workspaceId]: options.root }, worker: options.worker, preflight: options.preflight }),
     verifier: new OfficeVerifier(),
     ownerId: options.ownerId,
     artifactStore: options.artifactStore,
@@ -250,7 +270,12 @@ export function createOfficePolicy(
   };
 }
 
-export function createOfficeExecutor(options: { roots: Readonly<Record<string, string>>; worker: OfficeWorkerClient }): ToolExecutor {
+export function createOfficeExecutor(options: { roots: Readonly<Record<string, string>>; worker: OfficeWorkerClient; preflight?: OfficeHealthSnapshot }): ToolExecutor {
+  let preflightPromise: Promise<OfficeHealthSnapshot> | undefined;
+  const preflight = async (): Promise<OfficeHealthSnapshot> => {
+    preflightPromise ??= Promise.resolve(options.preflight ?? options.worker.health().catch(() => unavailableOfficePreflight()));
+    return preflightPromise;
+  };
   return async (call: ToolCall, request) => {
     const root = options.roots[request.task.workspaceId];
     if (!root) return failedOffice('Workspace is not registered for Office operations.');
@@ -260,6 +285,7 @@ export function createOfficeExecutor(options: { roots: Readonly<Record<string, s
     }
     const operation = operationFor(call.name);
     if (!operation) return failedOffice(`Tool ${call.name} is not registered.`);
+    const preflightSnapshot = await preflight();
     const workerRequest: OfficeWorkerRequest = {
       id: call.id,
       runId: request.run.id,
@@ -276,19 +302,32 @@ export function createOfficeExecutor(options: { roots: Readonly<Record<string, s
     const sideEffect = response.receipt?.sideEffect === 'unknown'
       ? 'unknown'
       : isMutatingOfficeTool(call.name) ? 'known' : 'none';
+    const normalizedArtifact = normalizeArtifact(response.receipt?.artifact, request.task.workspaceId, request.run.id);
+    if (normalizedArtifact) {
+      normalizedArtifact.evidence = {
+        operation,
+        checks: response.receipt?.checks,
+        target: response.receipt?.target,
+        ocr: response.receipt?.ocr,
+        preflight: preflightSnapshot,
+        limitations: response.receipt?.limitations,
+      };
+    }
     const normalizedReceipt: Record<string, unknown> = {
       worker: response.receipt?.worker ?? 'document-worker',
       workerVersion: response.receipt?.workerVersion,
       operation,
       profile: `${call.name}@v1`,
       sideEffect,
-      artifact: normalizeArtifact(response.receipt?.artifact, request.task.workspaceId, request.run.id),
+      artifact: normalizedArtifact,
       checks: response.receipt?.checks,
       target: response.receipt?.target,
+      preflight: preflightSnapshot,
       limitations: response.receipt?.limitations,
       workerReceipt: response.receipt,
     };
-    const unknownEvidence = response.error === 'unknown_text_layer'
+    const unknownEvidence = preflightUnknownForOperation(operation, preflightSnapshot)
+      || response.error === 'unknown_text_layer'
       || response.receipt?.verification === 'unknown'
       || response.receipt?.checks && hasUnknownCheck(response.receipt.checks);
     if (unknownEvidence) {
@@ -327,6 +366,9 @@ export class OfficeVerifier implements Verifier {
     const operation = String(office.operation);
     if (office.sideEffect === 'unknown') {
       return unknownOffice('Office evidence has an unknown side effect.', artifact);
+    }
+    if (preflightUnknownForOperation(operation, office.preflight)) {
+      return unknownOffice('Office dependency preflight is unknown or missing.', artifact);
     }
     if (office.verification === 'unknown' || hasUnknownCheck(office.checks)) {
       if (operation === 'docx_create' && (office.checks as Record<string, unknown> | undefined)?.rendering === 'unknown') {
@@ -464,12 +506,36 @@ function hasUnknownCheck(value: unknown): boolean {
   return Object.values(value as Record<string, unknown>).some((status) => status === 'unknown' || status === 'conflict');
 }
 
+function preflightUnknownForOperation(operation: string, value: unknown): boolean {
+  if (!value || typeof value !== 'object') return true;
+  const preflight = value as Record<string, unknown>;
+  if (operation === 'docx_create') {
+    return (preflight.checks as Record<string, unknown> | undefined)?.docxRendering !== 'passed';
+  }
+  if (operation === 'xlsx_read_range' || operation === 'xlsx_write_range') {
+    return (preflight.python as Record<string, { status?: string }> | undefined)?.openpyxl?.status !== 'available';
+  }
+  return false;
+}
+
 function unknownOffice(message: string, artifact?: Record<string, unknown>): Verification {
   return {
     result: 'unknown',
     verifier: 'office-v1',
     evidence: artifact?.uri && isSha256(artifact.hash) ? [{ type: 'office-artifact', summary: message, uri: String(artifact.uri), hash: String(artifact.hash) }] : [],
     message,
+  };
+}
+
+export function unavailableOfficePreflight(): OfficeHealthSnapshot {
+  return {
+    worker: 'document-worker',
+    version: 'unknown',
+    tools: {},
+    python: {},
+    missing: ['document-worker-preflight'],
+    checks: { docxRendering: 'unknown', pdfOcr: 'unknown' },
+    limitations: ['Document Worker preflight did not return a health snapshot.'],
   };
 }
 

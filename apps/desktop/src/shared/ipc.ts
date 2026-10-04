@@ -1,4 +1,4 @@
-import type { BudgetUsage, DomainEvent, Episode, Evidence, ReconciliationRecord, ReleaseGateResult, Run, RunProjection, Session, Task } from '@helm/runtime'
+import type { BudgetUsage, DomainEvent, Episode, Evidence, OfficeHealthSnapshot, ReconciliationRecord, ReleaseGateResult, Run, RunProjection, Session, Task } from '@helm/runtime'
 
 export const IPC_CHANNELS = {
   runtimeInfo: 'helm:runtime-info',
@@ -36,6 +36,7 @@ export type RuntimeInfo = {
   appVersion: string
   platform: string
   isPackaged: boolean
+  officePreflight?: OfficeHealthSnapshot
 }
 
 export type StartRunRequest = {

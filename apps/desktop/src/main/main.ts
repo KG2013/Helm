@@ -4,6 +4,7 @@ import {
   MockProvider,
   FileArtifactStore,
   PythonDocumentWorkerClient,
+  unavailableOfficePreflight,
   createOfficeRuntime,
   type RuntimeFacade,
 } from '@helm/runtime'
@@ -52,7 +53,7 @@ function createWindow() {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const baseProvider = createProviderFromEnv({ env: process.env, getApiKey: (service) => readKeychainSecret(service) }) ?? new MockProvider()
   const workspaceId = 'workspace-helm'
   const workspaceRoot = process.env.HELM_WORKSPACE_ROOT ?? process.cwd()
@@ -62,16 +63,21 @@ app.whenReady().then(() => {
   const artifactStore = new FileArtifactStore(join(app.getPath('userData'), 'artifacts'))
   const ownerId = process.env.HELM_RUNTIME_OWNER ?? `desktop-${process.pid}`
   const taskKind = process.env.HELM_TASK_KIND?.toLowerCase()
+  const officeWorker = taskKind === 'office'
+    ? new PythonDocumentWorkerClient({
+        scriptPath: process.env.HELM_DOCUMENT_WORKER ?? join(__dirname, '../../../workers/document-worker/worker.py'),
+        workspaceRoot,
+      })
+    : undefined
+  const officePreflight = officeWorker ? await officeWorker.health().catch(() => unavailableOfficePreflight()) : undefined
   const runtime = taskKind === 'office'
     ? createOfficeRuntime({
         store: sqlite.store,
         provider: baseProvider,
-        worker: new PythonDocumentWorkerClient({
-          scriptPath: process.env.HELM_DOCUMENT_WORKER ?? join(__dirname, '../../../workers/document-worker/worker.py'),
-          workspaceRoot,
-        }),
+        worker: officeWorker!,
         workspaceId,
         root: workspaceRoot,
+        preflight: officePreflight,
         ownerId,
         artifactStore,
       })
@@ -109,6 +115,7 @@ app.whenReady().then(() => {
       appVersion: app.getVersion(),
       platform: process.platform,
       isPackaged: app.isPackaged,
+      officePreflight,
     },
     emit: (event) => {
       if (mainWindow && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('helm:run-event', event)

@@ -20,6 +20,7 @@ function workerFor(responseFor: (request: OfficeWorkerRequest) => OfficeWorkerRe
   const requests: OfficeWorkerRequest[] = [];
   return {
     requests,
+    health: async () => ({ worker: 'document-worker', version: '0.3.0', tools: {}, python: { openpyxl: { status: 'available', version: '3.1.5' } }, missing: [], checks: { docxRendering: 'passed', pdfOcr: 'unknown' }, limitations: [] }),
     execute: async (request) => {
       requests.push(request);
       return responseFor(request);
@@ -46,6 +47,7 @@ async function approveLatest(runtime: Awaited<ReturnType<typeof createOfficeRunt
 }
 
 test('DOCX worker delivery uses Runtime policy, approval, artifact receipt, and verifier evidence', async () => {
+  let preflightCalls = 0;
   const worker = workerFor((request) => ({
     id: request.id,
     ok: true,
@@ -58,6 +60,10 @@ test('DOCX worker delivery uses Runtime policy, approval, artifact receipt, and 
       checks: { structure: 'passed', content: 'passed', rendering: 'passed' },
     },
   }));
+  worker.health = async () => {
+    preflightCalls += 1;
+    return { worker: 'document-worker', version: '0.3.0', tools: {}, python: {}, missing: [], checks: { docxRendering: 'passed', pdfOcr: 'unknown' }, limitations: [] };
+  };
   const runtime = createOfficeRuntime({
     store: new InMemoryEventStore(),
     provider: new MockProvider([
@@ -78,8 +84,12 @@ test('DOCX worker delivery uses Runtime policy, approval, artifact receipt, and 
   assert.equal(result.verification?.result, 'passed');
   assert.equal(result.verification?.verifier, 'office-v1');
   assert.equal(worker.requests[0]?.operation, 'docx_create');
+  assert.equal(preflightCalls, 1);
   const receipt = (await runtime.getEvents(result.id)).find((event) => event.type === 'tool.receipt');
-  assert.equal((receipt?.payload.receipt as { artifact?: { uri?: string } }).artifact?.uri, 'workspace://office-workspace/reports/result.docx');
+  const artifact = (receipt?.payload.receipt as { artifact?: { uri?: string; evidence?: { operation?: string; checks?: Record<string, string> } } }).artifact;
+  assert.equal(artifact?.uri, 'workspace://office-workspace/reports/result.docx');
+  assert.equal(artifact?.evidence?.operation, 'docx_create');
+  assert.equal(artifact?.evidence?.checks?.rendering, 'passed');
 });
 
 test('scanned PDF evidence is converted to UNKNOWN and never delivered as success', async () => {
@@ -113,6 +123,72 @@ test('scanned PDF evidence is converted to UNKNOWN and never delivered as succes
   assert.equal(result.verification?.result, 'unknown');
   assert.match(result.verification?.message ?? '', /incomplete|coverage|unknown/i);
   assert.equal(worker.requests[0]?.operation, 'pdf_extract');
+});
+
+test('dependency or parser failure is a Runtime UNKNOWN with a bounded artifact receipt', async () => {
+  const worker = workerFor((request) => ({
+    id: request.id,
+    ok: false,
+    error: 'dependency_missing:openpyxl',
+    receipt: {
+      worker: 'document-worker',
+      sideEffect: 'none',
+      artifact: passedArtifact(request),
+      checks: { evidence: 'unknown' },
+      verification: 'unknown',
+      limitations: ['xlsx_read_range could not be completed; verification is UNKNOWN.'],
+    },
+  }));
+  const runtime = createOfficeRuntime({
+    store: new InMemoryEventStore(),
+    provider: new MockProvider([
+      { kind: 'tool_call', name: 'office.xlsx.read_range', arguments: { path: 'input.xlsx', sheet: 'Sheet1', cell: 'A1' } },
+      { kind: 'final', content: 'Workbook candidate.' },
+    ]),
+    worker,
+    workspaceId: 'office-workspace',
+    root: '/tmp/helm-office',
+  });
+  const task = await runtime.createTask({ goal: 'read a workbook', workspaceId: 'office-workspace' });
+  const session = await runtime.createSession({ taskId: task.id });
+  const started = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  const result = await runtime.run(started.id);
+  assert.equal(result.state, 'paused');
+  assert.equal(result.verification?.result, 'unknown');
+  assert.match(result.verification?.message ?? '', /incomplete|unknown|artifact/i);
+});
+
+test('unknown Office preflight cannot be promoted by otherwise passing checks', async () => {
+  const worker = workerFor((request) => ({
+    id: request.id,
+    ok: true,
+    result: { paragraphs: 1 },
+    receipt: {
+      worker: 'document-worker',
+      sideEffect: 'known',
+      artifact: passedArtifact(request),
+      checks: { structure: 'passed', content: 'passed', rendering: 'passed' },
+    },
+  }));
+  worker.health = async () => ({ worker: 'document-worker', version: 'unknown', tools: {}, python: {}, missing: ['soffice'], checks: { docxRendering: 'unknown', pdfOcr: 'unknown' }, limitations: ['renderer unavailable'] });
+  const runtime = createOfficeRuntime({
+    store: new InMemoryEventStore(),
+    provider: new MockProvider([
+      { kind: 'tool_call', name: 'office.docx.create', arguments: { path: 'report.docx', paragraphs: ['one'] } },
+      { kind: 'final', content: 'DOCX candidate.' },
+    ]),
+    worker,
+    workspaceId: 'office-workspace',
+    root: '/tmp/helm-office',
+  });
+  const task = await runtime.createTask({ goal: 'create a DOCX report', workspaceId: 'office-workspace' });
+  const session = await runtime.createSession({ taskId: task.id });
+  const started = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  const paused = await runtime.run(started.id);
+  assert.equal(paused.state, 'paused');
+  const result = await approveLatest(runtime, paused.id);
+  assert.equal(result.state, 'paused');
+  assert.equal(result.verification?.result, 'unknown');
 });
 
 test('XLSX writes require approval and all target/scope checks before delivery', async () => {
@@ -218,6 +294,11 @@ test('PythonDocumentWorkerClient enforces the JSONL process boundary and preserv
     assert.equal(response.receipt?.artifact && (response.receipt.artifact as { sourceRunId?: string }).sourceRunId, 'run-client-1');
     assert.equal((response.receipt?.checks as { structure?: string }).structure, 'passed');
     assert.ok(['passed', 'unknown'].includes(String((response.receipt?.checks as { rendering?: string }).rendering)));
+    const health = await client.health();
+    assert.equal(health.worker, 'document-worker');
+    assert.match(health.version, /^\d+\.\d+\.\d+$/);
+    assert.ok(health.tools.officeRenderer?.status === 'available' || health.tools.officeRenderer?.status === 'unavailable');
+    assert.ok(Array.isArray(health.missing));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -243,7 +324,9 @@ test('Runtime plus the real Document Worker delivers only when bounded rendering
     const paused = await runtime.run(started.id);
     assert.equal(paused.state, 'paused');
     const result = await approveLatest(runtime, paused.id);
-    const receipt = (await runtime.getEvents(result.id)).find((event) => event.type === 'tool.receipt')?.payload.receipt as { checks?: { rendering?: string } } | undefined;
+    const receipt = (await runtime.getEvents(result.id)).find((event) => event.type === 'tool.receipt')?.payload.receipt as { checks?: { rendering?: string }; artifact?: { evidence?: { preflight?: { version?: string; missing?: string[] } } } } | undefined;
+    assert.match(receipt?.artifact?.evidence?.preflight?.version ?? '', /^\d+\.\d+\.\d+$/);
+    assert.ok(Array.isArray(receipt?.artifact?.evidence?.preflight?.missing));
     if (receipt?.checks?.rendering === 'passed') {
       assert.equal(result.state, 'completed');
       assert.equal(result.verification?.result, 'passed');

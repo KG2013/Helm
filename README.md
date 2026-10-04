@@ -81,6 +81,7 @@ pnpm build
 pnpm test
 pnpm typecheck
 printf '{"id":"health-1","operation":"health"}\n' | python3 workers/document-worker/worker.py
+pnpm --filter @helm/cli start -- office health
 ```
 
 首次检查先 build，使依赖包的声明与构建产物可用。桌面端类型检查在 build 中执行；当前没有独立 desktop typecheck 脚本。测试和已知限制详见 [当前实现状态](docs/development/implementation-status.md)。

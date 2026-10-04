@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import importlib.metadata
 import json
 import os
 import shutil
@@ -124,38 +125,86 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
             return handle_pdf(request, request_id)
         return response(request_id, ok=False, error="unsupported_operation")
     except ImportError as exc:
-        return response(request_id, ok=False, error=f"dependency_missing:{exc.name or 'optional'}")
+        return unknown_operation_response(request, request_id, operation, f"dependency_missing:{exc.name or 'optional'}")
     except (OSError, ValueError, KeyError) as exc:
-        return response(request_id, ok=False, error=str(exc))
+        return unknown_operation_response(request, request_id, operation, str(exc))
     except Exception:
-        return response(request_id, ok=False, error="worker_operation_failed")
+        return unknown_operation_response(request, request_id, operation, "worker_operation_failed")
+
+
+def unknown_operation_response(request: dict[str, Any], request_id: str, operation: Any, error: str) -> dict[str, Any]:
+    """Return a bounded UNKNOWN receipt when a readable artifact exists.
+
+    A malformed document or missing optional parser must not be reported as a
+    successful delivery, but it also must not collapse into an unqualified
+    worker failure: Runtime needs the artifact hash and limitation to pause
+    for evidence reconciliation.
+    """
+    if operation not in {"docx_create", "xlsx_read_range", "xlsx_write_range", "pdf_extract"}:
+        return response(request_id, ok=False, error=error)
+    try:
+        path = safe_path(request.get("path"), must_exist=True)
+        side_effect = "unknown" if operation in {"docx_create", "xlsx_write_range"} else "none"
+        limitations = [f"{operation} could not be completed; verification is UNKNOWN."]
+        value = receipt(path, operation=operation, request=request, side_effect=side_effect, limitations=limitations, checks={"evidence": "unknown"})
+        value["verification"] = "unknown"
+        return response(request_id, ok=False, error=error, receipt=value)
+    except (OSError, ValueError, KeyError):
+        return response(request_id, ok=False, error=error)
 
 
 def health_snapshot() -> dict[str, Any]:
     renderer = shutil.which("soffice") or shutil.which("libreoffice")
     pdftoppm = shutil.which("pdftoppm")
     tesseract = shutil.which("tesseract")
+    tools = {
+        "officeRenderer": tool_snapshot(renderer, ("--version",)),
+        "pdftoppm": tool_snapshot(pdftoppm, ("-v",)),
+        "tesseract": tool_snapshot(tesseract, ("--version",)),
+    }
+    python = {name: python_snapshot(name) for name in ("openpyxl", "pypdf")}
+    missing = [
+        name for name, value in {**tools, **python}.items()
+        if value["status"] != "available"
+    ]
     return {
         "worker": "document-worker",
         "version": VERSION,
-        "tools": {
-            "officeRenderer": {"status": "available", "path": renderer} if renderer else {"status": "unavailable"},
-            "pdftoppm": {"status": "available", "path": pdftoppm} if pdftoppm else {"status": "unavailable"},
-            "tesseract": {"status": "available", "path": tesseract} if tesseract else {"status": "unavailable"},
-        },
-        "python": {
-            name: {"status": "available" if importlib.util.find_spec(name) else "unavailable"}
-            for name in ("openpyxl", "pypdf")
-        },
+        "tools": tools,
+        "python": python,
+        "missing": missing,
         "checks": {
-            "docxRendering": "passed" if renderer else "unknown",
-            "pdfOcr": "passed" if pdftoppm and tesseract else "unknown",
+            "docxRendering": "passed" if tools["officeRenderer"]["status"] == "available" else "unknown",
+            "pdfOcr": "passed" if tools["pdftoppm"]["status"] == "available" and tools["tesseract"]["status"] == "available" else "unknown",
         },
         "limitations": [
             "DOCX rendering is page/openability evidence, not pixel comparison.",
             "PDF OCR is UNKNOWN until both pdftoppm and tesseract are available.",
         ],
     }
+
+
+def tool_snapshot(path: str | None, version_args: tuple[str, ...]) -> dict[str, Any]:
+    if not path:
+        return {"status": "unavailable"}
+    try:
+        completed = subprocess.run([path, *version_args], capture_output=True, text=True, timeout=2, check=False)
+        raw = (completed.stdout or completed.stderr).strip().splitlines()
+        if completed.returncode != 0 or not raw:
+            return {"status": "unavailable", "path": path, "version": "unknown"}
+        return {"status": "available", "path": path, "version": raw[0][:200]}
+    except (OSError, subprocess.SubprocessError):
+        return {"status": "unavailable", "path": path, "version": "unknown"}
+
+
+def python_snapshot(name: str) -> dict[str, Any]:
+    if importlib.util.find_spec(name) is None:
+        return {"status": "unavailable"}
+    try:
+        version = importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    return {"status": "available", "version": version}
 
 
 def handle_xlsx(request: dict[str, Any], request_id: str, operation: str) -> dict[str, Any]:

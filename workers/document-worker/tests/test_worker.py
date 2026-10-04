@@ -29,13 +29,38 @@ class WorkerTest(unittest.TestCase):
         self.temp.cleanup()
 
     def test_health_reports_optional_render_and_ocr_dependencies(self):
-        with patch.object(worker.shutil, "which", side_effect=lambda command: "/usr/bin/fake" if command == "soffice" else None):
+        with patch.object(worker.shutil, "which", side_effect=lambda command: "/usr/bin/fake" if command == "soffice" else None), patch.object(worker.subprocess, "run", return_value=subprocess.CompletedProcess(["/usr/bin/fake", "--version"], 0, "FakeOffice 1.0", "")):
             health = worker.handle({"id": "h", "operation": "health"})
         self.assertTrue(health["ok"])
         self.assertEqual(health["result"]["tools"]["officeRenderer"]["status"], "available")
         self.assertEqual(health["result"]["tools"]["pdftoppm"]["status"], "unavailable")
+        self.assertIn("version", health["result"]["tools"]["officeRenderer"])
+        self.assertIn("missing", health["result"])
         self.assertEqual(health["result"]["checks"]["docxRendering"], "passed")
         self.assertEqual(health["result"]["checks"]["pdfOcr"], "unknown")
+
+    def test_health_marks_version_probe_failure_as_missing_and_unknown(self):
+        with patch.object(worker.shutil, "which", side_effect=lambda command: "/usr/bin/fake" if command == "soffice" else None), patch.object(worker.subprocess, "run", return_value=subprocess.CompletedProcess(["/usr/bin/fake", "--version"], 1, "", "probe failed")):
+            health = worker.handle({"id": "h", "operation": "health"})
+        self.assertEqual(health["result"]["tools"]["officeRenderer"]["status"], "unavailable")
+        self.assertIn("officeRenderer", health["result"]["missing"])
+        self.assertEqual(health["result"]["checks"]["docxRendering"], "unknown")
+
+    def test_malformed_xlsx_is_unknown_with_artifact_receipt(self):
+        path = Path(self.temp.name) / "broken.xlsx"
+        path.write_bytes(b"not-an-xlsx")
+        result = worker.handle({"id": "x", "operation": "xlsx_read_range", "path": "broken.xlsx", "sheet": "Data", "cell": "A1", "runId": "run-x"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["receipt"]["verification"], "unknown")
+        self.assertEqual(result["receipt"]["checks"]["evidence"], "unknown")
+        self.assertEqual(result["receipt"]["artifact"]["sourceRunId"], "run-x")
+
+    def test_docx_exception_after_write_keeps_side_effect_unknown(self):
+        with patch.object(worker, "verify_docx", side_effect=RuntimeError("verification failed")):
+            result = worker.handle({"id": "d", "operation": "docx_create", "path": "report.docx", "paragraphs": ["Hello"], "runId": "run-d"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["receipt"]["verification"], "unknown")
+        self.assertEqual(result["receipt"]["sideEffect"], "unknown")
 
     def test_docx_artifact_and_inspect_are_bounded(self):
         created = worker.handle({"id": "d", "operation": "docx_create", "path": "report.docx", "paragraphs": ["Hello"], "runId": "run-1"})

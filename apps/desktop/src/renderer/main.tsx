@@ -206,7 +206,11 @@ function App() {
       return undefined
     }
     void bridge.runtimeInfo()
-      .then((info) => setRuntime(`${info.platform} · ${info.isPackaged ? 'packaged' : 'dev'}`))
+      .then((info) => {
+        const missing = info.officePreflight?.missing ?? []
+        const office = info.officePreflight ? ` · Office ${info.officePreflight.version}${missing.length > 0 ? ` · missing ${missing.join(', ')}` : ' · deps ready'}` : ''
+        setRuntime(`${info.platform} · ${info.isPackaged ? 'packaged' : 'dev'}${office}`)
+      })
       .catch(() => setRuntime('local runtime · unavailable'))
 
     const unsubscribe = bridge.subscribe((payload: RunEventPayload) => {

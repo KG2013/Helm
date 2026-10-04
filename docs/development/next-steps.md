@@ -1,6 +1,6 @@
 # 下一步实施计划
 
-更新日期：2026-10-03。架构已确认；#1–#4、T1/#6 至 T10/#15 的 Runtime 核心、Office worker、Episode/release gate、ownership/reconnect 和 Experience Candidate 已接入。当前剩余工作集中在真实 coding sandbox、厂商联调、目标环境 Office 依赖和打包重启回归。当前能力参见 [实现状态](implementation-status.md)。
+更新日期：2026-10-04。架构已确认；#1–#4、T1/#6 至 T10/#15 的 Runtime 核心、Office worker、Episode/release gate、ownership/reconnect 和 Experience Candidate 已接入。当前剩余工作集中在真实 coding sandbox、厂商联调、目标环境 Office/OCR smoke 和打包重启回归。当前能力参见 [实现状态](implementation-status.md)。
 
 ## 1. 对话界面接入 Runtime：已完成（#1–#4）
 
@@ -39,7 +39,7 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 受限 JSONL worker 已提供 DOCX package/content 与可选有界 `soffice`/`libreoffice` PDF 转换检查、XLSX 指定单元格/范围读写与 bounded workbook fingerprint、target/scope checks、PDF text-layer 分页来源与 coverage，并在 `pdftoppm`/`tesseract` 可用时提供带页码和 confidence 的 OCR。所有路径均返回 hash、source Run、worker Receipt、checks 与 limitations；缺渲染、OCR、覆盖率或未授权范围证据时返回 UNKNOWN 并暂停交付。
 
-真实 worker 进程管理、Runtime E2E 和 CLI/Desktop 的同一 Artifact/Verification projection 已接入；目标环境仍需确认 OCR 工具链。当前 DOCX 检查验证有界转换和可打开的 PDF 页数，不做像素级视觉对比；缺少渲染器或 OCR 命令时保持 UNKNOWN。
+真实 worker 进程管理、Runtime E2E、任务前 health preflight 和 CLI/Desktop 的同一 Artifact/Verification projection 已接入；`helm office health` 会报告依赖版本、路径和缺失项。当前环境仍缺少 `tesseract`，真实 OCR smoke 尚未通过；DOCX 检查验证有界转换和可打开的 PDF 页数，不做像素级视觉对比；缺少渲染器或 OCR 命令时保持 UNKNOWN。
 
 剩余工作集中在 Docker image/daemon 的现场 smoke、DeepSeek/智谱真实联调、目标环境 Office/OCR 依赖、Electron 打包重启回归，以及 Experience Candidate review UI；UsageLedger、Episode、release gate、独立 Runtime reconnect 和成对 Context compaction 核心已建立。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化等独立能力已完成 ticket 拆分，但仍需在 ActionGateway 前置完成后按依赖实现。
 
