@@ -7,6 +7,9 @@ interface Window {
     listAgents: (request?: import('../shared/ipc.js').AgentListRequest) => Promise<import('@helm/runtime').AgentRunRecord[]>
     createAgent: (request: import('../shared/ipc.js').AgentCreateRequest) => Promise<import('@helm/runtime').AgentRunRecord>
     controlAgents: (request: import('../shared/ipc.js').AgentControlRequest) => Promise<unknown>
+    listConnectors: () => Promise<import('@helm/runtime').ConnectorActionProfile[]>
+    registerConnector: (request: import('../shared/ipc.js').ConnectorRegisterRequest) => Promise<import('@helm/runtime').ConnectorActionProfile>
+    previewConnector: (request: import('../shared/ipc.js').ConnectorPreviewRequest) => Promise<unknown>
     controlRun: (request: import('../shared/ipc.js').RunControlRequest) => Promise<import('@helm/runtime').Run>
     resolveApproval: (request: import('../shared/ipc.js').RunApprovalRequest) => Promise<import('@helm/runtime').Run>
     subscribe: (listener: (payload: import('../shared/ipc.js').RunEventPayload) => void) => () => void

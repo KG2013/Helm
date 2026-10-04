@@ -9,6 +9,8 @@ import {
   isAgentListRequest,
   isAgentCreateRequest,
   isAgentControlRequest,
+  isConnectorPreviewRequest,
+  isConnectorRegisterRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
@@ -22,6 +24,8 @@ import {
   type AgentListRequest,
   type AgentCreateRequest,
   type AgentControlRequest,
+  type ConnectorPreviewRequest,
+  type ConnectorRegisterRequest,
   type StartRunResponse,
 } from '../shared/ipc.js'
 
@@ -184,6 +188,15 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
       ? await runtime.cancelAgentTree(request.parentRunId, request.reason)
       : await runtime.recoverAgentRuns(request.parentRunId)
     return sanitizeValue({ parentRunId: request.parentRunId, action: request.action, agents: result, budgetUsage: await runtime.getAgentBudgetUsage(request.parentRunId) })
+  })
+  ipc.handle(IPC_CHANNELS.connectorList, () => sanitizeValue(runtime.listConnectorProfiles()))
+  ipc.handle(IPC_CHANNELS.connectorRegister, async (_event, value) => {
+    if (!isConnectorRegisterRequest(value)) throw new Error('Invalid Connector profile.')
+    return sanitizeValue(await runtime.registerConnectorProfile(value as ConnectorRegisterRequest))
+  })
+  ipc.handle(IPC_CHANNELS.connectorPreview, async (_event, value) => {
+    if (!isConnectorPreviewRequest(value)) throw new Error('Invalid Connector preview request.')
+    return sanitizeValue(await runtime.previewConnector(value as ConnectorPreviewRequest))
   })
 
   return unsubscribe

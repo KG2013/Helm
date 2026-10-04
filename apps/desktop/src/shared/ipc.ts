@@ -10,6 +10,9 @@ export const IPC_CHANNELS = {
   agentList: 'helm:agent-list',
   agentCreate: 'helm:agent-create',
   agentControl: 'helm:agent-control',
+  connectorList: 'helm:connector-list',
+  connectorRegister: 'helm:connector-register',
+  connectorPreview: 'helm:connector-preview',
   runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
@@ -81,6 +84,8 @@ export type AgentCreateRequest = {
   budget?: Partial<import('@helm/runtime').Budget>
 }
 export type AgentControlRequest = { parentRunId: string; action: 'cancel' | 'recover'; reason?: string }
+export type ConnectorPreviewRequest = import('@helm/runtime').ConnectorPreviewInput
+export type ConnectorRegisterRequest = import('@helm/runtime').ConnectorActionProfile
 
 export type StartRunResponse = {
   task: Task
@@ -158,4 +163,23 @@ export function isAgentControlRequest(value: unknown): value is AgentControlRequ
   const request = value as Partial<AgentControlRequest>
   return isRunId(request.parentRunId) && (request.action === 'cancel' || request.action === 'recover')
     && (request.reason === undefined || typeof request.reason === 'string')
+}
+
+export function isConnectorPreviewRequest(value: unknown): value is ConnectorPreviewRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<ConnectorPreviewRequest>
+  return isRunId(request.runId) && isRunId(request.taskId) && isRunId(request.sessionId)
+    && typeof request.connectorId === 'string' && typeof request.profileId === 'string' && typeof request.profileVersion === 'string'
+    && typeof request.action === 'string' && typeof request.target === 'string' && Boolean(request.scope) && typeof request.scope === 'object'
+    && Array.isArray(request.impact) && typeof request.rollbackPlan === 'string' && typeof request.reconciliationPlan === 'string'
+}
+
+export function isConnectorRegisterRequest(value: unknown): value is ConnectorRegisterRequest {
+  if (!value || typeof value !== 'object') return false
+  const profile = value as Partial<ConnectorRegisterRequest>
+  return typeof profile.id === 'string' && typeof profile.version === 'string' && typeof profile.connectorId === 'string'
+    && Array.isArray(profile.actions) && profile.actions.every((item) => typeof item === 'string')
+    && Array.isArray(profile.allowedTargets) && profile.allowedTargets.every((item) => typeof item === 'string')
+    && Array.isArray(profile.allowedFields) && profile.allowedFields.every((item) => typeof item === 'string')
+    && Boolean(profile.scope) && typeof profile.scope === 'object'
 }

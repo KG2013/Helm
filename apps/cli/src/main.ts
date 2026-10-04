@@ -26,7 +26,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 function printHelp(): void {
-  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm agent list <run-id>  List persisted child AgentRuns\n  helm agent create <run-id> <role> <goal>  Create a bounded child AgentRun\n  helm agent cancel|recover <run-id>  Cancel or recover child AgentRuns\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
+  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm agent list <run-id>  List persisted child AgentRuns\n  helm agent create <run-id> <role> <goal>  Create a bounded child AgentRun\n  helm agent cancel|recover <run-id>  Cancel or recover child AgentRuns\n  helm connector list  List registered Connector Profiles\n  helm connector register <id> <version> <connector-id>  Register a bounded Profile\n  helm connector preview <run-id> <connector-id> <profile-id> <version> <action> <target>  Create a dry-run preview\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
 }
 
 async function printRun(runtime: RuntimeFacade, goal: string, workspaceId: string, jsonl = false): Promise<void> {
@@ -240,6 +240,45 @@ async function agentCommand(action: 'list' | 'create' | 'cancel' | 'recover', ar
   }
 }
 
+async function connectorCommand(action: 'list' | 'register' | 'preview', args: string[]): Promise<void> {
+  const statePath = process.env.HELM_STATE_DB
+  if (!statePath) {
+    console.error('helm connector requires HELM_STATE_DB to point at the Runtime SQLite ledger')
+    process.exitCode = 2
+    return
+  }
+  const database = openSqliteEventStore(statePath)
+  const runtime = await createPersistedRuntime(database.store, process.env.HELM_WORKSPACE_ID ?? 'workspace-cli')
+  try {
+    if (action === 'list') {
+      console.log(JSON.stringify(runtime.listConnectorProfiles(), null, 2))
+      return
+    }
+    if (action === 'register') {
+      const [id, version, connectorId] = args
+      const actions = (args[args.indexOf('--actions') + 1] ?? '').split(',').map((item) => item.trim()).filter(Boolean)
+      const targets = (args[args.indexOf('--targets') + 1] ?? '').split(',').map((item) => item.trim()).filter(Boolean)
+      const fields = (args[args.indexOf('--fields') + 1] ?? '').split(',').map((item) => item.trim()).filter(Boolean)
+      const scopeIndex = args.indexOf('--scope-json')
+      const scope = scopeIndex >= 0 && args[scopeIndex + 1] ? JSON.parse(args[scopeIndex + 1]) as Record<string, unknown> : {}
+      if (!id || !version || !connectorId || !actions.length || !targets.length) throw new Error('connector register requires id, version, connector-id, --actions, and --targets')
+      console.log(JSON.stringify(await runtime.registerConnectorProfile({ id, version, connectorId, actions, allowedTargets: targets, allowedFields: fields, scope }), null, 2))
+      return
+    }
+    const [runId, connectorId, profileId, profileVersion, actionName, target] = args
+    const run = runId ? await runtime.getRun(runId) : undefined
+    const scopeIndex = args.indexOf('--scope-json')
+    const afterIndex = args.indexOf('--after-json')
+    const scope = scopeIndex >= 0 && args[scopeIndex + 1] ? JSON.parse(args[scopeIndex + 1]) as Record<string, unknown> : {}
+    const after = afterIndex >= 0 && args[afterIndex + 1] ? JSON.parse(args[afterIndex + 1]) : {}
+    if (!run || !connectorId || !profileId || !profileVersion || !actionName || !target) throw new Error('connector preview requires run id, connector, profile, action, and target')
+    console.log(JSON.stringify(await runtime.previewConnector({ runId, taskId: run.taskId, sessionId: run.sessionId, connectorId, profileId, profileVersion, action: actionName, target, scope, before: {}, after, impact: ['preview'], rollbackPlan: 'No write was performed.', reconciliationPlan: 'Read target state before any future write.' }), null, 2))
+  } finally {
+    await runtime.shutdown('CLI Connector command completed')
+    await database.store.close()
+  }
+}
+
 async function run(goal: string): Promise<void> {
   const provider = createProviderFromEnv({ env: process.env, getApiKey: (service) => readKeychainSecret(service) })
     ?? new MockProvider([{ kind: 'final', content: `Completed local task: ${goal}` } satisfies ProviderResponse])
@@ -381,6 +420,14 @@ if (command === 'run') {
     process.exitCode = 2
   } else {
     await agentCommand(action, args.slice(1))
+  }
+} else if (command === 'connector') {
+  const action = args[0] === 'list' ? 'list' : args[0] === 'register' ? 'register' : args[0] === 'preview' ? 'preview' : undefined
+  if (!action) {
+    console.error('helm connector requires list, register, or preview')
+    process.exitCode = 2
+  } else {
+    await connectorCommand(action, args.slice(1))
   }
 } else {
   printHelp()

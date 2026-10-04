@@ -546,6 +546,39 @@ export interface AgentAggregateResult {
   conflict?: string;
 }
 
+export interface ConnectorActionProfile {
+  id: string;
+  version: string;
+  connectorId: string;
+  actions: readonly string[];
+  allowedTargets: readonly string[];
+  allowedFields: readonly string[];
+  scope: Record<string, unknown>;
+}
+
+export interface ConnectorPreview {
+  previewId: ID;
+  actionId: ID;
+  connectorId: string;
+  profile: Pick<ConnectorActionProfile, 'id' | 'version'>;
+  target: string;
+  action: string;
+  before: unknown;
+  after: unknown;
+  versionCondition?: string;
+  impact: string[];
+  rollbackPlan: string;
+  reconciliationPlan: string;
+  dryRun: true;
+}
+
+export interface ConnectorRegistryOptions {
+  store: EventStore;
+  gateway: import('./action-gateway.js').ActionGateway;
+  clock?: RuntimeClock;
+  ids?: RuntimeIdFactory;
+}
+
 export interface VerifierInput {
   task: Task;
   run: Run;
@@ -584,6 +617,8 @@ export type EventType =
   | 'agent.created'
   | 'agent.state_changed'
   | 'agent.result'
+  | 'connector.registered'
+  | 'connector.preview'
   | 'tool.call'
   | 'tool.receipt'
   | 'step.observation'

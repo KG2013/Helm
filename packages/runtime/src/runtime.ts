@@ -6,6 +6,7 @@ import { createExperienceCandidate as createCandidate, reviewExperienceCandidate
 import { isBudgetExceeded, listReconciliationCandidates, summarizeBudgetUsage } from './hardening.js';
 import { ActionGateway, createToolActionAdapter, toolActionRequest } from './action-gateway.js';
 import { AgentRunCoordinator, type CreateChildAgentInput } from './agent.js';
+import { ConnectorRegistry, type ConnectorPreviewInput } from './connectors.js';
 import type {
   Budget,
   ApprovalBinding,
@@ -112,6 +113,7 @@ export class RuntimeFacade {
   private readonly artifactStore?: ArtifactStore;
   private readonly actionGateway: ActionGateway;
   private readonly agentCoordinator: AgentRunCoordinator;
+  private readonly connectorRegistry: ConnectorRegistry;
   private readonly eventListeners = new Set<RuntimeEventListener>();
   private readonly tasks = new Map<ID, Task>();
   private readonly sessions = new Map<ID, Session>();
@@ -136,6 +138,7 @@ export class RuntimeFacade {
     this.artifactStore = options.artifactStore;
     this.actionGateway = options.actionGateway ?? new ActionGateway({ store: this.store, clock: this.clock, ids: this.ids });
     this.agentCoordinator = new AgentRunCoordinator({ store: this.store, gateway: this.actionGateway, clock: this.clock, ids: this.ids });
+    this.connectorRegistry = new ConnectorRegistry({ store: this.store, gateway: this.actionGateway, clock: this.clock, ids: this.ids });
   }
 
   async createTask(input: TaskInput): Promise<Task> {
@@ -676,6 +679,18 @@ export class RuntimeFacade {
 
   async getAgentBudgetUsage(parentRunId: ID) {
     return this.agentCoordinator.getBudgetUsage(parentRunId);
+  }
+
+  async registerConnectorProfile(profile: import('./types.js').ConnectorActionProfile) {
+    return this.connectorRegistry.register(profile);
+  }
+
+  listConnectorProfiles() {
+    return this.connectorRegistry.list();
+  }
+
+  async previewConnector(input: ConnectorPreviewInput) {
+    return this.connectorRegistry.preview(input);
   }
 
   onEvent(listener: RuntimeEventListener): () => void {
