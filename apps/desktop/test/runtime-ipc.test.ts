@@ -108,6 +108,8 @@ test('desktop IPC inspect uses the registered read-only Runtime path and artifac
     assert.equal(snapshot.run.verification?.result, 'passed')
     assert.match(snapshot.run.verification?.evidence[0]?.uri ?? '', /^workspace:\/\//)
     assert.ok(snapshot.events.some((event) => event.type === 'tool.receipt'))
+    assert.ok(snapshot.events.some((event) => event.type === 'action.requested'))
+    assert.ok(snapshot.events.some((event) => event.type === 'action.receipt'))
     assert.equal(snapshot.projection.verification?.result, 'passed')
     assert.equal(snapshot.projection.artifacts.length, 1)
     assert.equal(snapshot.projection.artifacts[0]?.type, 'workspace-inspection')

@@ -4,6 +4,7 @@ import { TextOutputVerifier } from './verifier.js';
 import { boundProviderEvents, buildProviderContext, normalizeProviderContextProjection, toolProfileToSchema } from './context.js';
 import { createExperienceCandidate as createCandidate, reviewExperienceCandidate as reviewCandidate, type ExperienceCandidate } from './experience.js';
 import { isBudgetExceeded, listReconciliationCandidates, summarizeBudgetUsage } from './hardening.js';
+import { ActionGateway, createToolActionAdapter, toolActionRequest } from './action-gateway.js';
 import type {
   Budget,
   ApprovalBinding,
@@ -108,6 +109,7 @@ export class RuntimeFacade {
   private readonly leaseDurationMs: number;
   private readonly approvalTtlMs: number;
   private readonly artifactStore?: ArtifactStore;
+  private readonly actionGateway: ActionGateway;
   private readonly eventListeners = new Set<RuntimeEventListener>();
   private readonly tasks = new Map<ID, Task>();
   private readonly sessions = new Map<ID, Session>();
@@ -130,6 +132,7 @@ export class RuntimeFacade {
     this.leaseDurationMs = options.leaseDurationMs ?? 5 * 60 * 1000;
     this.approvalTtlMs = options.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS;
     this.artifactStore = options.artifactStore;
+    this.actionGateway = options.actionGateway ?? new ActionGateway({ store: this.store, clock: this.clock, ids: this.ids });
   }
 
   async createTask(input: TaskInput): Promise<Task> {
@@ -778,15 +781,33 @@ export class RuntimeFacade {
       const latestRun = await this.requireRun(run.id);
       const latestContext = await this.store.list(run.id);
       const projected = normalizeProviderContextProjection(this.contextAssembler.assemble({ task: pending.task, session: pending.session, run: latestRun, events: latestContext }));
-      let result = await this.executor(pending.call, {
-        ...pending.request,
-        run: latestRun,
-        context: boundProviderEvents(latestContext),
-        contextEnvelope: projected.context,
-        messages: projected.context.messages,
-        tools: this.toolRegistry.list?.().map(toolProfileToSchema),
-        toolResults: projected.toolResults,
+      const profile = this.toolRegistry.get(pending.call.name);
+      if (!profile) throw new Error(`Tool ${pending.call.name} is not registered.`);
+      const action = toolActionRequest({
+        call: pending.call,
+        profile,
+        taskId: pending.task.id,
+        sessionId: pending.session.id,
+        workspaceId: pending.task.workspaceId,
+        deadline: new Date(this.clock.now().getTime() + (pending.request.timeoutMs ?? this.defaultBudget.maxDurationMs)).toISOString(),
       });
+      const actionResult = await this.actionGateway.executeApproved({
+        request: action,
+        markRunNeedsReconciliation: false,
+        adapter: createToolActionAdapter(this.executor, {
+          call: pending.call,
+          request: {
+            ...pending.request,
+            run: latestRun,
+            context: boundProviderEvents(latestContext),
+            contextEnvelope: projected.context,
+            messages: projected.context.messages,
+            tools: this.toolRegistry.list?.().map(toolProfileToSchema),
+            toolResults: projected.toolResults,
+          },
+        }),
+      });
+      let result: ToolExecutorResult = { ok: actionResult.ok, output: actionResult.output, error: actionResult.error, receipt: actionResult.receipt };
       result = await this.offloadLargeToolResult(result, pending, latestRun.id);
       observation = { ok: result.ok, output: result.output, error: result.error, receipt: result.receipt };
     } catch (error) {

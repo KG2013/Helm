@@ -47,6 +47,12 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 预算使用量由持久 `usage.recorded` 事件累计，涵盖步骤、Run 存续时间、token、费用、延迟、重试、cache miss 和 reviewer rounds；Runtime 重连或暂停不会清零。未知副作用仍进入 `needs_reconciliation`，并可通过 `RuntimeFacade.recordReconciliation` 写入带类型、摘要、URI/hash 的证据包；缺证据的 `known/failed` 记录会被拒绝。`helm reconcile <run-id>` 和 `run-reconciliation` IPC 共用这些接口，支持只读查看预算与对账候选以及显式记录结果。release gate 仅在未知回执被证据标记为 `known/failed` 后移除对应 UNKNOWN 阻断；这不替代真实外部系统的写后验证。
 
+## 7. 统一 ActionGateway（#24：已完成）
+
+`ActionGateway` 已把 ActionRequest、版本化 Profile、scope/capability/network、参数 hash、幂等键、dry-run 和 deadline 固定为共享契约；默认拒绝，允许或审批后才调用适配器。请求、审批、批准、拒绝和回执事件写入同一事件账本，适配器断连或副作用未知返回 UNKNOWN 并进入对账路径；幂等键命中已有回执时只回放，不重复执行。现有 `ToolExecutor` 通过 `createToolActionAdapter` 进入 Gateway，Runtime 的 CLI 与 Desktop 入口因此共享同一策略和回执语义。事件只保存脱敏摘要、profile 和 args hash，原始凭据仍留在适配器边界。
+
+真实 Connector、浏览器、子 Agent 和 A2A 适配器仍按各自独立 issue 接入；Gateway 本身不把远端 ACK、模型文字或文件存在当作完成证据。
+
 ## 与原架构阶段的关系
 
 架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。

@@ -68,6 +68,9 @@ test('workspace inspection returns a bounded artifact and passes structured veri
     const decision = events.find((event) => event.type === 'policy.decision')
     assert.equal((decision?.payload.toolProfile as { version?: string }).version, 'v1')
     assert.ok(events.some((event) => event.type === 'verification.result'))
+    assert.ok(events.some((event) => event.type === 'action.requested'))
+    assert.ok(events.some((event) => event.type === 'action.approved'))
+    assert.ok(events.some((event) => event.type === 'action.receipt'))
   } finally {
     await rm(root, { recursive: true, force: true })
   }

@@ -424,6 +424,88 @@ export interface ToolExecutor {
   (call: ToolCall, request: ProviderRequest): Promise<ToolExecutorResult>;
 }
 
+export type ActionDecision = 'allow' | 'deny' | 'ask';
+export type ActionEffect = 'known' | 'unknown' | 'none';
+
+export interface ActionProfile {
+  id: string;
+  version: string;
+  inputSchema?: Record<string, unknown>;
+  capabilities: readonly string[];
+  scope: Record<string, unknown>;
+  network: { mode: 'none' | 'allowlist'; hosts?: readonly string[] };
+}
+
+export interface ActionRequest {
+  actionId: ID;
+  runId: ID;
+  taskId: ID;
+  sessionId: ID;
+  parentAgentId?: ID;
+  profile: Pick<ActionProfile, 'id' | 'version'>;
+  target: string;
+  scope: Record<string, unknown>;
+  capabilities: string[];
+  network: { mode: 'none' | 'allowlist'; hosts?: string[] };
+  argsHash: string;
+  /** Bounded, non-secret description; raw arguments never enter the ledger. */
+  argsSummary?: string;
+  idempotencyKey: string;
+  dryRun: boolean;
+  deadline: string;
+}
+
+export interface ActionReceipt {
+  actionId: ID;
+  runId: ID;
+  ok: boolean;
+  effect: ActionEffect;
+  target: string;
+  idempotencyKey: string;
+  replayed: boolean;
+  evidence: Evidence[];
+  diagnostics?: string;
+}
+
+export interface ActionAdapterResult {
+  ok: boolean;
+  output?: unknown;
+  error?: string;
+  receipt?: Record<string, unknown>;
+  evidence?: Evidence[];
+}
+
+export interface ActionAdapter {
+  readonly id: string;
+  execute(request: ActionRequest): Promise<ActionAdapterResult>;
+}
+
+export interface ActionPolicyResult {
+  decision: ActionDecision;
+  reason: string;
+}
+
+export interface ActionGatewayOptions {
+  store: EventStore;
+  policy?: (request: ActionRequest) => Promise<ActionPolicyResult> | ActionPolicyResult;
+  clock?: RuntimeClock;
+  ids?: RuntimeIdFactory;
+}
+
+export type ActionExecutionStatus = 'approval_required' | 'denied' | 'executed' | 'failed' | 'unknown';
+
+export interface ActionExecutionResult {
+  status: ActionExecutionStatus;
+  actionId: ID;
+  approvalId?: ID;
+  ok: boolean;
+  output?: unknown;
+  error?: string;
+  receipt?: Record<string, unknown>;
+  evidence?: Evidence[];
+  replayed?: boolean;
+}
+
 export interface VerifierInput {
   task: Task;
   run: Run;
@@ -454,6 +536,11 @@ export type EventType =
   | 'policy.decision'
   | 'approval.requested'
   | 'approval.decided'
+  | 'action.requested'
+  | 'action.approval_required'
+  | 'action.approved'
+  | 'action.denied'
+  | 'action.receipt'
   | 'tool.call'
   | 'tool.receipt'
   | 'step.observation'
@@ -573,6 +660,7 @@ export interface RuntimeOptions {
   leaseDurationMs?: number;
   approvalTtlMs?: number;
   artifactStore?: ArtifactStore;
+  actionGateway?: import('./action-gateway.js').ActionGateway;
 }
 
 export type RuntimeEventListener = (event: DomainEvent) => void;
