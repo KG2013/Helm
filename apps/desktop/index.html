@@ -1,10 +1,22 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark" data-style="precision">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#09111f" />
+    <meta name="theme-color" content="#0e0f11" />
     <title>Helm — Local AI Workbench</title>
+    <script>
+      ;(function () {
+        try {
+          var theme = localStorage.getItem('helm.theme')
+          if (theme !== 'light' && theme !== 'dark') theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+          var style = localStorage.getItem('helm.style')
+          if (style !== 'precision' && style !== 'atelier') style = 'precision'
+          document.documentElement.dataset.theme = theme
+          document.documentElement.dataset.style = style
+        } catch (error) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

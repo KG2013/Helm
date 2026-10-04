@@ -1,0 +1,311 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Helm 当前系统架构",
+    "locale": "zh-CN",
+    "output": "helm-current-architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1360,
+      700
+    ],
+    "views": [
+      {
+        "id": "desktop-path",
+        "label": "桌面请求路径",
+        "focus": [
+          "desktop-renderer",
+          "desktop-main",
+          "runtime",
+          "provider-adapter",
+          "remote-llm"
+        ],
+        "note": "桌面输入经过 IPC、Runtime 到远程模型。"
+      },
+      {
+        "id": "cli-path",
+        "label": "CLI 请求路径",
+        "focus": [
+          "cli",
+          "runtime",
+          "provider-adapter",
+          "remote-llm"
+        ],
+        "note": "CLI 直接调用同一个 Runtime。"
+      },
+      {
+        "id": "control-evidence",
+        "label": "控制与验收",
+        "focus": [
+          "runtime",
+          "tool-policy",
+          "event-ledger",
+          "verifier",
+          "keychain"
+        ],
+        "note": "Runtime 集中管理策略、事件账本、验收和凭据读取。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "desktop-renderer",
+      "type": "frontend",
+      "label": "Electron Renderer",
+      "sublabel": "React 三栏 UI",
+      "tag": "已实现",
+      "pos": [
+        40,
+        250
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "cli",
+      "type": "frontend",
+      "label": "CLI",
+      "sublabel": "@helm/cli",
+      "tag": "已实现",
+      "pos": [
+        40,
+        430
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "desktop-main",
+      "type": "backend",
+      "label": "Electron Main + IPC",
+      "sublabel": "preload / 请求校验",
+      "tag": "已实现",
+      "pos": [
+        300,
+        250
+      ],
+      "size": [
+        220,
+        76
+      ]
+    },
+    {
+      "id": "runtime",
+      "type": "backend",
+      "label": "TypeScript Runtime",
+      "sublabel": "Task / Session / Run",
+      "tag": "核心",
+      "pos": [
+        590,
+        250
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "tool-policy",
+      "type": "security",
+      "label": "ToolPolicy / Executor",
+      "sublabel": "默认拒绝 + 审批",
+      "tag": "真实工具待接",
+      "pos": [
+        820,
+        430
+      ],
+      "size": [
+        230,
+        76
+      ]
+    },
+    {
+      "id": "event-ledger",
+      "type": "database",
+      "label": "Event Ledger",
+      "sublabel": "InMemoryEventStore",
+      "tag": "进程内",
+      "pos": [
+        590,
+        430
+      ],
+      "size": [
+        210,
+        76
+      ]
+    },
+    {
+      "id": "verifier",
+      "type": "backend",
+      "label": "Verifier",
+      "sublabel": "文本非空验收",
+      "tag": "演示级",
+      "pos": [
+        1070,
+        430
+      ],
+      "size": [
+        210,
+        76
+      ]
+    },
+    {
+      "id": "provider-adapter",
+      "type": "backend",
+      "label": "Provider Adapter",
+      "sublabel": "OpenAI-compatible HTTP",
+      "tag": "Kimi 可用",
+      "pos": [
+        880,
+        250
+      ],
+      "size": [
+        210,
+        76
+      ]
+    },
+    {
+      "id": "remote-llm",
+      "type": "cloud",
+      "label": "远程 LLM API",
+      "sublabel": "DeepSeek / 智谱 / Kimi",
+      "tag": "外部服务",
+      "pos": [
+        1140,
+        250
+      ],
+      "size": [
+        200,
+        76
+      ]
+    },
+    {
+      "id": "keychain",
+      "type": "security",
+      "label": "macOS Keychain",
+      "sublabel": "Kimi Code 凭据",
+      "tag": "已接入",
+      "pos": [
+        880,
+        100
+      ],
+      "size": [
+        210,
+        76
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "renderer-ipc",
+      "from": "desktop-renderer",
+      "to": "desktop-main",
+      "label": "IPC",
+      "variant": "emphasis",
+      "labelDy": -32
+    },
+    {
+      "id": "cli-runtime",
+      "from": "cli",
+      "to": "runtime",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "bottom"
+    },
+    {
+      "id": "main-runtime",
+      "from": "desktop-main",
+      "to": "runtime",
+      "label": "run / control",
+      "variant": "emphasis",
+      "labelDy": -43
+    },
+    {
+      "id": "runtime-provider",
+      "from": "runtime",
+      "to": "provider-adapter",
+      "label": "chat",
+      "variant": "emphasis",
+      "labelDy": -38
+    },
+    {
+      "id": "provider-remote",
+      "from": "provider-adapter",
+      "to": "remote-llm",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "keychain-provider",
+      "from": "keychain",
+      "to": "provider-adapter",
+      "label": "getApiKey",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDx": 70,
+      "labelDy": 24
+    },
+    {
+      "id": "runtime-events",
+      "from": "runtime",
+      "to": "event-ledger",
+      "label": "events",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDx": 75,
+      "labelDy": 24
+    },
+    {
+      "id": "runtime-policy",
+      "from": "runtime",
+      "to": "tool-policy",
+      "label": "proposal / policy",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDx": 95
+    },
+    {
+      "id": "runtime-verifier",
+      "from": "runtime",
+      "to": "verifier",
+      "label": "text → passed / unknown",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDx": 120
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "当前主路径",
+      "items": [
+        "桌面 Renderer → typed preload/IPC → Electron Main → Runtime；CLI 直接进入同一 Runtime。",
+        "Runtime 调用默认 Mock Provider，也可通过 Keychain-backed Kimi Code 发起真实文本请求。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Runtime 控制与证据",
+      "items": [
+        "Task/Session/Run、审批、事件回放、ToolPolicy 默认拒绝和 needs_reconciliation 分支已实现并测试。",
+        "Verifier 当前只检查最终文本非空；Event Ledger 仍是进程内存储。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "待接入边界",
+      "items": [
+        "真实工具、路径 guard、sandbox、Python Office worker、SQLite 重启恢复和 Artifact/Diff 尚未接入。",
+        "DeepSeek/智谱真实联调、流式上下文与完整工具结果回传仍待后续切片。"
+      ]
+    }
+  ]
+}

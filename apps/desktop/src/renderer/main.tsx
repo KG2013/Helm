@@ -1,139 +1,112 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { buildRunProjection, reduceRunEvents } from '@helm/runtime'
+import { buildRunProjection, reduceRunEvents } from '@helm/runtime/browser'
 import type { DomainEvent, ExperienceCandidate, Run, Session, Task } from '@helm/runtime'
 import type { RunEventPayload, RunSnapshot } from '../shared/ipc.js'
 import './styles.css'
 
-type ChatMessage = {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  source: 'task' | 'runtime'
-  status?: 'failed'
-}
-
+type Theme = 'light' | 'dark'
+type StylePreset = 'precision' | 'atelier'
+type ChatMessage = { id: string; role: 'user' | 'assistant'; content: string; source: 'task' | 'runtime'; status?: 'failed' }
 type TimelineState = 'done' | 'running' | 'queued' | 'failed'
 type TimelineStep = { id: string; label: string; detail: string; state: TimelineState }
 type PendingApproval = { approvalId: string; reason: string; call: { name: string; arguments: Record<string, unknown> } }
+type WorkItemKind = 'runtime' | 'read' | 'command' | 'edit' | 'verify'
+type WorkItemState = 'running' | 'done' | 'failed'
+type WorkItem = { id: string; kind: WorkItemKind; title: string; detail: string; state: WorkItemState }
 
 const TERMINAL_STATES: Run['state'][] = ['completed', 'failed', 'cancelled', 'needs_reconciliation']
-
-function Icon({ name }: { name: 'folder' | 'plus' | 'chevron' | 'code' | 'check' | 'clock' | 'shield' | 'spark' | 'more' | 'search' | 'send' | 'terminal' }) {
-  const paths: Record<string, string> = {
-    folder: 'M3 6.5A1.5 1.5 0 0 1 4.5 5H10l2 2h7.5A1.5 1.5 0 0 1 21 8.5v8A1.5 1.5 0 0 1 19.5 18h-15A1.5 1.5 0 0 1 3 16.5z',
-    plus: 'M12 5v14M5 12h14',
-    chevron: 'm9 18 6-6-6-6',
-    code: 'm8 9-3 3 3 3m8-6 3 3-3 3m-4-9-2 12',
-    check: 'm5 12 4 4L19 6',
-    clock: 'M12 7v5l3 2M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z',
-    shield: 'M12 3 19 6v5c0 4.6-3 8-7 10-4-2-7-5.4-7-10V6zM9 12l2 2 4-4',
-    spark: 'm12 3 1.4 5.6L19 10l-5.6 1.4L12 17l-1.4-5.6L5 10l5.6-1.4zM19 17v4M17 19h4',
-    more: 'M6 12h.01M12 12h.01M18 12h.01',
-    search: 'm20 20-4.3-4.3m2.3-5.2a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0z',
-    send: 'm21 3-7.2 18-3.8-7-7-3.8zM10 14l4-4',
-    terminal: 'm5 7 5 5-5 5m7 0h7',
-  }
-  return <svg className="icon" viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>
+const ICON_PATHS: Record<string, string> = {
+  folder: 'M3 6.5A1.5 1.5 0 0 1 4.5 5H10l2 2h7.5A1.5 1.5 0 0 1 21 8.5v8A1.5 1.5 0 0 1 19.5 18h-15A1.5 1.5 0 0 1 3 16.5z',
+  plus: 'M12 5v14M5 12h14', chevron: 'm9 18 6-6-6-6', code: 'm8 9-3 3 3 3m8-6 3 3-3 3m-4-9-2 12',
+  check: 'm5 12 4 4L19 6', clock: 'M12 7v5l3 2M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z',
+  shield: 'M12 3 19 6v5c0 4.6-3 8-7 10-4-2-7-5.4-7-10V6zM9 12l2 2 4-4',
+  spark: 'm12 3 1.4 5.6L19 10l-5.6 1.4L12 17l-1.4-5.6L5 10l5.6-1.4zM19 17v4M17 19h4',
+  more: 'M6 12h.01M12 12h.01M18 12h.01', search: 'm20 20-4.3-4.3m2.3-5.2a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0z',
+  send: 'M12 19V5m-7 7 7-7 7 7', terminal: 'm5 7 5 5-5 5m7 0h7', sun: 'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0-14v2m0 12v2M4.2 4.2l1.4 1.4m12.8 12.8 1.4 1.4M2 12h2m16 0h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4',
+  moon: 'M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5Z', bulb: 'M9.5 18h5m-4.5 3h4M12 3a6 6 0 0 0-3.6 10.8c.8.7 1.1 1.4 1.1 2.2h5c0-.8.3-1.5 1.1-2.2A6 6 0 0 0 12 3Z',
+  file: 'M14 3H7a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 7 21h10a1.5 1.5 0 0 0 1.5-1.5V7.5L14 3Zm0 0v4.5h4.5', pencil: 'M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z',
+  pause: 'M9 5v14M15 5v14', play: 'm7 4 13 8-13 8V4Z', gear: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm7.5-3a7.5 7.5 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-2-1.2L14.5 3h-5L9 5.6a7.6 7.6 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7.7 7.7 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 2 1.2L9.5 21h5l.5-2.6a7.6 7.6 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.06-.4.1-.8.1-1.2Z',
+  x: 'M6 6l12 12M18 6 6 18', 'panel-left': 'M4.5 5h15A1.5 1.5 0 0 1 21 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-11A1.5 1.5 0 0 1 4.5 5ZM9.5 5v14', 'panel-right': 'M4.5 5h15A1.5 1.5 0 0 1 21 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-11A1.5 1.5 0 0 1 4.5 5ZM14.5 5v14',
 }
+function Icon({ name, className = '' }: { name: keyof typeof ICON_PATHS; className?: string }) { return <svg className={`icon ${className}`} viewBox="0 0 24 24" aria-hidden="true"><path d={ICON_PATHS[name]} /></svg> }
 
-function eventPayload(event: DomainEvent): Record<string, unknown> {
-  return event.payload as Record<string, unknown>
+function applyAppearance(theme: Theme, stylePreset: StylePreset) {
+  document.documentElement.dataset.theme = theme
+  document.documentElement.dataset.style = stylePreset
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0e0f11' : '#f5f5f3')
 }
-
-function isTerminal(state: Run['state'] | undefined): boolean {
-  return state ? TERMINAL_STATES.includes(state) : false
-}
-
-/** Project a run from the same event ledger that drives the chat messages. */
+function eventPayload(event: DomainEvent): Record<string, unknown> { return event.payload as Record<string, unknown> }
+function isTerminal(state: Run['state'] | undefined): boolean { return state ? TERMINAL_STATES.includes(state) : false }
 function projectRun(events: readonly DomainEvent[], fallback?: Run): Run | undefined {
-  if (events.some((event) => event.type === 'run.created')) {
-    try {
-      return reduceRunEvents(events)
-    } catch {
-      // A partial event stream can arrive before run.created. Keep the last snapshot until it is complete.
-    }
-  }
+  if (events.some((event) => event.type === 'run.created')) { try { return reduceRunEvents(events) } catch { /* wait for a complete event batch */ } }
   return fallback
 }
-
 function timeline(run: Run | undefined): TimelineStep[] {
-  if (!run) {
-    return [
-      { id: 'task', label: 'Accept request', detail: 'Waiting for a task', state: 'queued' },
-      { id: 'provider', label: 'Run provider', detail: 'Waiting for Runtime', state: 'queued' },
-      { id: 'verify', label: 'Verify output', detail: 'Waiting for a Run', state: 'queued' },
-      { id: 'deliver', label: 'Report result', detail: 'Waiting for output', state: 'queued' },
-    ]
-  }
-
+  if (!run) return [{ id: 'task', label: 'Accept request', detail: 'Waiting for a task', state: 'queued' }, { id: 'provider', label: 'Run provider', detail: 'Waiting for Runtime', state: 'queued' }, { id: 'verify', label: 'Verify output', detail: 'Waiting for a Run', state: 'queued' }, { id: 'deliver', label: 'Report result', detail: 'Waiting for output', state: 'queued' }]
   const failed = ['failed', 'cancelled', 'needs_reconciliation'].includes(run.state)
   const providerState: TimelineState = run.state === 'completed' || run.steps > 0 ? 'done' : failed ? 'failed' : 'running'
-  const verificationState: TimelineState = run.state === 'completed'
-    ? 'done'
-    : failed
-      ? 'failed'
-      : ['verifying', 'reducing'].includes(run.state)
-        ? 'running'
-        : 'queued'
-  const deliveryState: TimelineState = run.state === 'completed' ? 'done' : failed ? 'failed' : 'queued'
-
-  return [
-    { id: 'task', label: 'Accept request', detail: `Task ${run.taskId}`, state: 'done' },
-    { id: 'provider', label: 'Run provider', detail: providerState === 'done' ? `${run.steps} step${run.steps === 1 ? '' : 's'}` : run.state, state: providerState },
-    { id: 'verify', label: 'Verify output', detail: run.verification?.result ?? run.state, state: verificationState },
-    { id: 'deliver', label: 'Report result', detail: run.state, state: deliveryState },
-  ]
+  const verificationState: TimelineState = run.state === 'completed' ? 'done' : failed ? 'failed' : ['verifying', 'reducing'].includes(run.state) ? 'running' : 'queued'
+  return [{ id: 'task', label: 'Accept request', detail: `Task ${run.taskId}`, state: 'done' }, { id: 'provider', label: 'Run provider', detail: providerState === 'done' ? `${run.steps} step${run.steps === 1 ? '' : 's'}` : run.state, state: providerState }, { id: 'verify', label: 'Verify output', detail: run.verification?.result ?? run.state, state: verificationState }, { id: 'deliver', label: 'Report result', detail: run.state, state: run.state === 'completed' ? 'done' : failed ? 'failed' : 'queued' }]
 }
-
 function messagesFromLedger(task: Task | undefined, run: Run | undefined, events: readonly DomainEvent[]): ChatMessage[] {
   if (!task) return []
   const messages: ChatMessage[] = [{ id: `task:${task.id}`, role: 'user', content: task.goal, source: 'task' }]
-  const terminalMessages = events
-    .filter((event) => event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.needs_reconciliation')
-    .map((event): ChatMessage | undefined => {
-      const payload = eventPayload(event)
-      if (event.type === 'run.completed' && typeof payload.output === 'string') {
-        return { id: event.id, role: 'assistant', content: payload.output, source: 'runtime' }
-      }
-      const detail = typeof payload.error === 'string' ? payload.error : typeof payload.reason === 'string' ? payload.reason : undefined
-      if (!detail) return undefined
-      return { id: event.id, role: 'assistant', content: detail, source: 'runtime', status: 'failed' }
-    })
-    .filter((message): message is ChatMessage => Boolean(message))
-
-  // The completed event is authoritative. The fallback only covers an already materialized snapshot
-  // whose event batch is still being backfilled, and is keyed by the run so it cannot duplicate output.
-  if (terminalMessages.length === 0 && run?.finalOutput) {
-    terminalMessages.push({ id: `run-output:${run.id}`, role: 'assistant', content: run.finalOutput, source: 'runtime' })
-  }
+  const terminalMessages = events.filter((event) => event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.needs_reconciliation').map((event): ChatMessage | undefined => {
+    const payload = eventPayload(event)
+    if (event.type === 'run.completed' && typeof payload.output === 'string') return { id: event.id, role: 'assistant', content: payload.output, source: 'runtime' }
+    const detail = typeof payload.error === 'string' ? payload.error : typeof payload.reason === 'string' ? payload.reason : undefined
+    return detail ? { id: event.id, role: 'assistant', content: detail, source: 'runtime', status: 'failed' } : undefined
+  }).filter((message): message is ChatMessage => Boolean(message))
+  if (terminalMessages.length === 0 && run?.finalOutput) terminalMessages.push({ id: `run-output:${run.id}`, role: 'assistant', content: run.finalOutput, source: 'runtime' })
   return [...messages, ...terminalMessages]
 }
-
 function pendingApproval(events: readonly DomainEvent[]): PendingApproval | undefined {
   const decided = new Set<string>()
-  for (const event of events) {
-    if (event.type === 'approval.decided') {
-      const approvalId = eventPayload(event).approvalId
-      if (typeof approvalId === 'string') decided.add(approvalId)
-    }
-  }
+  for (const event of events) if (event.type === 'approval.decided' && typeof eventPayload(event).approvalId === 'string') decided.add(eventPayload(event).approvalId as string)
   for (const event of [...events].reverse()) {
     if (event.type !== 'approval.requested') continue
-    const payload = eventPayload(event)
-    const approvalId = payload.approvalId
-    const call = payload.call
-    if (typeof approvalId !== 'string' || decided.has(approvalId) || !call || typeof call !== 'object') continue
-    const callRecord = call as Record<string, unknown>
-    if (typeof callRecord.name !== 'string' || !callRecord.arguments || typeof callRecord.arguments !== 'object') continue
-    return { approvalId, reason: typeof payload.reason === 'string' ? payload.reason : 'Runtime requests approval.', call: { name: callRecord.name, arguments: callRecord.arguments as Record<string, unknown> } }
+    const payload = eventPayload(event); const call = payload.call
+    if (typeof payload.approvalId !== 'string' || decided.has(payload.approvalId) || !call || typeof call !== 'object') continue
+    const record = call as Record<string, unknown>
+    if (typeof record.name !== 'string' || !record.arguments || typeof record.arguments !== 'object') continue
+    return { approvalId: payload.approvalId, reason: typeof payload.reason === 'string' ? payload.reason : 'Runtime requests approval.', call: { name: record.name, arguments: record.arguments as Record<string, unknown> } }
   }
   return undefined
+}
+function workItemsFromLedger(run: Run | undefined, events: readonly DomainEvent[]): WorkItem[] {
+  if (!run) return []
+  const completedSteps = new Set(events.filter((event) => event.type === 'step.completed').map((event) => String(eventPayload(event).stepId ?? eventPayload(event).index)))
+  return events.flatMap((event): WorkItem[] => {
+    const payload = eventPayload(event); const index = typeof payload.index === 'number' ? payload.index : undefined
+    if (event.type === 'run.created') return [{ id: event.id, kind: 'runtime', title: 'Accept request', detail: 'Task accepted by Runtime', state: 'done' }]
+    if (event.type === 'step.started') return [{ id: event.id, kind: 'runtime', title: `Run provider · step ${index ?? ''}`.trim(), detail: typeof payload.stepId === 'string' ? payload.stepId : run.state, state: completedSteps.has(String(payload.stepId ?? index)) ? 'done' : isTerminal(run.state) ? 'failed' : 'running' }]
+    if (event.type === 'step.proposal') { const proposal = payload.proposal as Record<string, unknown> | undefined; const kind = proposal?.kind === 'tool_call' ? 'command' : 'runtime'; const detail = proposal?.kind === 'tool_call' ? String(proposal.name ?? 'tool call') : proposal?.kind === 'final' ? 'Final response proposed' : 'Provider proposal'; return [{ id: event.id, kind, title: `Provider proposal · step ${index ?? ''}`.trim(), detail, state: 'done' }] }
+    if (event.type === 'policy.decision') return [{ id: event.id, kind: 'runtime', title: 'Tool policy decision', detail: `${String(payload.decision ?? 'unknown')}${payload.reason ? ` · ${String(payload.reason)}` : ''}`, state: payload.decision === 'deny' ? 'failed' : 'done' }]
+    if (event.type === 'approval.requested') return [{ id: event.id, kind: 'edit', title: 'Approval requested', detail: typeof payload.reason === 'string' ? payload.reason : 'Runtime is waiting for approval', state: pendingApproval(events)?.approvalId === payload.approvalId ? 'running' : 'done' }]
+    if (event.type === 'approval.decided') return [{ id: event.id, kind: 'edit', title: 'Approval decided', detail: String(payload.decision ?? 'recorded'), state: payload.decision === 'deny' ? 'failed' : 'done' }]
+    if (event.type === 'tool.call') return [{ id: event.id, kind: 'command', title: `Tool call · ${String(payload.name ?? 'unknown')}`, detail: payload.arguments && typeof payload.arguments === 'object' ? JSON.stringify(payload.arguments) : 'Tool proposal sent to executor', state: 'done' }]
+    if (event.type === 'tool.receipt') return [{ id: event.id, kind: 'command', title: 'Tool execution receipt', detail: typeof payload.error === 'string' ? payload.error : 'Receipt recorded', state: payload.ok === false ? 'failed' : 'done' }]
+    if (event.type === 'verification.result') return [{ id: event.id, kind: 'verify', title: 'Verify output', detail: typeof (payload.verification as Record<string, unknown> | undefined)?.result === 'string' ? String((payload.verification as Record<string, unknown>).result) : 'Verification recorded', state: run.state === 'failed' ? 'failed' : 'done' }]
+    if (event.type === 'run.completed') return [{ id: event.id, kind: 'verify', title: 'Report result', detail: 'Run completed', state: 'done' }]
+    if (event.type === 'run.failed' || event.type === 'run.needs_reconciliation' || event.type === 'run.cancelled') return [{ id: event.id, kind: 'runtime', title: event.type.replace('run.', 'Run '), detail: String(payload.error ?? payload.reason ?? run.state), state: 'failed' }]
+    return []
+  })
+}
+
+type SettingsSection = 'appearance' | 'provider' | 'permissions' | 'about'
+type Policy = 'allow' | 'ask' | 'deny'
+const SETTINGS_NAV: { id: SettingsSection; label: string; icon: keyof typeof ICON_PATHS }[] = [{ id: 'appearance', label: 'Appearance', icon: 'sun' }, { id: 'provider', label: 'Model & Provider', icon: 'spark' }, { id: 'permissions', label: 'Permissions', icon: 'shield' }, { id: 'about', label: 'About', icon: 'more' }]
+const PROVIDERS = [{ id: 'mock', name: 'Mock Provider', detail: 'Deterministic local responses · no network', badge: 'Default' }, { id: 'kimi', name: 'Kimi Code', detail: 'kimi-for-coding · API key in Keychain', badge: 'Keychain' }, { id: 'openai', name: 'OpenAI-compatible', detail: 'Provider adapter · configuration required', badge: 'Optional' }]
+const TOOL_POLICIES: { tool: string; scope: string; policy: Policy }[] = [{ tool: 'fs.read', scope: 'Read files inside the workspace', policy: 'allow' }, { tool: 'fs.write', scope: 'Create or modify files inside the workspace', policy: 'ask' }, { tool: 'shell.exec', scope: 'Run shell commands (pnpm, git, tests)', policy: 'ask' }, { tool: 'network.http', scope: 'Outbound HTTP requests from tools', policy: 'deny' }]
+function Settings({ onClose, theme, setTheme, stylePreset, setStylePreset, runtime }: { onClose: () => void; theme: Theme; setTheme: (theme: Theme) => void; stylePreset: StylePreset; setStylePreset: (preset: StylePreset) => void; runtime: string }) {
+  const [section, setSection] = useState<SettingsSection>('appearance'); const [provider, setProvider] = useState('mock'); const [policies, setPolicies] = useState<Record<string, Policy>>(() => Object.fromEntries(TOOL_POLICIES.map((row) => [row.tool, row.policy])))
+  return <div className="settings-overlay" onClick={onClose}><div className="settings-modal" role="dialog" aria-label="Settings" onClick={(event) => event.stopPropagation()}><nav className="settings-nav"><div className="settings-title">Settings</div>{SETTINGS_NAV.map((item) => <button className={`settings-nav-item ${section === item.id ? 'active' : ''}`} key={item.id} onClick={() => setSection(item.id)}><Icon name={item.icon} /> {item.label}</button>)}</nav><div className="settings-content"><div className="settings-content-head"><h3>{SETTINGS_NAV.find((item) => item.id === section)?.label}</h3><button className="icon-button" aria-label="Close settings" onClick={onClose}><Icon name="x" /></button></div>{section === 'appearance' && <><div className="settings-row"><div><strong>Theme</strong><p>Applied to the whole workbench.</p></div><div className="seg"><button className={`seg-option ${theme === 'light' ? 'active' : ''}`} onClick={() => setTheme('light')}>Light</button><button className={`seg-option ${theme === 'dark' ? 'active' : ''}`} onClick={() => setTheme('dark')}>Dark</button></div></div><div className="settings-row"><div><strong>Style preset</strong><p>Precision is neutral and compact; Atelier is softer with a violet accent.</p></div><div className="seg"><button className={`seg-option ${stylePreset === 'precision' ? 'active' : ''}`} onClick={() => setStylePreset('precision')}>Precision</button><button className={`seg-option ${stylePreset === 'atelier' ? 'active' : ''}`} onClick={() => setStylePreset('atelier')}>Atelier</button></div></div></>}{section === 'provider' && <><div className="settings-note">Real provider calls stay inside adapters; API keys are stored in the OS Keychain and never enter the repo or diagnostics.</div>{PROVIDERS.map((item) => <button className={`provider-row ${provider === item.id ? 'active' : ''}`} key={item.id} onClick={() => setProvider(item.id)}><span className={`provider-radio ${provider === item.id ? 'on' : ''}`} /><span className="provider-copy"><strong>{item.name}</strong><span>{item.detail}</span></span><span className="provider-badge">{item.badge}</span></button>)}<div className="settings-row"><div><strong>Runtime</strong><p>Current connection: {runtime}.</p></div></div></>}{section === 'permissions' && <><div className="settings-note">Tool proposals pass ToolPolicy before the executor; anything not listed here is denied by default. Approvals bind to the concrete action and scope.</div>{TOOL_POLICIES.map((row) => <div className="settings-row" key={row.tool}><div><strong className="mono">{row.tool}</strong><p>{row.scope}</p></div><div className="seg">{(['allow', 'ask', 'deny'] as const).map((policy) => <button className={`seg-option policy-${policy} ${policies[row.tool] === policy ? 'active' : ''}`} key={policy} onClick={() => setPolicies((previous) => ({ ...previous, [row.tool]: policy }))}>{policy}</button>)}</div></div>)}</>}{section === 'about' && <><div className="settings-row"><div><strong>Version</strong><p>@helm/desktop 0.1.0 · Runtime workbench</p></div></div><div className="settings-row"><div><strong>Runtime</strong><p>{runtime} · Provider selection is controlled by the desktop process.</p></div></div><div className="settings-row"><div><strong>Scope</strong><p>P0: personal local, single agent, coding + DOCX/XLSX/PDF.</p></div></div></>}</div></div></div>
 }
 
 function CodingEvidence({ delivery, verification }: { delivery: NonNullable<RunSnapshot['projection']['codingDelivery']>; verification: RunSnapshot['projection']['verification'] }) {
   const conflicts = delivery.conflicts
-  return <div className="coding-evidence" data-testid="coding-evidence">
+  return <div className="rail-section coding-evidence" data-testid="coding-evidence">
     <div className="section-heading"><span>CODING EVIDENCE</span><span className={delivery.ready ? 'evidence-state ready' : 'evidence-state blocked'}>{delivery.ready ? 'ready' : 'blocked'}</span></div>
     <div className="coding-detail-card">
       <div className="coding-detail-meta"><span>Files</span><code>{delivery.changedFiles.join(', ') || 'No changed files'}</code></div>
@@ -146,259 +119,30 @@ function CodingEvidence({ delivery, verification }: { delivery: NonNullable<RunS
 }
 
 function App() {
+  const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark')
+  const [stylePreset, setStylePreset] = useState<StylePreset>(() => document.documentElement.dataset.style === 'atelier' ? 'atelier' : 'precision')
   const [runtime, setRuntime] = useState('local runtime')
-  const [task, setTask] = useState<Task>()
-  const [session, setSession] = useState<Session>()
-  const [run, setRun] = useState<Run>()
-  const [events, setEvents] = useState<DomainEvent[]>([])
-  const [projection, setProjection] = useState<RunSnapshot['projection']>()
-  const [history, setHistory] = useState<ChatMessage[]>([])
-  const [inputValue, setInputValue] = useState('')
-  const [error, setError] = useState<string>()
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [controlPending, setControlPending] = useState(false)
-  const [candidates, setCandidates] = useState<ExperienceCandidate[]>([])
-  const [candidateError, setCandidateError] = useState<string>()
-  const [candidatePending, setCandidatePending] = useState<string>()
-
-  const activeRunIdRef = useRef<string | undefined>(undefined)
-  const submittingRef = useRef(false)
-  const snapshotRequestRef = useRef(0)
-  const ledgersRef = useRef(new Map<string, Map<string, DomainEvent>>())
-
-  const mergeEvents = useCallback((runId: string, incoming: readonly DomainEvent[]): DomainEvent[] => {
-    const ledger = ledgersRef.current.get(runId) ?? new Map<string, DomainEvent>()
-    const existingSequences = new Set(Array.from(ledger.values(), (event) => event.sequence))
-    for (const event of incoming) {
-      if (event.runId && event.runId !== runId) continue
-      if (ledger.has(event.id) || existingSequences.has(event.sequence)) continue
-      // Runtime sequences are monotonic per run. An unseen lower sequence is still
-      // accepted so a snapshot can backfill an event that arrived after a live event.
-      ledger.set(event.id, event)
-      existingSequences.add(event.sequence)
-    }
-    ledgersRef.current.set(runId, ledger)
-    return Array.from(ledger.values()).sort((left, right) => left.sequence - right.sequence)
-  }, [])
-
-  const applySnapshot = useCallback((snapshot: RunSnapshot, requestId: number) => {
-    if (activeRunIdRef.current !== snapshot.run.id || snapshotRequestRef.current !== requestId) return
-    const merged = mergeEvents(snapshot.run.id, snapshot.events)
-    setTask(snapshot.task)
-    setSession(snapshot.session)
-    setProjection(snapshot.projection)
-    setEvents(merged)
-    setRun((previous) => projectRun(merged, snapshot.run) ?? previous ?? snapshot.run)
-  }, [mergeEvents])
-
-  const refreshSnapshot = useCallback(async (runId: string, requestId: number) => {
-    try {
-      const snapshot = await window.helm?.getRunSnapshot(runId)
-      if (snapshot) applySnapshot(snapshot, requestId)
-    } catch (cause) {
-      if (activeRunIdRef.current === runId && snapshotRequestRef.current === requestId) {
-        setError(cause instanceof Error ? cause.message : 'Unable to load the Run snapshot.')
-      }
-    }
-  }, [applySnapshot])
-
-  useEffect(() => {
-    const bridge = window.helm
-    if (!bridge) {
-      setRuntime('browser preview')
-      return undefined
-    }
-    void bridge.runtimeInfo()
-      .then((info) => {
-        const missing = info.officePreflight?.missing ?? []
-        const office = info.officePreflight ? ` · Office ${info.officePreflight.version}${missing.length > 0 ? ` · missing ${missing.join(', ')}` : ' · deps ready'}` : ''
-        setRuntime(`${info.platform} · ${info.isPackaged ? 'packaged' : 'dev'}${office}`)
-      })
-      .catch(() => setRuntime('local runtime · unavailable'))
-
-    const unsubscribe = bridge.subscribe((payload: RunEventPayload) => {
-      const runId = payload.runId
-      // Events are broadcast to every renderer. Only the selected Run may mutate this view.
-      if (!runId || runId !== activeRunIdRef.current) return
-      const merged = mergeEvents(runId, [payload])
-      setEvents(merged)
-      setRun((previous) => {
-        const next = projectRun(merged, previous) ?? previous
-        setProjection(buildRunProjection(merged, next))
-        return next
-      })
-    })
-    return unsubscribe
-  }, [mergeEvents])
-
-  useEffect(() => {
-    if (!window.helm) return undefined
-    void window.helm.listExperienceCandidates().then(setCandidates).catch((cause) => setCandidateError(cause instanceof Error ? cause.message : 'Unable to load Experience Candidates.'))
-    return undefined
-  }, [])
-
-  const steps = useMemo(() => timeline(run), [run])
-  const currentMessages = useMemo(() => messagesFromLedger(task, run, events), [events, run, task])
-  const messages = useMemo(() => [...history, ...currentMessages], [currentMessages, history])
-  const completedSteps = steps.filter((step) => step.state === 'done').length
-  const canSend = Boolean(inputValue.trim()) && !isSubmitting && (!run || isTerminal(run.state))
-  const verificationResult = run?.state === 'needs_reconciliation' ? 'needs_reconciliation' : run?.verification?.result ?? 'pending'
-  const approval = useMemo(() => pendingApproval(events), [events])
-  const codingDelivery = projection?.codingDelivery
-
-  async function sendMessage() {
-    const goal = inputValue.trim()
-    if (!goal || submittingRef.current || !canSend) return
-    const previousRunId = activeRunIdRef.current
-    submittingRef.current = true
-    setIsSubmitting(true)
-    setError(undefined)
-    // Stop old-run events from landing while the new IPC request is in flight.
-    activeRunIdRef.current = undefined
-    const requestId = ++snapshotRequestRef.current
-    try {
-      const response = await window.helm?.startRun({ goal, workspaceId: 'workspace-helm' })
-      if (!response) throw new Error('Desktop IPC is unavailable. Open Helm through Electron.')
-      activeRunIdRef.current = response.run.id
-      ledgersRef.current.set(response.run.id, new Map())
-      // Keep completed Run messages in the conversation when switching to the next Run.
-      // The execution card and right rail still follow only the newly selected Run.
-      if (task && run) {
-        setHistory((previous) => {
-          const known = new Set(previous.map((message) => message.id))
-          return [...previous, ...currentMessages.filter((message) => !known.has(message.id))]
-        })
-      }
-      setInputValue('')
-      setTask(response.task)
-      setSession(response.session)
-      setRun(response.run)
-      setProjection(undefined)
-      setEvents([])
-      await refreshSnapshot(response.run.id, requestId)
-    } catch (cause) {
-      activeRunIdRef.current = previousRunId
-      setError(cause instanceof Error ? cause.message : 'Unable to start the Run.')
-    } finally {
-      submittingRef.current = false
-      setIsSubmitting(false)
-    }
-  }
-
-  async function controlRun(action: 'pause' | 'resume' | 'cancel') {
-    if (!run || controlPending) return
-    setControlPending(true)
-    try {
-      const next = await window.helm?.controlRun({ runId: run.id, action })
-      if (next) setRun(next)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to control the Run.')
-    } finally {
-      setControlPending(false)
-    }
-  }
-
-  async function decideApproval(decision: 'approve' | 'deny') {
-    if (!run || !approval || controlPending) return
-    setControlPending(true)
-    try {
-      const next = await window.helm?.resolveApproval({ runId: run.id, approvalId: approval.approvalId, workspaceId: task?.workspaceId ?? 'workspace-helm', decision })
-      if (next) setRun(next)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to resolve the approval.')
-    } finally {
-      setControlPending(false)
-    }
-  }
-
-  async function reviewCandidate(candidate: ExperienceCandidate, action: 'approve' | 'reject' | 'revalidate') {
-    if (!window.helm || candidatePending) return
-    setCandidatePending(candidate.id)
-    setCandidateError(undefined)
-    try {
-      const reviewed = await window.helm.reviewExperienceCandidate({
-        candidateId: candidate.id,
-        action,
-        evidence: action === 'approve' ? candidate.validationEvidence ?? [] : undefined,
-        reviewerId: 'desktop-user',
-      })
-      setCandidates((previous) => previous.map((item) => item.id === reviewed.id ? reviewed : item))
-    } catch (cause) {
-      setCandidateError(cause instanceof Error ? cause.message : 'Unable to review Experience Candidate.')
-    } finally {
-      setCandidatePending(undefined)
-    }
-  }
-
-  const runStatus = run?.state ?? 'ready'
+  const [task, setTask] = useState<Task>(); const [session, setSession] = useState<Session>(); const [run, setRun] = useState<Run>(); const [events, setEvents] = useState<DomainEvent[]>([]); const [history, setHistory] = useState<ChatMessage[]>([]); const [projection, setProjection] = useState<RunSnapshot['projection']>()
+  const [inputValue, setInputValue] = useState(''); const [error, setError] = useState<string>(); const [isSubmitting, setIsSubmitting] = useState(false); const [controlPending, setControlPending] = useState(false); const [leftOpen, setLeftOpen] = useState(true); const [rightOpen, setRightOpen] = useState(true); const [settingsOpen, setSettingsOpen] = useState(false); const [groupOpen, setGroupOpen] = useState(true); const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set()); const [activeTab, setActiveTab] = useState<'evidence' | 'trace'>('evidence'); const [candidates, setCandidates] = useState<ExperienceCandidate[]>([]); const [candidateError, setCandidateError] = useState<string>(); const [candidatePending, setCandidatePending] = useState<string>()
+  const activeRunIdRef = useRef<string | undefined>(undefined); const submittingRef = useRef(false); const snapshotRequestRef = useRef(0); const ledgersRef = useRef(new Map<string, Map<string, DomainEvent>>()); const streamRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => { applyAppearance(theme, stylePreset); try { localStorage.setItem('helm.theme', theme); localStorage.setItem('helm.style', stylePreset) } catch { /* storage is optional */ } }, [theme, stylePreset])
+  useEffect(() => { const bridge = window.helm; if (!bridge) { setRuntime('browser preview'); return undefined }; void bridge.runtimeInfo().then((info) => { const missing = info.officePreflight?.missing ?? []; const office = info.officePreflight ? ` · Office ${info.officePreflight.version}${missing.length > 0 ? ` · missing ${missing.join(', ')}` : ' · deps ready'}` : ''; setRuntime(`${info.platform} · ${info.isPackaged ? 'packaged' : 'dev'}${office}`) }).catch(() => setRuntime('local runtime · unavailable')); const unsubscribe = bridge.subscribe((payload: RunEventPayload) => { if (!payload.runId || payload.runId !== activeRunIdRef.current) return; const merged = mergeEvents(payload.runId, [payload]); setEvents(merged); setRun((previous) => { const next = projectRun(merged, previous) ?? previous; setProjection(buildRunProjection(merged, next)); return next }) }); return unsubscribe }, [])
+  useEffect(() => { if (!window.helm) return undefined; void window.helm.listExperienceCandidates().then(setCandidates).catch((cause) => setCandidateError(cause instanceof Error ? cause.message : 'Unable to load Experience Candidates.')); return undefined }, [])
+  useEffect(() => { streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight }) }, [events, history, task, groupOpen])
+  useEffect(() => { const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') { setSettingsOpen(false); return }; if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'b') return; event.preventDefault(); if (event.altKey) setRightOpen((open) => !open); else setLeftOpen((open) => !open) }; window.addEventListener('keydown', onKeyDown); return () => window.removeEventListener('keydown', onKeyDown) }, [])
+  const mergeEvents = useCallback((runId: string, incoming: readonly DomainEvent[]): DomainEvent[] => { const ledger = ledgersRef.current.get(runId) ?? new Map<string, DomainEvent>(); const sequences = new Set(Array.from(ledger.values(), (event) => event.sequence)); for (const event of incoming) { if (event.runId && event.runId !== runId) continue; if (ledger.has(event.id) || sequences.has(event.sequence)) continue; ledger.set(event.id, event); sequences.add(event.sequence) }; ledgersRef.current.set(runId, ledger); return Array.from(ledger.values()).sort((left, right) => left.sequence - right.sequence) }, [])
+  const applySnapshot = useCallback((snapshot: RunSnapshot, requestId: number) => { if (activeRunIdRef.current !== snapshot.run.id || snapshotRequestRef.current !== requestId) return; const merged = mergeEvents(snapshot.run.id, snapshot.events); setTask(snapshot.task); setSession(snapshot.session); setProjection(snapshot.projection); setEvents(merged); setRun((previous) => projectRun(merged, snapshot.run) ?? previous ?? snapshot.run) }, [mergeEvents])
+  const refreshSnapshot = useCallback(async (runId: string, requestId: number) => { try { const snapshot = await window.helm?.getRunSnapshot(runId); if (snapshot) applySnapshot(snapshot, requestId) } catch (cause) { if (activeRunIdRef.current === runId && snapshotRequestRef.current === requestId) setError(cause instanceof Error ? cause.message : 'Unable to load the Run snapshot.') } }, [applySnapshot])
+  const steps = useMemo(() => timeline(run), [run]); const currentMessages = useMemo(() => messagesFromLedger(task, run, events), [events, run, task]); const messages = useMemo(() => [...history, ...currentMessages], [currentMessages, history]); const workItems = useMemo(() => workItemsFromLedger(run, events), [events, run]); const approval = useMemo(() => pendingApproval(events), [events]); const artifacts = projection?.artifacts ?? []; const codingDelivery = projection?.codingDelivery; const completedSteps = steps.filter((step) => step.state === 'done').length; const canSend = Boolean(inputValue.trim()) && !isSubmitting && (!run || isTerminal(run.state)); const verificationResult = run?.state === 'needs_reconciliation' ? 'needs_reconciliation' : run?.verification?.result ?? 'pending'; const isActive = Boolean(run && !isTerminal(run.state)); const runStatus = run?.state ?? 'ready'
+  async function sendMessage() { const goal = inputValue.trim(); if (!goal || submittingRef.current || !canSend) return; const previousRunId = activeRunIdRef.current; submittingRef.current = true; setIsSubmitting(true); setError(undefined); activeRunIdRef.current = undefined; const requestId = ++snapshotRequestRef.current; try { const response = await window.helm?.startRun({ goal, workspaceId: 'workspace-helm' }); if (!response) throw new Error('Desktop IPC is unavailable. Open Helm through Electron.'); activeRunIdRef.current = response.run.id; ledgersRef.current.set(response.run.id, new Map()); if (task && run) setHistory((previous) => { const known = new Set(previous.map((message) => message.id)); return [...previous, ...currentMessages.filter((message) => !known.has(message.id))] }); setInputValue(''); setTask(response.task); setSession(response.session); setRun(response.run); setProjection(undefined); setEvents([]); setGroupOpen(true); setExpandedIds(new Set()); await refreshSnapshot(response.run.id, requestId) } catch (cause) { activeRunIdRef.current = previousRunId; setError(cause instanceof Error ? cause.message : 'Unable to start the Run.') } finally { submittingRef.current = false; setIsSubmitting(false) } }
+  async function controlRun(action: 'pause' | 'resume' | 'cancel') { if (!run || controlPending) return; setControlPending(true); try { const next = await window.helm?.controlRun({ runId: run.id, action }); if (next) setRun(next) } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to control the Run.') } finally { setControlPending(false) } }
+  async function decideApproval(decision: 'approve' | 'deny') { if (!run || !approval || controlPending) return; setControlPending(true); try { const next = await window.helm?.resolveApproval({ runId: run.id, approvalId: approval.approvalId, workspaceId: task?.workspaceId ?? 'workspace-helm', decision }); if (next) setRun(next) } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to resolve the approval.') } finally { setControlPending(false) } }
+  async function reviewCandidate(candidate: ExperienceCandidate, action: 'approve' | 'reject' | 'revalidate') { if (!window.helm || candidatePending) return; setCandidatePending(candidate.id); setCandidateError(undefined); try { const reviewed = await window.helm.reviewExperienceCandidate({ candidateId: candidate.id, action, evidence: action === 'approve' ? candidate.validationEvidence ?? [] : undefined, reviewerId: 'desktop-user' }); setCandidates((previous) => previous.map((item) => item.id === reviewed.id ? reviewed : item)) } catch (cause) { setCandidateError(cause instanceof Error ? cause.message : 'Unable to review Experience Candidate.') } finally { setCandidatePending(undefined) } }
+  function newTask() { activeRunIdRef.current = undefined; setTask(undefined); setSession(undefined); setRun(undefined); setProjection(undefined); setEvents([]); setHistory([]); setInputValue(''); setError(undefined); setGroupOpen(true); setExpandedIds(new Set()) }
   const runLabel = runStatus === 'completed' ? 'Run complete' : runStatus === 'needs_reconciliation' ? 'Reconciliation required' : runStatus === 'failed' ? 'Run failed' : runStatus === 'cancelled' ? 'Run cancelled' : 'Working on the task'
-
-  return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="brand"><div className="brand-mark"><Icon name="spark" /></div><span>Helm</span><span className="beta">LOCAL AI WORKBENCH</span></div>
-        <div className="topbar-center"><span className="connection-dot" />{runtime}<span className="separator">/</span><span className="provider">Mock Provider · deterministic</span><button className="icon-button" aria-label="More options"><Icon name="more" /></button></div>
-        <div className="topbar-actions"><button className="icon-button" aria-label="Search"><Icon name="search" /></button><div className="avatar">ZK</div></div>
-      </header>
-
-      <main className="workspace">
-        <aside className="left-panel panel">
-          <div className="panel-heading"><span>Workspace</span><button className="icon-button subtle" aria-label="Add workspace"><Icon name="plus" /></button></div>
-          <div className="workspace-selector"><div className="workspace-icon"><Icon name="folder" /></div><div><strong>Helm</strong><span>~/Lab/Helm</span></div><Icon name="chevron" /></div>
-          <div className="section-heading"><span>SESSIONS</span><button className="new-button"><Icon name="plus" /> New</button></div>
-          <div className="session-list"><button className="session-item active"><span className={`session-status ${run && !isTerminal(run.state) ? 'running' : 'done'}`} /><span className="session-copy"><strong>{session ? `Session ${session.id.slice(-6)}` : 'New session'}</strong><span>{task?.goal ?? 'Start a local task'}</span></span><span className="session-time">{run ? runStatus : 'now'}</span></button></div>
-          <div className="left-footer"><div className="system-health"><span className="health-dot" /> System ready</div><button className="footer-link"><Icon name="shield" /> Permissions</button></div>
-        </aside>
-
-        <section className="center-panel panel">
-          <div className="conversation-header">
-            <div>
-              <div className="eyebrow"><span className={`run-pulse ${isTerminal(runStatus) ? 'stopped' : ''}`} /> {run ? 'ACTIVE SESSION' : 'READY'} <span className="run-id" data-testid="run-id">{run?.id ?? 'none'}</span></div>
-              <h1>{task?.goal ?? 'Start a local task'}</h1>
-              <p>Helm session · Coding task · {runtime}</p>
-            </div>
-            <button className="run-menu icon-button" aria-label="Run options"><Icon name="more" /></button>
-          </div>
-
-          <div className="chat-stream" data-testid="messages">
-            {messages.length === 0 && <div className="empty-state"><div className="message-avatar assistant-avatar"><Icon name="spark" /></div><h2>What should Helm work on?</h2><p>Describe a local coding or office task. Runtime events will appear here.</p></div>}
-            {messages.map((message) => <div className={`message ${message.role === 'user' ? 'user-message' : 'assistant-message'} ${message.status === 'failed' ? 'failed-message' : ''}`} key={message.id}><div className={`message-avatar ${message.role === 'user' ? 'user-avatar' : 'assistant-avatar'}`}>{message.role === 'user' ? 'ZK' : <Icon name="spark" />}</div><div className="message-body"><div className="message-meta"><strong>{message.role === 'user' ? 'You' : 'Helm'}</strong><span className="message-provider">{message.role === 'user' ? 'Task input' : 'Runtime · Mock Provider'}</span></div><p>{message.content}</p></div></div>)}
-            {run && <div className="message assistant-message latest-message"><div className="message-avatar assistant-avatar"><Icon name="spark" /></div><div className="message-body"><div className="message-meta"><strong>Helm</strong><span className="message-provider">Runtime projection</span></div><div className="execution-card"><div className="execution-card-header"><div><Icon name="terminal" /><strong>{runLabel}</strong></div><span>{completedSteps} / {steps.length} steps</span></div><div className="execution-steps">{steps.map((step) => <div className={`execution-step ${step.state}`} key={step.id}><span className="execution-marker">{step.state === 'done' ? <Icon name="check" /> : step.state === 'failed' ? <span className="marker-failure">!</span> : step.state === 'running' ? <span className="marker-dot" /> : null}</span><span>{step.label}</span><span className="execution-detail">{step.detail}</span></div>)}</div><div className="execution-footer"><span><span className="budget-bar"><span style={{ width: `${run.budget.maxSteps > 0 ? Math.min(100, (run.steps / run.budget.maxSteps) * 100) : 0}%` }} /></span> {run.steps} / {run.budget.maxSteps} steps</span><span data-testid="run-state">{run.state}</span>{run.state === 'paused' ? <button className="inline-action" data-testid="run-resume" disabled={controlPending} onClick={() => void controlRun('resume')}>Resume</button> : !isTerminal(run.state) && <button className="inline-action" data-testid="run-pause" disabled={controlPending} onClick={() => void controlRun('pause')}>Pause</button>}{!isTerminal(run.state) && <button className="inline-action" data-testid="run-cancel" disabled={controlPending} onClick={() => void controlRun('cancel')}>Cancel</button>}</div></div></div></div>}
-          </div>
-
-          <div className="composer-wrap"><div className="composer"><textarea value={inputValue} disabled={isSubmitting} onChange={(event) => setInputValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) void sendMessage() }} placeholder={isSubmitting ? 'Starting Run…' : 'Message Helm…'} rows={2} /><div className="composer-toolbar"><span><Icon name="code" /> Coding task</span><span className="composer-hint">⌘ ↵ to send</span><button className="composer-send" data-testid="run-submit" aria-label="Send message" onClick={() => void sendMessage()} disabled={!canSend}><Icon name="send" /></button></div></div><div className="composer-note">Runtime events are shown here. Local tools require an explicit Approval.</div>{error && <div className="composer-note" data-testid="run-error" role="alert">{error}</div>}</div>
-        </section>
-
-        <aside className="right-panel panel">
-          <div className="right-tabs"><button className="right-tab active">Run evidence <span>{events.length}</span></button><button className="right-tab">Trace</button></div>
-          <div className="experience-section" data-testid="experience-candidates">
-            <div className="section-heading"><span>EXPERIENCE CANDIDATES</span><span className="muted">{candidates.length}</span></div>
-            {candidates.length === 0 && <div className="candidate-empty">No candidates awaiting review.</div>}
-            {candidates.map((candidate) => {
-              const hasEvidence = Boolean(candidate.sourceEpisodeId && candidate.sourceTraceId && (candidate.validationEvidence?.length ?? 0) > 0)
-              return <div className="candidate-card" key={candidate.id}>
-                <div className="candidate-card-header"><strong>{candidate.summary}</strong><span className={`candidate-risk risk-${candidate.risk ?? 'unknown'}`}>{candidate.risk ?? 'unknown'}</span></div>
-                <p>{candidate.applicability.join(' · ') || 'No applicability recorded'}</p>
-                <div className="candidate-meta"><span>validation {candidate.validationState}</span><span>approval {candidate.approvalState}</span><span>v{candidate.reviewVersion ?? 0}</span><span>tokens {candidate.costChecks.tokenBudgetOk ? 'ok' : 'blocked'}</span><span>cost {candidate.costChecks.costBudgetOk ? 'ok' : 'blocked'}</span></div>
-                <div className="candidate-source"><code>{candidate.sourceEpisodeId}</code><code>{candidate.sourceTraceId ?? 'trace unavailable'}</code><span>{candidate.validationEvidence?.length ?? 0} validation refs</span></div>
-                {(candidate.validationEvidence?.length ?? 0) > 0 && <div className="candidate-evidence">{candidate.validationEvidence?.slice(0, 3).map((uri) => <code key={uri}>{uri}</code>)}</div>}
-                {(candidate.evidence?.length ?? 0) > 0 && <div className="candidate-evidence">{candidate.evidence?.slice(0, 3).map((evidence, index) => <code key={`${evidence.uri}-${index}`}>{evidence.uri}{evidence.hash ? ` · ${evidence.hash.slice(0, 12)}` : ''}</code>)}</div>}
-                <div className="candidate-actions">
-                  <button className="inline-action" disabled={candidatePending === candidate.id || !hasEvidence} title={hasEvidence ? 'Approve with recorded evidence' : 'Approval requires a source Episode, trace, and validation evidence'} onClick={() => void reviewCandidate(candidate, 'approve')}>Approve</button>
-                  <button className="inline-action danger" disabled={candidatePending === candidate.id} onClick={() => void reviewCandidate(candidate, 'reject')}>Reject</button>
-                  <button className="inline-action" disabled={candidatePending === candidate.id} onClick={() => void reviewCandidate(candidate, 'revalidate')}>Revalidate</button>
-                </div>
-              </div>
-            })}
-            {candidateError && <div className="candidate-error" role="alert">{candidateError}</div>}
-          </div>
-          <div className="artifact-section"><div className="section-heading"><span>RUN CONTEXT</span><span className="muted">{run?.id ?? 'none'}</span></div><div className="artifact-card"><div className="artifact-icon code-icon"><Icon name="code" /></div><div className="artifact-copy"><strong>{task?.workspaceId ?? 'workspace-helm'}</strong><span>{task ? 'Workspace selected · no file changes' : 'Waiting for task input'}</span></div></div></div>{codingDelivery && <CodingEvidence delivery={codingDelivery} verification={projection?.verification} />}
-          <div className="approval-section"><div className="section-heading"><span>APPROVAL</span><span className="approval-state">Runtime owned</span></div><div className={`approval-card ${approval ? 'approval-card-pending' : ''}`}><div className="approval-icon"><Icon name="shield" /></div><div>{approval ? <><strong>Approval required: {approval.call.name}</strong><p>{approval.reason}</p><code>{JSON.stringify(approval.call.arguments)}</code><div className="approval-actions"><button className="inline-action" disabled={controlPending} onClick={() => void decideApproval('approve')}>Approve</button><button className="inline-action danger" disabled={controlPending} onClick={() => void decideApproval('deny')}>Deny</button></div></> : <><strong>{events.some((event) => event.type === 'policy.decision') ? 'Policy decision recorded' : 'No pending approval'}</strong><p>Approval appears here only for a concrete Runtime tool proposal.</p></>}</div></div></div>
-          <div className="verification-section"><div className="section-heading"><span>VERIFICATION</span><span className="muted">Runtime evidence</span></div><div className={`verification-card verification-${verificationResult}`} data-testid="verification"><div className="verification-row"><span className={`verification-icon ${verificationResult === 'passed' ? 'passed' : verificationResult === 'failed' || verificationResult === 'needs_reconciliation' ? 'failed' : 'pending'}`}><Icon name={verificationResult === 'passed' ? 'check' : 'clock'} /></span><span>{run?.state === 'needs_reconciliation' ? 'Unknown side effect; reconciliation required.' : run?.verification?.message ?? (run?.lastError ?? 'Waiting for final output')}</span><strong>{verificationResult}</strong></div></div></div>
-        </aside>
-      </main>
-    </div>
-  )
+  const groupTitle = run?.state === 'completed' ? `Work process · ${workItems.length} events` : run?.state === 'failed' ? 'Work process · stopped' : approval ? 'Waiting for approval · work paused' : run?.state === 'paused' ? 'Paused' : run ? 'Working…' : 'Runtime events'
+  const traceEvents = events.slice(-18)
+  return <div className="app-shell"><header className="topbar"><div className="brand"><button className="icon-button" aria-label="Toggle sidebar" aria-expanded={leftOpen} title="Toggle sidebar (⌘B)" onClick={() => setLeftOpen(!leftOpen)}><Icon name="panel-left" /></button><div className="brand-mark"><Icon name="spark" /></div><span>Helm</span><span className="beta">LOCAL AI WORKBENCH</span></div><div className="topbar-center"><span className="status-pill"><span className="connection-dot" />{runtime}<span className="separator">/</span><span className="provider">Provider managed by Runtime</span></span></div><div className="topbar-actions"><div className="seg" role="group" aria-label="Style preset"><button className={`seg-option ${stylePreset === 'precision' ? 'active' : ''}`} onClick={() => setStylePreset('precision')}>Precision</button><button className={`seg-option ${stylePreset === 'atelier' ? 'active' : ''}`} onClick={() => setStylePreset('atelier')}>Atelier</button></div><button className="icon-button" aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}><Icon name={theme === 'dark' ? 'sun' : 'moon'} /></button><button className="icon-button" aria-label="Search"><Icon name="search" /></button><button className="icon-button" aria-label="Settings" onClick={() => setSettingsOpen(true)}><Icon name="gear" /></button><button className="icon-button" aria-label="Toggle side panel" aria-expanded={rightOpen} title="Toggle side panel (⌘⌥B)" onClick={() => setRightOpen(!rightOpen)}><Icon name="panel-right" /></button><div className="avatar">ZK</div></div></header><main className={`workspace ${leftOpen ? '' : 'left-collapsed'} ${rightOpen ? '' : 'right-collapsed'}`}><aside className="left-panel panel"><button className="new-task-button" onClick={newTask}><Icon name="plus" /> New task</button><div className="nav-label"><span>Workspace</span></div><div className="workspace-selector"><div className="workspace-icon"><Icon name="folder" /></div><div><strong>Helm</strong><span>~/Lab/Helm</span></div><Icon name="chevron" /></div><div className="nav-label"><span>Sessions</span></div><div className="session-list"><button className="session-item active"><span className={`session-status ${isActive ? 'running' : 'done'}`} /><span className="session-copy"><strong>{session ? `Session ${session.id.slice(-6)}` : 'New session'}</strong><span>{task?.goal ?? 'Start a local task'}</span></span><span className="session-time">{run ? runStatus : 'now'}</span></button></div><div className="left-footer"><div className="system-health"><span className="health-dot" /> System ready</div><button className="footer-link"><Icon name="shield" /> Permissions</button><button className="footer-link" onClick={() => setSettingsOpen(true)}><Icon name="gear" /> Settings</button></div></aside><section className="center-panel panel"><div className="thread-header"><div className="thread-crumb"><span className={`run-pulse ${isActive ? '' : 'stopped'}`} /> Sessions <span className="crumb-sep">/</span> {session ? `Session ${session.id.slice(-6)}` : 'New session'}<span className="task-id">Task {task?.id ?? 'none'}</span><span className="run-id" data-testid="run-id">{run?.id ?? 'none'}</span></div><div className="thread-header-right"><span className={`status-chip chip-${verificationResult}`}>{runStatus}</span><button className="icon-button" aria-label="Thread options"><Icon name="more" /></button></div></div><div className="chat-stream" ref={streamRef} data-testid="messages">{messages.length === 0 && <div className="empty-state"><div className="empty-mark"><Icon name="spark" /></div><h2>What should Helm work on?</h2><p>Describe a local coding or office task. Runtime events will appear here.</p><div className="suggestions"><button className="suggestion-chip" onClick={() => setInputValue('Run the test suite and explain failures')}><Icon name="terminal" />Run the test suite and explain failures</button><button className="suggestion-chip" onClick={() => setInputValue('Summarize recent git changes into a DOCX report')}><Icon name="file" />Summarize recent git changes into a DOCX report</button></div></div>}{messages.map((message) => message.role === 'user' ? <div className="msg msg-user" key={message.id}><div className="bubble">{message.content}</div></div> : <div className={`msg msg-assistant ${message.status === 'failed' ? 'failed-message' : ''}`} key={message.id}><div className="msg-label"><div className="assistant-mark"><Icon name="spark" /></div><strong>Helm</strong><span className="msg-provider">Runtime</span></div><p>{message.content}</p></div>)}{(workItems.length > 0 || run) && <div className="workstream"><button className="workstream-header" onClick={() => setGroupOpen(!groupOpen)} aria-expanded={groupOpen}><span className={`workstream-status ${run?.state === 'completed' ? 'done' : run?.state && isTerminal(run.state) ? 'failed' : 'running'}`}>{run?.state === 'completed' ? <Icon name="check" /> : run?.state && isTerminal(run.state) ? <span className="marker-failure">!</span> : <span className="spinner" />}</span><strong>{groupTitle}</strong><span className="workstream-progress">{completedSteps} / {steps.length}</span><span data-testid="run-state" className="workstream-progress">{runStatus}</span>{run?.state === 'paused' && <span data-testid="run-resume" className="inline-action workstream-pause" role="button" tabIndex={0} onClick={(event) => { event.stopPropagation(); void controlRun('resume') }}><Icon name="play" /> Resume</span>}{run && !isTerminal(run.state) && run.state !== 'paused' && <span data-testid="run-pause" className="inline-action workstream-pause" role="button" tabIndex={0} onClick={(event) => { event.stopPropagation(); void controlRun('pause') }}><Icon name="pause" /> Pause</span>}{run && !isTerminal(run.state) && <span data-testid="run-cancel" className="inline-action workstream-pause danger" role="button" tabIndex={0} onClick={(event) => { event.stopPropagation(); void controlRun('cancel') }}>Cancel</span>}<Icon name="chevron" className={`workstream-chevron ${groupOpen ? 'open' : ''}`} /></button>{groupOpen && <div className="workstream-items">{workItems.length === 0 ? steps.map((step) => <div className={`work-item ${step.state === 'failed' ? 'failed' : step.state === 'done' ? 'done' : 'running'}`} key={step.id}><div className="work-item-row"><span className="work-item-icon">{step.state === 'running' ? <span className="spinner" /> : step.state === 'failed' ? <span className="marker-failure">!</span> : <Icon name="check" />}</span><span className="work-item-title">{step.label}</span><span className="work-item-meta">{step.detail}</span></div></div>) : workItems.map((item) => { const expanded = expandedIds.has(item.id); return <div className={`work-item ${item.state}`} key={item.id}><button className="work-item-row" onClick={() => setExpandedIds((previous) => { const next = new Set(previous); if (next.has(item.id)) next.delete(item.id); else next.add(item.id); return next })} aria-expanded={expanded}><span className="work-item-icon">{item.state === 'running' ? <span className="spinner" /> : item.state === 'failed' ? <span className="marker-failure">!</span> : <Icon name={item.kind === 'verify' ? 'check' : item.kind === 'command' ? 'terminal' : item.kind === 'edit' ? 'pencil' : 'spark'} />}</span><span className="work-item-title">{item.title}</span><span className="work-item-meta">{item.state}</span><Icon name="chevron" className={`work-item-chevron ${expanded ? 'open' : ''}`} /></button>{expanded && <div className={`work-item-detail ${item.kind === 'runtime' ? 'detail-think' : 'detail-mono'}`}>{item.detail}</div>}</div> })}</div>}</div>}</div><div className="composer-wrap"><div className="composer"><textarea value={inputValue} disabled={isSubmitting} onChange={(event) => setInputValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) void sendMessage() }} placeholder={isSubmitting ? 'Starting Run…' : 'Message Helm…'} rows={2} /><div className="composer-toolbar"><span className="composer-mode"><Icon name="code" /> Coding task</span><span className="composer-hint">⌘ ↵ to send</span><button className="composer-send" data-testid="run-submit" aria-label="Send message" onClick={() => void sendMessage()} disabled={!canSend}><Icon name="send" /></button></div></div><div className="composer-note">Runtime events are shown here. Local tools require an explicit Approval.</div>{error && <div className="composer-note" data-testid="run-error" role="alert">{error}</div>}</div></section><aside className="right-panel panel"><div className="right-tabs"><button className={`right-tab ${activeTab === 'evidence' ? 'active' : ''}`} onClick={() => setActiveTab('evidence')}>Evidence <span>{events.length}</span></button><button className={`right-tab ${activeTab === 'trace' ? 'active' : ''}`} onClick={() => setActiveTab('trace')}>Trace</button></div>{activeTab === 'evidence' ? <><div className="rail-section experience-review" data-testid="experience-candidates"><div className="section-heading"><span>EXPERIENCE CANDIDATES</span><span className="muted">{candidates.length}</span></div>{candidates.length === 0 && <div className="candidate-empty">No candidates awaiting review.</div>}{candidates.map((candidate) => { const hasEvidence = Boolean(candidate.sourceEpisodeId && candidate.sourceTraceId && (candidate.validationEvidence?.length ?? 0) > 0); return <div className="candidate-card" key={candidate.id}><div className="candidate-card-header"><strong>{candidate.summary}</strong><span className={`candidate-risk risk-${candidate.risk ?? 'unknown'}`}>{candidate.risk ?? 'unknown'}</span></div><p>{candidate.applicability.join(' · ') || 'No applicability recorded'}</p><div className="candidate-meta"><span>validation {candidate.validationState}</span><span>approval {candidate.approvalState}</span><span>v{candidate.reviewVersion ?? 0}</span></div><div className="candidate-source"><code>{candidate.sourceEpisodeId}</code><code>{candidate.sourceTraceId ?? 'trace unavailable'}</code></div><div className="candidate-actions"><button className="inline-action" disabled={candidatePending === candidate.id || !hasEvidence} title={hasEvidence ? 'Approve with recorded evidence' : 'Approval requires source Episode, trace, and validation evidence'} onClick={() => void reviewCandidate(candidate, 'approve')}>Approve</button><button className="inline-action danger" disabled={candidatePending === candidate.id} onClick={() => void reviewCandidate(candidate, 'reject')}>Reject</button><button className="inline-action" disabled={candidatePending === candidate.id} onClick={() => void reviewCandidate(candidate, 'revalidate')}>Revalidate</button></div></div> })}{candidateError && <div className="candidate-error" role="alert">{candidateError}</div>}</div><div className="rail-section"><div className="section-heading"><span>RUN CONTEXT</span><span className="muted">{run?.id ?? 'none'}</span></div><div className="artifact-card"><div className="artifact-icon"><Icon name="code" /></div><div className="artifact-copy"><strong>{task?.workspaceId ?? 'workspace-helm'}</strong><span>{artifacts.length > 0 ? `${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'} · ${artifacts.map((artifact) => artifact.path ?? artifact.type).join(', ')}` : task ? 'Workspace selected · no artifacts yet' : 'Waiting for task input'}</span></div></div></div>{codingDelivery && <CodingEvidence delivery={codingDelivery} verification={projection?.verification} />}<div className="rail-section"><div className="section-heading"><span>APPROVAL</span><span className="approval-state">{approval ? 'Action needed' : 'Runtime owned'}</span></div><div className={`approval-card ${approval ? 'approval-card-pending' : ''}`}><div className="approval-icon"><Icon name="shield" /></div><div className="approval-body">{approval ? <><strong>Approval required: {approval.call.name}</strong><p>{approval.reason}</p><code>{JSON.stringify(approval.call.arguments)}</code><div className="approval-actions"><button className="inline-action" disabled={controlPending} onClick={() => void decideApproval('approve')}>Approve</button><button className="inline-action danger" disabled={controlPending} onClick={() => void decideApproval('deny')}>Deny</button></div></> : <><strong>{events.some((event) => event.type === 'approval.decided') ? 'Approval decision recorded' : 'No pending approval'}</strong><p>Approval appears here only for a concrete Runtime tool proposal.</p></>}</div></div></div><div className="rail-section"><div className="section-heading"><span>VERIFICATION</span><span className="muted">Runtime evidence</span></div><div className={`verification-card verification-${verificationResult}`} data-testid="verification"><div className="verification-row"><span className={`verification-icon ${verificationResult === 'passed' ? 'passed' : verificationResult === 'failed' || verificationResult === 'needs_reconciliation' ? 'failed' : 'pending'}`}><Icon name={verificationResult === 'passed' ? 'check' : 'clock'} /></span><span>{run?.state === 'needs_reconciliation' ? 'Unknown side effect; reconciliation required.' : run?.verification?.message ?? run?.lastError ?? 'Waiting for final output'}</span><strong>{verificationResult}</strong></div></div></div></> : <div className="rail-section"><div className="section-heading"><span>EVENT TRACE</span><span className="muted">{run?.id ?? 'none'}</span></div><div className="trace-list">{traceEvents.map((event) => <div className={`trace-row tone-${event.type.includes('failed') || event.type.includes('needs') ? 'warn' : event.type.includes('completed') ? 'ok' : 'neutral'}`} key={event.id}><span className="trace-dot" /><code>{event.type} · {event.sequence}</code></div>)}</div></div>}</aside></main>{settingsOpen && <Settings onClose={() => setSettingsOpen(false)} theme={theme} setTheme={setTheme} stylePreset={stylePreset} setStylePreset={setStylePreset} runtime={runtime} />}</div>
 }
 
 createRoot(document.getElementById('root')!).render(<App />)

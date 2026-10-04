@@ -90,7 +90,7 @@ test('production Electron Main/preload/Renderer completes two real UI Runs', asy
       processType: typeof (globalThis as { process?: unknown }).process,
       requireType: typeof (globalThis as { require?: unknown }).require,
     }))
-    assert.deepEqual(bridge.helmKeys, ['approveBrowserAction', 'approveBrowserNavigation', 'assertBrowserDom', 'controlA2ADelivery', 'controlAgents', 'controlBrowserContext', 'controlRun', 'createAgent', 'createBrowserContext', 'executeBrowserAction', 'exportRun', 'getRunSnapshot', 'listA2ADeliveries', 'listAgents', 'listBrowserActionProfiles', 'listBrowserContexts', 'listConnectors', 'navigateBrowser', 'previewConnector', 'reconcileRun', 'registerBrowserActionProfile', 'registerConnector', 'resolveApproval', 'runtimeInfo', 'startRun', 'subscribe', 'verifyBrowserAction', 'verifyConnector', 'writeConnector'])
+    assert.deepEqual(bridge.helmKeys, ['approveBrowserAction', 'approveBrowserNavigation', 'assertBrowserDom', 'controlA2ADelivery', 'controlAgents', 'controlBrowserContext', 'controlRun', 'createAgent', 'createBrowserContext', 'executeBrowserAction', 'exportRun', 'getRunSnapshot', 'listA2ADeliveries', 'listAgents', 'listBrowserActionProfiles', 'listBrowserContexts', 'listConnectors', 'listExperienceCandidates', 'navigateBrowser', 'previewConnector', 'reconcileRun', 'registerBrowserActionProfile', 'registerConnector', 'resolveApproval', 'reviewExperienceCandidate', 'runtimeInfo', 'startRun', 'subscribe', 'verifyBrowserAction', 'verifyConnector', 'writeConnector'])
     assert.equal(bridge.processType, 'undefined', 'Renderer must not receive Node process')
     assert.equal(bridge.requireType, 'undefined', 'Renderer must not receive CommonJS require')
 
