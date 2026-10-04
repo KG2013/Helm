@@ -153,6 +153,30 @@ export interface Verification {
   message?: string;
 }
 
+export type ReconciliationOutcome = 'known' | 'failed' | 'unknown';
+
+export interface ReconciliationRecord {
+  id: ID;
+  runId: ID;
+  toolCallId?: ID;
+  actionId?: ID;
+  outcome: ReconciliationOutcome;
+  evidence: Evidence[];
+  reason?: string;
+  recordedAt: string;
+}
+
+export interface BudgetUsage {
+  steps: number;
+  durationMs: number;
+  tokens: number;
+  costUsd: number;
+  latencyMs: number;
+  retries: number;
+  cacheMisses: number;
+  reviewerRounds: number;
+}
+
 export interface Evidence {
   type: string;
   summary: string;
@@ -424,6 +448,7 @@ export type EventType =
   | 'run.failed'
   | 'run.cancelled'
   | 'run.needs_reconciliation'
+  | 'run.reconciled'
   | 'step.started'
   | 'step.proposal'
   | 'policy.decision'

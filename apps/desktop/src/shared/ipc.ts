@@ -1,4 +1,4 @@
-import type { DomainEvent, Episode, ReleaseGateResult, Run, RunProjection, Session, Task } from '@helm/runtime'
+import type { BudgetUsage, DomainEvent, Episode, Evidence, ReconciliationRecord, ReleaseGateResult, Run, RunProjection, Session, Task } from '@helm/runtime'
 
 export const IPC_CHANNELS = {
   runtimeInfo: 'helm:runtime-info',
@@ -6,6 +6,7 @@ export const IPC_CHANNELS = {
   runSnapshot: 'helm:run-snapshot',
   runControl: 'helm:run-control',
   runApproval: 'helm:run-approval',
+  runReconciliation: 'helm:run-reconciliation',
   runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
@@ -45,6 +46,22 @@ export type RunExportResponse = {
   projection: RunProjection
   episode: Episode
   releaseGate: ReleaseGateResult
+}
+
+export type RunReconciliationRequest = {
+  runId: string
+  action: 'inspect' | 'record'
+  toolCallId?: string
+  outcome?: 'known' | 'failed' | 'unknown'
+  evidence?: Evidence[]
+  reason?: string
+}
+
+export type RunReconciliationResponse = {
+  runId: string
+  budgetUsage: BudgetUsage
+  candidates: Array<{ toolCallId: string; stepId?: string; reason: string }>
+  record?: ReconciliationRecord
 }
 
 export type StartRunResponse = {
@@ -91,4 +108,15 @@ export function isRunApprovalRequest(value: unknown): value is RunApprovalReques
 export function isRunExportRequest(value: unknown): value is RunExportRequest {
   if (!value || typeof value !== 'object') return false
   return isRunId((value as Partial<RunExportRequest>).runId)
+}
+
+export function isRunReconciliationRequest(value: unknown): value is RunReconciliationRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<RunReconciliationRequest>
+  if (!isRunId(request.runId) || (request.action !== 'inspect' && request.action !== 'record')) return false
+  if (request.toolCallId !== undefined && !isRunId(request.toolCallId)) return false
+  if (request.outcome !== undefined && request.outcome !== 'known' && request.outcome !== 'failed' && request.outcome !== 'unknown') return false
+  if (request.reason !== undefined && (typeof request.reason !== 'string' || request.reason.length > 2_000)) return false
+  if (request.evidence !== undefined && (!Array.isArray(request.evidence) || request.evidence.length > 32 || request.evidence.some((item) => !item || typeof item !== 'object' || typeof item.type !== 'string' || typeof item.summary !== 'string'))) return false
+  return request.action === 'inspect' || Boolean(request.outcome)
 }

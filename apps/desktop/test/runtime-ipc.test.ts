@@ -64,6 +64,10 @@ test('desktop IPC starts a Runtime Run and forwards ordered events', async () =>
   assert.ok(snapshot.events.length >= 5)
   assert.deepEqual(events, [...events].sort((left, right) => left - right))
   assert.ok(snapshot.events.every((event) => event.runId === started.run.id))
+  const reconciliation = await ipc.invoke(IPC_CHANNELS.runReconciliation, { runId: started.run.id, action: 'inspect' }) as { runId: string; budgetUsage: { steps: number }; candidates: unknown[] }
+  assert.equal(reconciliation.runId, started.run.id)
+  assert.equal(reconciliation.budgetUsage.steps, snapshot.run.steps)
+  assert.deepEqual(reconciliation.candidates, [])
   stop()
 })
 

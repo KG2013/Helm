@@ -5,6 +5,7 @@ import {
   isRunControlRequest,
   isRunApprovalRequest,
   isRunExportRequest,
+  isRunReconciliationRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
@@ -13,6 +14,8 @@ import {
   type RunApprovalRequest,
   type RunExportRequest,
   type RunExportResponse,
+  type RunReconciliationRequest,
+  type RunReconciliationResponse,
   type StartRunResponse,
 } from '../shared/ipc.js'
 
@@ -131,6 +134,32 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
       releaseGate: evaluateReleaseGate([episode]),
     }
     return response
+  })
+  ipc.handle(IPC_CHANNELS.runReconciliation, async (_event, value) => {
+    if (!isRunReconciliationRequest(value)) throw new Error('Invalid Run reconciliation request.')
+    const request = value as RunReconciliationRequest
+    const run = await runtime.getRun(request.runId)
+    if (!run) throw new Error('Unknown run.')
+    let record
+    if (request.action === 'record') {
+      if ((request.outcome === 'known' || request.outcome === 'failed') && (!request.evidence || request.evidence.length === 0)) {
+        throw new Error('Reconciliation requires evidence when resolving an unknown effect.')
+      }
+      record = await runtime.recordReconciliation({
+        runId: request.runId,
+        toolCallId: request.toolCallId,
+        outcome: request.outcome!,
+        evidence: request.evidence,
+        reason: request.reason,
+      })
+    }
+    const response: RunReconciliationResponse = {
+      runId: request.runId,
+      budgetUsage: await runtime.getBudgetUsage(request.runId),
+      candidates: await runtime.listReconciliationCandidates(request.runId),
+      record,
+    }
+    return sanitizeValue(response) as RunReconciliationResponse
   })
 
   return unsubscribe

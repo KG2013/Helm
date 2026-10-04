@@ -26,7 +26,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 function printHelp(): void {
-  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
+  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
 }
 
 async function printRun(runtime: RuntimeFacade, goal: string, workspaceId: string, jsonl = false): Promise<void> {
@@ -169,6 +169,37 @@ async function controlRun(runId: string, action: 'pause' | 'resume' | 'cancel', 
   }
 }
 
+async function reconcileRun(runId: string, options: { toolCallId?: string; outcome?: 'known' | 'failed' | 'unknown'; summary?: string; uri?: string; hash?: string }): Promise<void> {
+  const statePath = process.env.HELM_STATE_DB
+  if (!statePath) {
+    console.error('helm reconcile requires HELM_STATE_DB to point at the Runtime SQLite ledger')
+    process.exitCode = 2
+    return
+  }
+  const database = openSqliteEventStore(statePath)
+  const runtime = await createPersistedRuntime(database.store, process.env.HELM_WORKSPACE_ID ?? 'workspace-cli')
+  try {
+    if (!options.outcome) {
+      const [run, budgetUsage, candidates] = await Promise.all([
+        runtime.getRun(runId),
+        runtime.getBudgetUsage(runId),
+        runtime.listReconciliationCandidates(runId),
+      ])
+      if (!run) throw new Error(`Unknown run: ${runId}`)
+      console.log(JSON.stringify({ runId, run, budgetUsage, candidates }, null, 2))
+      return
+    }
+    const evidence = options.summary
+      ? [{ type: 'runtime.reconciliation', summary: options.summary, ...(options.uri ? { uri: options.uri } : {}), ...(options.hash ? { hash: options.hash } : {}) }]
+      : undefined
+    const record = await runtime.recordReconciliation({ runId, toolCallId: options.toolCallId, outcome: options.outcome, evidence, reason: options.summary })
+    console.log(JSON.stringify({ runId, reconciliation: record, budgetUsage: await runtime.getBudgetUsage(runId), candidates: await runtime.listReconciliationCandidates(runId) }, null, 2))
+  } finally {
+    await runtime.shutdown('CLI reconciliation completed')
+    await database.store.close()
+  }
+}
+
 async function run(goal: string): Promise<void> {
   const provider = createProviderFromEnv({ env: process.env, getApiKey: (service) => readKeychainSecret(service) })
     ?? new MockProvider([{ kind: 'final', content: `Completed local task: ${goal}` } satisfies ProviderResponse])
@@ -284,6 +315,24 @@ if (command === 'run') {
     process.exitCode = 2
   } else {
     await approvalRun(runId, approvalId, deny ? 'deny' : 'approve', workspaceId)
+  }
+} else if (command === 'reconcile') {
+  const runId = args[0]?.trim()
+  const toolCallId = args[1]?.trim() || undefined
+  const outcomeIndex = args.indexOf('--outcome')
+  const rawOutcome = outcomeIndex >= 0 ? args[outcomeIndex + 1] : undefined
+  const outcome = rawOutcome === 'known' || rawOutcome === 'failed' || rawOutcome === 'unknown' ? rawOutcome : undefined
+  const summaryIndex = args.indexOf('--summary')
+  const summary = summaryIndex >= 0 ? args[summaryIndex + 1]?.trim() : undefined
+  const uriIndex = args.indexOf('--evidence-uri')
+  const uri = uriIndex >= 0 ? args[uriIndex + 1]?.trim() : undefined
+  const hashIndex = args.indexOf('--evidence-hash')
+  const hash = hashIndex >= 0 ? args[hashIndex + 1]?.trim() : undefined
+  if (!runId || (rawOutcome !== undefined && !outcome) || (outcome && (outcome === 'known' || outcome === 'failed') && !summary)) {
+    console.error('helm reconcile requires a run id; recording known/failed outcomes also requires --summary')
+    process.exitCode = 2
+  } else {
+    await reconcileRun(runId, { toolCallId, outcome, summary, uri, hash })
   }
 } else {
   printHelp()

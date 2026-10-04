@@ -13,3 +13,4 @@ export * from './office.js';
 export * from './artifacts.js';
 export * from './sandbox.js';
 export * from './evaluation.js';
+export * from './hardening.js';

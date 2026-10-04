@@ -41,7 +41,11 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 真实 worker 进程管理、Runtime E2E 和 CLI/Desktop 的同一 Artifact/Verification projection 已接入；目标环境仍需确认 OCR 工具链。当前 DOCX 检查验证有界转换和可打开的 PDF 页数，不做像素级视觉对比；缺少渲染器或 OCR 命令时保持 UNKNOWN。
 
-剩余工作集中在 Docker image/daemon 的现场 smoke、DeepSeek/智谱真实联调、目标环境 Office/OCR 依赖、Electron 打包重启回归，以及 Experience Candidate review UI；UsageLedger、Episode、release gate、独立 Runtime reconnect 和成对 Context compaction 核心已建立。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化等维持 P0 范围约束。
+剩余工作集中在 Docker image/daemon 的现场 smoke、DeepSeek/智谱真实联调、目标环境 Office/OCR 依赖、Electron 打包重启回归，以及 Experience Candidate review UI；UsageLedger、Episode、release gate、独立 Runtime reconnect 和成对 Context compaction 核心已建立。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化等独立能力已完成 ticket 拆分，但仍需在 ActionGateway 前置完成后按依赖实现。
+
+## 6. Runtime 硬化与对账入口（#17：已完成）
+
+预算使用量由持久 `usage.recorded` 事件累计，涵盖步骤、Run 存续时间、token、费用、延迟、重试、cache miss 和 reviewer rounds；Runtime 重连或暂停不会清零。未知副作用仍进入 `needs_reconciliation`，并可通过 `RuntimeFacade.recordReconciliation` 写入带类型、摘要、URI/hash 的证据包；缺证据的 `known/failed` 记录会被拒绝。`helm reconcile <run-id>` 和 `run-reconciliation` IPC 共用这些接口，支持只读查看预算与对账候选以及显式记录结果。release gate 仅在未知回执被证据标记为 `known/failed` 后移除对应 UNKNOWN 阻断；这不替代真实外部系统的写后验证。
 
 ## 与原架构阶段的关系
 

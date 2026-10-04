@@ -67,10 +67,13 @@ export function evaluateReleaseGate(episodes: readonly Episode[], options: Relea
   for (const episode of episodes) {
     const terminal = [...episode.events].reverse().find((event) => ['run.completed', 'run.failed', 'run.cancelled', 'run.needs_reconciliation'].includes(event.type));
     if (terminal?.type !== 'run.completed') reasons.push(`${episode.runId}: run did not complete.`);
-    if (episode.events.some((event) => event.type === 'run.needs_reconciliation')) reasons.push(`${episode.runId}: unreconciled side effect or recovery gap.`);
+    const reconciled = new Set(episode.events.filter((event) => event.type === 'run.reconciled' && ['known', 'failed'].includes(String((event.payload as Record<string, unknown>).outcome))).map((event) => String((event.payload as Record<string, unknown>).toolCallId ?? '')));
+    const unknownCalls = episode.events.filter((event) => event.type === 'tool.receipt' && (event.payload.receipt as { sideEffect?: string } | undefined)?.sideEffect === 'unknown' && typeof event.payload.toolCallId === 'string');
+    if (episode.events.some((event) => event.type === 'run.needs_reconciliation') && unknownCalls.some((event) => !reconciled.has(String(event.payload.toolCallId)))) reasons.push(`${episode.runId}: unreconciled side effect or recovery gap.`);
     const verificationEvents = episode.events.filter((event) => event.type === 'verification.result');
     if (!verificationEvents.length || verificationEvents.some((event) => (event.payload.verification as { result?: string } | undefined)?.result !== 'passed')) reasons.push(`${episode.runId}: verification is missing, unknown, or failed.`);
-    if (episode.events.some((event) => event.type === 'tool.receipt' && (event.payload.receipt as { sideEffect?: string } | undefined)?.sideEffect === 'unknown')) reasons.push(`${episode.runId}: tool side effect is unknown.`);
+    const unresolvedUnknown = unknownCalls.some((event) => !reconciled.has(String(event.payload.toolCallId)));
+    if (unresolvedUnknown) reasons.push(`${episode.runId}: tool side effect is unknown.`);
     if (containsCredentialMarker(episode.redactedJsonl)) reasons.push(`${episode.runId}: redacted export still contains a credential marker.`);
   }
   const evaluated = episodes.filter((episode) => episode.evaluationCase);

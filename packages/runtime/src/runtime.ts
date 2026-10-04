@@ -3,6 +3,7 @@ import { transitionRunState, isTerminalRunState, RunStateError } from './state-m
 import { TextOutputVerifier } from './verifier.js';
 import { boundProviderEvents, buildProviderContext, normalizeProviderContextProjection, toolProfileToSchema } from './context.js';
 import { createExperienceCandidate as createCandidate, reviewExperienceCandidate as reviewCandidate, type ExperienceCandidate } from './experience.js';
+import { isBudgetExceeded, listReconciliationCandidates, summarizeBudgetUsage } from './hardening.js';
 import type {
   Budget,
   ApprovalBinding,
@@ -32,6 +33,9 @@ import type {
   ToolExecutorResult,
   Verification,
   Verifier,
+  BudgetUsage,
+  Evidence,
+  ReconciliationRecord,
 } from './types.js';
 
 const DEFAULT_BUDGET: Budget = {
@@ -608,6 +612,38 @@ export class RuntimeFacade {
     return this.store.list(runId);
   }
 
+  /** Return cumulative usage derived from the durable ledger, including time since Run creation. */
+  async getBudgetUsage(runId: ID): Promise<BudgetUsage> {
+    const run = await this.requireRun(runId);
+    return summarizeBudgetUsage(run, await this.store.list(runId), this.clock.now().getTime());
+  }
+
+  /** Return unresolved unknown tool effects without changing Run state. */
+  async listReconciliationCandidates(runId: ID): Promise<Array<{ toolCallId: ID; stepId?: ID; reason: string }>> {
+    return listReconciliationCandidates(await this.store.list(runId));
+  }
+
+  /** Resolve an unknown effect only with an explicit, auditable evidence package. */
+  async recordReconciliation(input: { runId: ID; toolCallId?: ID; actionId?: ID; outcome: 'known' | 'failed' | 'unknown'; evidence?: Evidence[]; reason?: string }): Promise<ReconciliationRecord> {
+    const run = await this.requireRun(input.runId);
+    await this.assertOwner(run);
+    if ((input.outcome === 'known' || input.outcome === 'failed') && (!input.evidence || input.evidence.length === 0)) {
+      throw new Error('Reconciliation requires evidence when resolving an unknown effect.');
+    }
+    const record: ReconciliationRecord = {
+      id: this.ids.next('reconciliation'),
+      runId: input.runId,
+      toolCallId: input.toolCallId,
+      actionId: input.actionId,
+      outcome: input.outcome,
+      evidence: input.evidence ?? [],
+      reason: input.reason,
+      recordedAt: this.timestamp(),
+    };
+    await this.append({ type: 'run.reconciled', taskId: run.taskId, sessionId: run.sessionId, runId: run.id, payload: record as unknown as Record<string, unknown> });
+    return record;
+  }
+
   onEvent(listener: RuntimeEventListener): () => void {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);
@@ -890,11 +926,7 @@ export class RuntimeFacade {
     const latency = prior.latency + (current?.latencyMs ?? 0);
     const retries = prior.retries + (current?.retries ?? 0);
     const cacheMisses = prior.cacheMisses + (current?.cacheHit === false ? 1 : 0);
-    return (run.budget.maxTokens !== undefined && tokens > run.budget.maxTokens)
-      || (run.budget.maxCostUsd !== undefined && cost > run.budget.maxCostUsd)
-      || (run.budget.maxLatencyMs !== undefined && latency > run.budget.maxLatencyMs)
-      || (run.budget.maxRetries !== undefined && retries > run.budget.maxRetries)
-      || (run.budget.maxCacheMisses !== undefined && cacheMisses > run.budget.maxCacheMisses);
+    return isBudgetExceeded(run.budget, { steps: run.steps, durationMs: 0, tokens, costUsd: cost, latencyMs: latency, retries, cacheMisses, reviewerRounds: run.reviewerRounds });
   }
 
   private timestamp(): string {
