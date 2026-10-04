@@ -147,7 +147,7 @@ export class RuntimeFacade {
     this.connectorRegistry = new ConnectorRegistry({ store: this.store, gateway: this.actionGateway, artifactStore: this.artifactStore, clock: this.clock, ids: this.ids });
     this.browserRegistry = new BrowserFixtureRegistry({ store: this.store, gateway: this.actionGateway, artifactStore: this.artifactStore, clock: this.clock, ids: this.ids });
     this.a2aTransport = new A2ALoopbackTransport({ store: this.store, clock: this.clock, ids: this.ids });
-    this.remoteAgentCoordinator = new RemoteAgentCoordinator({ store: this.store, gateway: this.actionGateway, agents: this.agentCoordinator, transport: this.a2aTransport, clock: this.clock, ids: this.ids, artifactStore: this.artifactStore });
+    this.remoteAgentCoordinator = new RemoteAgentCoordinator({ store: this.store, gateway: this.actionGateway, agents: this.agentCoordinator, transport: this.a2aTransport, clock: this.clock, ids: this.ids, artifactStore: this.artifactStore, networkAllowlist: options.remoteNetworkAllowlist });
   }
 
   async createTask(input: TaskInput): Promise<Task> {

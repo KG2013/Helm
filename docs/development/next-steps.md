@@ -101,6 +101,10 @@ child 的实际执行、父结果聚合和 CLI/Desktop 操作入口在 #30 继�
 
 `RemoteAgentCoordinator` 先创建受边界约束的本地 child AgentRun，再用 child `agentRunId` 作为 A2A correlation 投递最小上下文。loopback worker 返回 typed status、Evidence 和授权 Artifact 后，由本地 AgentRunCoordinator 记录结果并聚合父 Run；不符合 parent Run Artifact grant 的引用或无 evidence/Artifact 的 success 会被拒绝并将 child 保持为可审计失败/UNKNOWN。远端 action proposal 重新构造成带 parent/child lineage 的本地 ActionRequest，经 ActionGateway 的 Policy/Approval 决定，远端没有自批准或直接提交父 Run 的入口；CLI `a2a list` 与 Desktop `a2a-list` 读取同一 delivery/correlation projection。
 
+## 19. A2A 本地安全门禁（#40：已完成）
+
+远程 action 的 network 默认是 `none`；allowlist 模式必须同时命中 Runtime 配置的 endpoint allowlist 和 URL host，未 allowlist 的请求写入 `a2a.rejected` 并拒绝。远程 capability 不能包含本地 workspace、shell、Keychain 或 tool 边界，scope 和 capability 仍由 child grant 与 ActionGateway 重新检查，`approval_required` 只产生绑定具体 action/scope 的本地审批事件。worker 的 ACK/receipt/output 不能单独完成交付：success 必须携带本地可读 Artifact、Evidence 和 postcondition，Runtime 重新读取并校验 Artifact hash/bytes 后才 ACK；缺证据、越权、凭据样内容和未知副作用保持 UNKNOWN/失败并留在事件账本。
+
 ## 与原架构阶段的关系
 
 架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。

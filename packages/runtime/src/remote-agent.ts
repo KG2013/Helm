@@ -46,6 +46,8 @@ export interface RemoteAgentWorkerResult {
   output?: unknown;
   evidence: Evidence[];
   artifacts: ArtifactReference[];
+  /** A locally re-read Artifact that proves the requested postcondition. */
+  postcondition?: ArtifactReference;
   conflict?: string;
 }
 
@@ -65,6 +67,7 @@ export interface RemoteAgentCoordinatorOptions {
   clock?: RuntimeClock;
   ids?: RuntimeIdFactory;
   artifactStore?: ArtifactStore;
+  networkAllowlist?: readonly string[];
 }
 
 export class RemoteAgentCoordinator {
@@ -75,6 +78,7 @@ export class RemoteAgentCoordinator {
   private readonly clock: RuntimeClock;
   private readonly ids: RuntimeIdFactory;
   private readonly artifactStore?: ArtifactStore;
+  private readonly networkAllowlist: readonly string[];
 
   constructor(options: RemoteAgentCoordinatorOptions) {
     this.store = options.store;
@@ -84,6 +88,7 @@ export class RemoteAgentCoordinator {
     this.clock = options.clock ?? { now: () => new Date() };
     this.ids = options.ids ?? { next: (prefix) => `${prefix}-${Date.now().toString(36)}` };
     this.artifactStore = options.artifactStore;
+    this.networkAllowlist = options.networkAllowlist ?? [];
   }
 
   async delegate(input: RemoteAgentDelegateInput): Promise<RemoteAgentExecutionResult> {
@@ -91,6 +96,7 @@ export class RemoteAgentCoordinator {
     if (!parent) throw new Error(`Unknown parent Run: ${input.parentRunId}`);
     if (input.role !== input.recipient.role || input.principal !== input.recipient.principal) throw new Error('Remote Agent identity does not match the authenticated recipient.');
     if (input.capabilities.some((capability) => !input.recipient.capabilities.includes(capability))) throw new Error('Remote Agent capability is outside the authenticated recipient grant.');
+    if (input.capabilities.some(isLocalCapability)) throw new Error('Remote Agent cannot request local workspace, shell, Keychain, or tool capabilities.');
     if (!scopeWithin(input.scope, input.recipient.scope)) throw new Error('Remote Agent scope is outside the authenticated recipient grant.');
     for (const artifact of input.artifactRefs ?? []) await this.verifyArtifact(artifact, input.parentRunId);
     const child = await this.agents.createChild({
@@ -161,15 +167,20 @@ export class RemoteAgentCoordinator {
     return { child, envelope: record.envelope, delivery, result, aggregate };
   }
 
-  async proposeAction(input: { messageId: ID; actionId: ID; profile: { id: string; version: string }; target: string; capabilities: string[]; scope: Record<string, unknown>; argsHash: string; argsSummary?: string; adapter: ActionAdapter }): Promise<ActionExecutionResult> {
+  async proposeAction(input: { messageId: ID; actionId: ID; profile: { id: string; version: string }; target: string; capabilities: string[]; scope: Record<string, unknown>; network?: ActionRequest['network']; argsHash: string; argsSummary?: string; adapter: ActionAdapter }): Promise<ActionExecutionResult> {
     const record = await this.transport.get(input.messageId);
     if (!record) throw new Error(`Unknown remote Agent message: ${input.messageId}`);
     const child = await this.agents.get(record.envelope.correlationId);
     if (!child) throw new Error('Remote Agent child lineage is unavailable.');
-    if (input.capabilities.some((capability) => !child.identity.capabilities.includes(capability))) throw new Error('Remote Agent action capability is outside the child grant.');
-    if (!scopeWithin(input.scope, child.scope)) throw new Error('Remote Agent action scope is outside the child grant.');
+    if (input.capabilities.some((capability) => !child.identity.capabilities.includes(capability))) return this.rejectAction(record, 'Remote Agent action capability is outside the child grant.');
+    if (input.capabilities.some(isLocalCapability)) return this.rejectAction(record, 'Remote Agent cannot request local workspace, shell, Keychain, or tool capabilities.');
+    if (!scopeWithin(input.scope, child.scope)) return this.rejectAction(record, 'Remote Agent action scope is outside the child grant.');
     const parent = await this.store.getRun(child.parentRunId);
     if (!parent) throw new Error('Parent Run is unavailable for remote action proposal.');
+    const network = input.network ?? { mode: 'none' as const };
+    const networkError = validateRemoteNetwork(network, input.target, this.networkAllowlist);
+    if (networkError) return this.rejectAction(record, networkError);
+    if (/^(?:file|workspace|shell|keychain):/i.test(input.target)) return this.rejectAction(record, 'Remote Agent target is outside the local action boundary.');
     const request: ActionRequest = {
       actionId: input.actionId,
       runId: child.parentRunId,
@@ -180,7 +191,7 @@ export class RemoteAgentCoordinator {
       target: input.target,
       scope: input.scope,
       capabilities: input.capabilities,
-      network: { mode: 'none' },
+      network: { mode: network.mode, hosts: network.hosts ? [...network.hosts] : undefined },
       argsHash: input.argsHash,
       argsSummary: input.argsSummary,
       idempotencyKey: `${child.agentRunId}:${input.actionId}`,
@@ -188,6 +199,11 @@ export class RemoteAgentCoordinator {
       deadline: record.envelope.deadline,
     };
     return this.gateway.execute({ request, adapter: input.adapter, markRunNeedsReconciliation: true });
+  }
+
+  private async rejectAction(record: { envelope: A2AEnvelope }, reason: string): Promise<never> {
+    await this.store.append({ type: 'a2a.rejected', taskId: record.envelope.taskId, runId: record.envelope.runId, payload: { messageId: record.envelope.messageId, correlationId: record.envelope.correlationId, reason: safeError(reason) } });
+    throw new Error(reason);
   }
 
   private async verifyArtifact(artifact: ArtifactReference, parentRunId: ID): Promise<void> {
@@ -233,7 +249,7 @@ async function validateWorkerResult(result: RemoteAgentWorkerResult, parentRunId
   if (!['success', 'failure', 'unknown'].includes(result.status)) throw new Error('Remote Agent result status is invalid.');
   if (!Array.isArray(result.evidence) || result.evidence.length > 32 || !Array.isArray(result.artifacts) || result.artifacts.length > 32) throw new Error('Remote Agent result exceeds the evidence or Artifact bound.');
   const evidence = result.evidence.map((item) => sanitizeEvidence(item));
-  if (result.status === 'success' && evidence.length === 0 && result.artifacts.length === 0) throw new Error('Remote Agent success requires typed evidence or an Artifact.');
+  if (result.status === 'success' && (evidence.length === 0 || result.artifacts.length === 0 || !result.postcondition)) throw new Error('Remote Agent success requires local Evidence, an Artifact, and a postcondition.');
   for (const artifact of result.artifacts) {
     const grant = authorizedArtifacts.find((candidate) => candidate.uri === artifact.uri && candidate.hash.toLowerCase() === artifact.hash.toLowerCase() && candidate.sourceRunId === artifact.sourceRunId);
     if (!grant || artifact.sourceRunId !== parentRunId || !artifact.uri.startsWith('artifact://') || !/^[a-f0-9]{64}$/i.test(artifact.hash) || artifact.bytes !== grant.bytes) throw new Error('Remote Agent Artifact is not authorized by the parent Run grant.');
@@ -242,12 +258,24 @@ async function validateWorkerResult(result: RemoteAgentWorkerResult, parentRunId
       if (createHash('sha256').update(bytes).digest('hex') !== artifact.hash.toLowerCase() || bytes.byteLength !== artifact.bytes) throw new Error('Remote Agent Artifact content does not match its grant.');
     } else throw new Error('Remote Agent ArtifactStore is required for Artifact results.');
   }
+  if (result.postcondition) {
+    const matching = result.artifacts.find((artifact) => artifact.uri === result.postcondition?.uri && artifact.hash.toLowerCase() === result.postcondition?.hash.toLowerCase() && artifact.bytes === result.postcondition?.bytes && artifact.sourceRunId === result.postcondition?.sourceRunId);
+    if (!matching) throw new Error('Remote Agent postcondition is not backed by an authorized Artifact.');
+  }
   const serialized = JSON.stringify(result.output ?? null) ?? '';
   if (serialized.length > 8_000 || SENSITIVE.test(serialized)) throw new Error('Remote Agent output must be bounded and free of credential-like content.');
   return { ...result, output: typeof result.output === 'string' ? result.output.slice(0, 4_000) : result.output, evidence };
 }
 
 function scopeWithin(requested: Record<string, unknown>, allowed: Record<string, unknown>): boolean { return Object.entries(requested).every(([key, value]) => allowed[key] === value); }
+function isLocalCapability(capability: string): boolean { return /^(?:workspace|shell|keychain|tool)(?::|$)/i.test(capability); }
+function validateRemoteNetwork(network: ActionRequest['network'], target: string, allowlist: readonly string[]): string | undefined {
+  if (network.mode === 'none') return /^https?:\/\//i.test(target) ? 'Remote network targets require an explicit allowlist.' : undefined;
+  if (!network.hosts?.length || !allowlist.length || network.hosts.some((host) => !allowlist.includes(host))) return 'Remote network endpoint is not allowlisted.';
+  let hostname: string;
+  try { hostname = new URL(target).hostname; } catch { return 'Remote allowlisted actions require a valid URL target.'; }
+  return network.hosts.includes(hostname) ? undefined : 'Remote target host is outside the allowlist.';
+}
 function hash(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 const SENSITIVE = /api[-_ ]?key|authorization|cookie|password|secret|token|private[_ -]?key/i;
 function sanitizeEvidence(item: Evidence): Evidence {

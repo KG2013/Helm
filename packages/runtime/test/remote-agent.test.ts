@@ -36,6 +36,7 @@ test('Remote Agent delegation preserves child correlation, typed result, authori
     output: { child: child.agentRunId, correlation: envelope.correlationId },
     evidence: [{ type: 'remote.read', summary: 'Remote worker read bounded state.', uri: 'artifact://run-remote-root/evidence', hash: 'b'.repeat(64) }],
     artifacts: [artifact],
+    postcondition: artifact,
   }));
   assert.equal(result.delivery.state, 'ack');
   assert.equal(result.result?.status, 'success');
@@ -70,4 +71,26 @@ test('Remote Agent action proposals re-enter local ActionGateway and cannot self
   const proposal = await remote.proposeAction({ messageId: delegated.envelope.messageId, actionId: 'remote-action-1', profile: { id: 'remote.fixture', version: 'v1' }, target: 'fixture://record/1', capabilities: ['delegate:read'], scope: { taskId: rootRun.taskId }, argsHash: 'c'.repeat(64), adapter: { id: 'remote-fixture', execute: async () => { executions += 1; return { ok: true, receipt: { sideEffect: 'none' }, evidence: [{ type: 'remote.action', summary: 'executed locally' }] }; } } });
   assert.equal(proposal.status, 'approval_required');
   assert.equal(executions, 0);
+});
+
+test('Remote Agent rejects unallowlisted network and local capability requests with audit evidence', async () => {
+  const { remote, store } = await fixture(() => ({ decision: 'allow', reason: 'fixture' }));
+  const delegated = await remote.delegate({
+    parentRunId: rootRun.id, role: recipient.role, principal: recipient.principal, goal: 'Propose a network action', capabilities: ['delegate:read'], scope: { taskId: rootRun.taskId }, allowedCapabilities: ['delegate:read'], allowedScope: { taskId: rootRun.taskId },
+    sender, recipient, context: { goalSummary: 'Network access must be explicitly allowlisted.' }, idempotencyKey: 'remote-network-denied', deadline: new Date(Date.now() + 60_000).toISOString(),
+  });
+  await assert.rejects(() => remote.proposeAction({ messageId: delegated.envelope.messageId, actionId: 'remote-network-1', profile: { id: 'remote.network', version: 'v1' }, target: 'https://untrusted.example.test/resource', capabilities: ['delegate:read'], scope: { taskId: rootRun.taskId }, network: { mode: 'allowlist', hosts: ['untrusted.example.test'] }, argsHash: 'd'.repeat(64), adapter: { id: 'network-fixture', execute: async () => ({ ok: true, receipt: { sideEffect: 'known' } }) } }), /allowlisted/i);
+  await assert.rejects(() => remote.proposeAction({ messageId: delegated.envelope.messageId, actionId: 'remote-local-1', profile: { id: 'remote.local', version: 'v1' }, target: 'workspace://README.md', capabilities: ['delegate:read'], scope: { taskId: rootRun.taskId }, argsHash: 'e'.repeat(64), adapter: { id: 'local-fixture', execute: async () => ({ ok: true, receipt: { sideEffect: 'known' } }) } }), /local action boundary/i);
+  assert.equal((await store.list(rootRun.id)).filter((event) => event.type === 'a2a.rejected').length, 2);
+});
+
+test('Remote Agent receipt alone cannot pass the local evidence and postcondition gate', async () => {
+  const { remote } = await fixture();
+  const delegated = await remote.delegate({
+    parentRunId: rootRun.id, role: recipient.role, principal: recipient.principal, goal: 'Return a receipt without local proof', capabilities: ['delegate:read'], scope: { taskId: rootRun.taskId }, allowedCapabilities: ['delegate:read'], allowedScope: { taskId: rootRun.taskId },
+    sender, recipient, context: { goalSummary: 'A remote receipt is not local verification.' }, idempotencyKey: 'remote-unverified', deadline: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const result = await remote.executeWorker(delegated.envelope.messageId, async () => ({ status: 'success' as const, evidence: [], artifacts: [] }));
+  assert.equal(result.result?.status, 'unknown');
+  assert.equal(result.delivery.state, 'failed');
 });

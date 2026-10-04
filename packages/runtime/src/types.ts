@@ -1003,6 +1003,8 @@ export interface RuntimeOptions {
   approvalTtlMs?: number;
   artifactStore?: ArtifactStore;
   actionGateway?: import('./action-gateway.js').ActionGateway;
+  /** Explicit endpoint allowlist for remote Agent actions; empty by default. */
+  remoteNetworkAllowlist?: readonly string[];
 }
 
 export type RuntimeEventListener = (event: DomainEvent) => void;
