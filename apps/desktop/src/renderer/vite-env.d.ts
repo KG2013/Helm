@@ -10,6 +10,7 @@ interface Window {
     listConnectors: () => Promise<import('@helm/runtime').ConnectorActionProfile[]>
     registerConnector: (request: import('../shared/ipc.js').ConnectorRegisterRequest) => Promise<import('@helm/runtime').ConnectorActionProfile>
     previewConnector: (request: import('../shared/ipc.js').ConnectorPreviewRequest) => Promise<unknown>
+    writeConnector: (request: import('../shared/ipc.js').ConnectorWriteRequest) => Promise<unknown>
     controlRun: (request: import('../shared/ipc.js').RunControlRequest) => Promise<import('@helm/runtime').Run>
     resolveApproval: (request: import('../shared/ipc.js').RunApprovalRequest) => Promise<import('@helm/runtime').Run>
     subscribe: (listener: (payload: import('../shared/ipc.js').RunEventPayload) => void) => () => void

@@ -73,6 +73,10 @@ child 的实际执行、父结果聚合和 CLI/Desktop 操作入口在 #30 继�
 
 `ConnectorRegistry` 记录版本化 target/action profile、目标 allowlist、字段 allowlist 和 scope；未注册 profile、目标、动作、字段或记录范围在进入 Gateway 前拒绝。preview 会生成 before/after、版本条件、影响、回退计划和写后对账计划，并以 `dryRun:true` 经 ActionGateway 审计，适配器只返回 preview，不执行外部写入。CLI 与 Desktop 共用注册、列表和 preview 入口，真实幂等写入在 #33 实现。
 
+## 12. 幂等 Loopback 写入与脱敏 Receipt（#33：已完成）
+
+`LoopbackConnector` 以 `expectedVersion` 做乐观并发检查，以 `idempotencyKey` 保证重复请求不重复改变记录；写入仍先经过 ActionGateway 的默认拒绝/审批策略。事件账本只保留 target、版本、幂等键和 before/after hash，不保留记录字段内容；CLI 与 Desktop 暴露 write 入口。Loopback 是可测试适配器，真实外部系统凭据、写后 read-back 和未知效果对账继续由 #34 处理。
+
 ## 与原架构阶段的关系
 
 架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。

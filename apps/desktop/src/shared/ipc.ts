@@ -13,6 +13,7 @@ export const IPC_CHANNELS = {
   connectorList: 'helm:connector-list',
   connectorRegister: 'helm:connector-register',
   connectorPreview: 'helm:connector-preview',
+  connectorWrite: 'helm:connector-write',
   runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
@@ -86,6 +87,7 @@ export type AgentCreateRequest = {
 export type AgentControlRequest = { parentRunId: string; action: 'cancel' | 'recover'; reason?: string }
 export type ConnectorPreviewRequest = import('@helm/runtime').ConnectorPreviewInput
 export type ConnectorRegisterRequest = import('@helm/runtime').ConnectorActionProfile
+export type ConnectorWriteRequest = import('@helm/runtime').ConnectorWriteInput
 
 export type StartRunResponse = {
   task: Task
@@ -182,4 +184,19 @@ export function isConnectorRegisterRequest(value: unknown): value is ConnectorRe
     && Array.isArray(profile.allowedTargets) && profile.allowedTargets.every((item) => typeof item === 'string')
     && Array.isArray(profile.allowedFields) && profile.allowedFields.every((item) => typeof item === 'string')
     && Boolean(profile.scope) && typeof profile.scope === 'object'
+}
+
+export function isConnectorWriteRequest(value: unknown): value is ConnectorWriteRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<ConnectorWriteRequest>
+  return isRunId(request.runId) && isRunId(request.taskId) && isRunId(request.sessionId)
+    && typeof request.connectorId === 'string' && typeof request.profileId === 'string' && typeof request.profileVersion === 'string'
+    && typeof request.action === 'string' && typeof request.target === 'string' && Boolean(request.scope) && typeof request.scope === 'object'
+    && Boolean(request.after) && typeof request.after === 'object' && isRunId(request.idempotencyKey)
+    && (request.actionId === undefined || isRunId(request.actionId))
+    && (request.expectedVersion === undefined || isRunId(request.expectedVersion))
+    && (request.remoteRequestId === undefined || (typeof request.remoteRequestId === 'string' && request.remoteRequestId.length <= 300))
+    && (request.postcondition === undefined || (typeof request.postcondition === 'string' && request.postcondition.length <= 500))
+    && (request.artifactRef === undefined || (typeof request.artifactRef === 'string' && request.artifactRef.length <= 300))
+    && (request.traceRef === undefined || (typeof request.traceRef === 'string' && request.traceRef.length <= 300))
 }

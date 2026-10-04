@@ -579,6 +579,31 @@ export interface ConnectorRegistryOptions {
   ids?: RuntimeIdFactory;
 }
 
+export interface ConnectorWriteInput {
+  runId: ID;
+  taskId: ID;
+  sessionId: ID;
+  connectorId: string;
+  profileId: string;
+  profileVersion: string;
+  actionId?: ID;
+  action: string;
+  target: string;
+  scope: Record<string, unknown>;
+  after: Record<string, unknown>;
+  expectedVersion?: string;
+  idempotencyKey: string;
+  remoteRequestId?: string;
+  postcondition?: string;
+  artifactRef?: string;
+  traceRef?: string;
+}
+
+export interface ConnectorWriteResult {
+  action: ActionExecutionResult;
+  receipt: { target: string; scope: Record<string, unknown>; beforeHash: string; afterHash: string; version: string; idempotencyKey: string; remoteRequestId: string; postcondition: string; artifactRef?: string; traceRef?: string; replayed: boolean };
+}
+
 export interface VerifierInput {
   task: Task;
   run: Run;
@@ -619,6 +644,7 @@ export type EventType =
   | 'agent.result'
   | 'connector.registered'
   | 'connector.preview'
+  | 'connector.receipt'
   | 'tool.call'
   | 'tool.receipt'
   | 'step.observation'

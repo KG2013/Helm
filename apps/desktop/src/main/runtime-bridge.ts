@@ -11,6 +11,7 @@ import {
   isAgentControlRequest,
   isConnectorPreviewRequest,
   isConnectorRegisterRequest,
+  isConnectorWriteRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
@@ -26,6 +27,7 @@ import {
   type AgentControlRequest,
   type ConnectorPreviewRequest,
   type ConnectorRegisterRequest,
+  type ConnectorWriteRequest,
   type StartRunResponse,
 } from '../shared/ipc.js'
 
@@ -197,6 +199,10 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
   ipc.handle(IPC_CHANNELS.connectorPreview, async (_event, value) => {
     if (!isConnectorPreviewRequest(value)) throw new Error('Invalid Connector preview request.')
     return sanitizeValue(await runtime.previewConnector(value as ConnectorPreviewRequest))
+  })
+  ipc.handle(IPC_CHANNELS.connectorWrite, async (_event, value) => {
+    if (!isConnectorWriteRequest(value)) throw new Error('Invalid Connector write request.')
+    return sanitizeValue(await runtime.writeConnector(value as ConnectorWriteRequest))
   })
 
   return unsubscribe

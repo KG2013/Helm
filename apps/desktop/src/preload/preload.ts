@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type AgentControlRequest, type AgentCreateRequest, type AgentListRequest, type ConnectorPreviewRequest, type ConnectorRegisterRequest, type RunApprovalRequest, type RunControlRequest, type RunExportRequest, type RunExportResponse, type RunReconciliationRequest, type RunReconciliationResponse, type RunSnapshot, type RuntimeInfo, type RunEventPayload, type StartRunRequest, type StartRunResponse } from '../shared/ipc.js'
+import { IPC_CHANNELS, type AgentControlRequest, type AgentCreateRequest, type AgentListRequest, type ConnectorPreviewRequest, type ConnectorRegisterRequest, type ConnectorWriteRequest, type RunApprovalRequest, type RunControlRequest, type RunExportRequest, type RunExportResponse, type RunReconciliationRequest, type RunReconciliationResponse, type RunSnapshot, type RuntimeInfo, type RunEventPayload, type StartRunRequest, type StartRunResponse } from '../shared/ipc.js'
 
 contextBridge.exposeInMainWorld('helm', {
   runtimeInfo: (): Promise<RuntimeInfo> => ipcRenderer.invoke(IPC_CHANNELS.runtimeInfo),
@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('helm', {
   listConnectors: () => ipcRenderer.invoke(IPC_CHANNELS.connectorList),
   registerConnector: (request: ConnectorRegisterRequest) => ipcRenderer.invoke(IPC_CHANNELS.connectorRegister, request),
   previewConnector: (request: ConnectorPreviewRequest) => ipcRenderer.invoke(IPC_CHANNELS.connectorPreview, request),
+  writeConnector: (request: ConnectorWriteRequest) => ipcRenderer.invoke(IPC_CHANNELS.connectorWrite, request),
   controlRun: (request: RunControlRequest) => ipcRenderer.invoke(IPC_CHANNELS.runControl, request),
   resolveApproval: (request: RunApprovalRequest) => ipcRenderer.invoke(IPC_CHANNELS.runApproval, request),
   subscribe: (listener: (payload: RunEventPayload) => void) => {

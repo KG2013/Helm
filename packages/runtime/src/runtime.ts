@@ -693,6 +693,10 @@ export class RuntimeFacade {
     return this.connectorRegistry.preview(input);
   }
 
+  async writeConnector(input: import('./types.js').ConnectorWriteInput) {
+    return this.connectorRegistry.write(input);
+  }
+
   onEvent(listener: RuntimeEventListener): () => void {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { ActionGateway } from './action-gateway.js';
-import type { ActionExecutionResult, ConnectorActionProfile, ConnectorPreview, ConnectorRegistryOptions, EventStore, ID, RuntimeClock, RuntimeIdFactory } from './types.js';
+import type { ActionExecutionResult, ConnectorActionProfile, ConnectorPreview, ConnectorRegistryOptions, ConnectorWriteInput, ConnectorWriteResult, EventStore, ID, RuntimeClock, RuntimeIdFactory } from './types.js';
 
 const defaultClock: RuntimeClock = { now: () => new Date() };
 const defaultIds: RuntimeIdFactory = { next: (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}` };
@@ -29,19 +29,80 @@ export interface ConnectorPreviewResult {
   action: ActionExecutionResult;
 }
 
-/** Versioned allowlist for external targets. This registry only previews; it never writes. */
+export interface LoopbackReadResult {
+  value: Record<string, unknown>;
+  version: string;
+}
+
+export interface LoopbackWriteResult extends LoopbackReadResult {
+  ok: boolean;
+  before: Record<string, unknown>;
+  beforeVersion: string;
+  replayed: boolean;
+  remoteRequestId: string;
+  error?: string;
+}
+
+/** A deterministic local connector used by tests and the first external-write slice. */
+export class LoopbackConnector {
+  private readonly records = new Map<string, { value: Record<string, unknown>; version: string }>();
+  private readonly idempotency = new Map<string, LoopbackWriteResult>();
+  private version = 0;
+
+  async read(target: string): Promise<LoopbackReadResult> {
+    const record = this.records.get(target);
+    return record ? { value: { ...record.value }, version: record.version } : { value: {}, version: 'v0' };
+  }
+
+  async write(input: { target: string; after: Record<string, unknown>; expectedVersion?: string; idempotencyKey: string; remoteRequestId: string }): Promise<LoopbackWriteResult> {
+    const prior = this.idempotency.get(input.idempotencyKey);
+    if (prior) return { ...prior, before: { ...prior.before }, value: { ...prior.value }, replayed: true };
+    const current = await this.read(input.target);
+    if (input.expectedVersion && input.expectedVersion !== current.version) {
+      const failed: LoopbackWriteResult = {
+        ok: false,
+        before: current.value,
+        beforeVersion: current.version,
+        value: current.value,
+        version: current.version,
+        replayed: false,
+        remoteRequestId: input.remoteRequestId,
+        error: `Connector version conflict: expected ${input.expectedVersion}, found ${current.version}.`,
+      };
+      this.idempotency.set(input.idempotencyKey, failed);
+      return { ...failed, before: { ...failed.before }, value: { ...failed.value } };
+    }
+    const next = `v${++this.version}`;
+    const result: LoopbackWriteResult = {
+      ok: true,
+      before: current.value,
+      beforeVersion: current.version,
+      value: { ...input.after },
+      version: next,
+      replayed: false,
+      remoteRequestId: input.remoteRequestId,
+    };
+    this.records.set(input.target, { value: { ...result.value }, version: result.version });
+    this.idempotency.set(input.idempotencyKey, result);
+    return { ...result, before: { ...result.before }, value: { ...result.value } };
+  }
+}
+
+/** Versioned allowlist for external targets and bounded write adapters. */
 export class ConnectorRegistry {
   private readonly store: EventStore;
   private readonly gateway: ActionGateway;
   private readonly clock: RuntimeClock;
   private readonly ids: RuntimeIdFactory;
   private readonly profiles = new Map<string, ConnectorActionProfile>();
+  private readonly loopback: LoopbackConnector;
 
   constructor(options: ConnectorRegistryOptions) {
     this.store = options.store;
     this.gateway = options.gateway;
     this.clock = options.clock ?? defaultClock;
     this.ids = options.ids ?? defaultIds;
+    this.loopback = new LoopbackConnector();
   }
 
   async register(profile: ConnectorActionProfile): Promise<ConnectorActionProfile> {
@@ -62,15 +123,7 @@ export class ConnectorRegistry {
   }
 
   async preview(input: ConnectorPreviewInput): Promise<ConnectorPreviewResult> {
-    const profile = this.get(input.profileId, input.profileVersion);
-    if (!profile || profile.connectorId !== input.connectorId) throw new Error('Connector Action Profile is not registered.');
-    if (!profile.actions.includes(input.action)) throw new Error(`Connector action ${input.action} is not allowed by the profile.`);
-    if (!profile.allowedTargets.some((target) => input.target === target || input.target.startsWith(`${target}/`))) throw new Error('Connector target is outside the allowlist.');
-    if (!scopeWithin(input.scope, profile.scope)) throw new Error('Connector scope is outside the profile grant.');
-    if (input.after && typeof input.after === 'object' && !Array.isArray(input.after)) {
-      const fields = Object.keys(input.after as Record<string, unknown>);
-      if (fields.some((field) => !profile.allowedFields.includes(field))) throw new Error('Connector field is outside the profile grant.');
-    }
+    const profile = validateAction(this.get(input.profileId, input.profileVersion), input.connectorId, input.action, input.target, input.scope, input.after);
     const preview: ConnectorPreview = {
       previewId: this.ids.next('connector-preview'),
       actionId: input.actionId ?? this.ids.next('action-connector'),
@@ -109,11 +162,132 @@ export class ConnectorRegistry {
     await this.store.append({ type: 'connector.preview', taskId: input.taskId, sessionId: input.sessionId, runId: input.runId, payload: preview as unknown as Record<string, unknown> });
     return { preview, action: parentAction };
   }
+
+  async write(input: ConnectorWriteInput): Promise<ConnectorWriteResult> {
+    const profile = validateAction(this.get(input.profileId, input.profileVersion), input.connectorId, input.action, input.target, input.scope, input.after, true);
+    const actionId = input.actionId ?? this.ids.next('action-connector-write');
+    const remoteRequestId = input.remoteRequestId ?? `loopback-${hash({ target: input.target, idempotencyKey: input.idempotencyKey }).slice(0, 16)}`;
+    const postcondition = input.postcondition?.slice(0, 500) || 'read-back version matches the receipt version';
+    const traceRef = input.traceRef?.slice(0, 300) || `run:${input.runId}:action:${actionId}`;
+    let adapterResult: LoopbackWriteResult | undefined;
+    const action = await this.gateway.execute({
+      request: {
+        actionId,
+        runId: input.runId,
+        taskId: input.taskId,
+        sessionId: input.sessionId,
+        profile: { id: profile!.id, version: profile!.version },
+        target: input.target,
+        scope: input.scope,
+        capabilities: [`connector:${input.connectorId}`, input.action],
+        network: { mode: 'none' },
+        argsHash: hash({ action: input.action, target: input.target, scope: input.scope, after: input.after, expectedVersion: input.expectedVersion }),
+        argsSummary: `write:${input.action};target:${input.target};fields:${Object.keys(input.after).sort().join(',') || 'none'}`,
+        idempotencyKey: input.idempotencyKey,
+        dryRun: false,
+        deadline: new Date(this.clock.now().getTime() + 60_000).toISOString(),
+      },
+      adapter: {
+        id: `connector-write:${input.connectorId}`,
+        execute: async () => {
+          adapterResult = await this.loopback.write({ target: input.target, after: input.after, expectedVersion: input.expectedVersion, idempotencyKey: input.idempotencyKey, remoteRequestId });
+          return {
+            ok: adapterResult.ok,
+            output: { version: adapterResult.version },
+            error: adapterResult.error,
+            receipt: { sideEffect: adapterResult.ok ? 'known' : 'none', version: adapterResult.version, beforeHash: hash(adapterResult.before), afterHash: hash(adapterResult.value), replayed: adapterResult.replayed, remoteRequestId: adapterResult.remoteRequestId },
+            evidence: [
+              { type: 'connector.before', summary: `Loopback target ${input.target} before write.`, hash: hash(adapterResult.before) },
+              { type: 'connector.after', summary: `Loopback target ${input.target} after write.`, hash: hash(adapterResult.value) },
+            ],
+          };
+        },
+      },
+      markRunNeedsReconciliation: false,
+    });
+    const current: LoopbackWriteResult = adapterResult ?? await this.loopback.read(input.target).then((read) => ({
+      ok: action.ok,
+      before: read.value,
+      beforeVersion: read.version,
+      value: read.value,
+      version: read.version,
+      replayed: Boolean(action.replayed),
+      remoteRequestId,
+    } satisfies LoopbackWriteResult));
+    const priorReceipt = action.replayed
+      ? [...await this.store.list(input.runId)].reverse().find((event) => event.type === 'connector.receipt' && event.payload.idempotencyKey === input.idempotencyKey)
+      : undefined;
+    const receipt = priorReceipt
+      ? {
+          target: String(priorReceipt.payload.target ?? input.target),
+          scope: safeScope(priorReceipt.payload.scope ?? input.scope),
+          beforeHash: String(priorReceipt.payload.beforeHash ?? hash(current.before)),
+          afterHash: String(priorReceipt.payload.afterHash ?? hash(current.value)),
+          version: String(priorReceipt.payload.version ?? current.version),
+          idempotencyKey: input.idempotencyKey,
+          remoteRequestId: String(priorReceipt.payload.remoteRequestId ?? remoteRequestId),
+          postcondition: String(priorReceipt.payload.postcondition ?? postcondition),
+          ...(priorReceipt.payload.artifactRef ? { artifactRef: String(priorReceipt.payload.artifactRef) } : input.artifactRef ? { artifactRef: input.artifactRef.slice(0, 300) } : {}),
+          traceRef: String(priorReceipt.payload.traceRef ?? traceRef),
+          replayed: true,
+        }
+      : {
+          target: input.target,
+          scope: safeScope(input.scope),
+          beforeHash: hash(current.before),
+          afterHash: hash(current.value),
+          version: current.version,
+          idempotencyKey: input.idempotencyKey,
+          remoteRequestId,
+          postcondition,
+          ...(input.artifactRef ? { artifactRef: input.artifactRef.slice(0, 300) } : {}),
+          traceRef,
+          replayed: Boolean(current.replayed || action.replayed),
+        };
+    if (action.status !== 'denied' && action.status !== 'approval_required') {
+      await this.store.append({
+        type: 'connector.receipt',
+        taskId: input.taskId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        payload: { actionId, connectorId: input.connectorId, profile: { id: profile.id, version: profile.version }, ...receipt },
+      });
+    }
+    return { action, receipt };
+  }
+
+  async readLoopback(target: string): Promise<LoopbackReadResult> {
+    return this.loopback.read(target);
+  }
+}
+
+function validateAction(profile: ConnectorActionProfile | undefined, connectorId: string, action: string, target: string, scope: Record<string, unknown>, after: unknown, requireObject = false): ConnectorActionProfile {
+  if (!profile || profile.connectorId !== connectorId) throw new Error('Connector Action Profile is not registered.');
+  if (!profile.actions.includes(action)) throw new Error(`Connector action ${action} is not allowed by the profile.`);
+  if (!profile.allowedTargets.some((allowedTarget) => target === allowedTarget || target.startsWith(`${allowedTarget}/`))) throw new Error('Connector target is outside the allowlist.');
+  if (!scopeWithin(scope, profile.scope)) throw new Error('Connector scope is outside the profile grant.');
+  if (!after || typeof after !== 'object' || Array.isArray(after)) {
+    if (requireObject) throw new Error('Connector write fields must be an object.');
+    return profile;
+  }
+  const fields = Object.keys(after as Record<string, unknown>);
+  if (fields.some((field) => !profile.allowedFields.includes(field))) throw new Error('Connector field is outside the profile grant.');
+  return profile;
 }
 
 function validateProfile(profile: ConnectorActionProfile): void {
   if (!profile.id || !profile.version || !profile.connectorId) throw new Error('Connector profile identity is required.');
   if (!profile.actions.length || !profile.allowedTargets.length) throw new Error('Connector profile must declare actions and targets.');
+}
+
+function safeScope(value: unknown, depth = 0): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || depth > 3) return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 32).map(([key, entry]) => {
+    if (/api[-_]?key|authorization|cookie|secret|password|token/i.test(key)) return [key, '[redacted]'];
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) return [key, safeScope(entry, depth + 1)];
+    if (Array.isArray(entry)) return [key, entry.slice(0, 32).map((item) => typeof item === 'string' ? item.slice(0, 200) : item)];
+    return [key, typeof entry === 'string' ? entry.slice(0, 300) : entry];
+  }));
 }
 
 function scopeWithin(requested: Record<string, unknown>, allowed: Record<string, unknown>): boolean {

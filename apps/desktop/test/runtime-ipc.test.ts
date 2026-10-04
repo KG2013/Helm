@@ -79,12 +79,15 @@ test('desktop IPC starts a Runtime Run and forwards ordered events', async () =>
   assert.deepEqual(listedAgents.map((item) => item.agentRunId), [agent.agentRunId])
   const recoveredAgents = await ipc.invoke(IPC_CHANNELS.agentControl, { parentRunId: started.run.id, action: 'recover' }) as { parentRunId: string; agents: unknown[] }
   assert.equal(recoveredAgents.parentRunId, started.run.id)
-  await ipc.invoke(IPC_CHANNELS.connectorRegister, { id: 'loopback.records', version: 'v1', connectorId: 'loopback', actions: ['record.preview'], allowedTargets: ['loopback://records'], allowedFields: ['name'], scope: { records: ['1'] } })
+  await ipc.invoke(IPC_CHANNELS.connectorRegister, { id: 'loopback.records', version: 'v1', connectorId: 'loopback', actions: ['record.preview', 'record.write'], allowedTargets: ['loopback://records'], allowedFields: ['name'], scope: { records: ['1'] } })
   const connectors = await ipc.invoke(IPC_CHANNELS.connectorList) as Array<{ id: string }>
   assert.equal(connectors[0]?.id, 'loopback.records')
   const preview = await ipc.invoke(IPC_CHANNELS.connectorPreview, { runId: started.run.id, taskId: started.task.id, sessionId: started.session.id, connectorId: 'loopback', profileId: 'loopback.records', profileVersion: 'v1', action: 'record.preview', target: 'loopback://records/1', scope: { records: ['1'] }, before: { name: 'old' }, after: { name: 'new' }, impact: ['one record'], rollbackPlan: 'restore', reconciliationPlan: 'read back' }) as { preview: { dryRun: boolean }; action: { status: string } }
   assert.equal(preview.preview.dryRun, true)
   assert.equal(preview.action.status, 'denied')
+  const write = await ipc.invoke(IPC_CHANNELS.connectorWrite, { runId: started.run.id, taskId: started.task.id, sessionId: started.session.id, connectorId: 'loopback', profileId: 'loopback.records', profileVersion: 'v1', action: 'record.write', target: 'loopback://records/1', scope: { records: ['1'] }, after: { name: 'new' }, idempotencyKey: 'desktop-write-1' }) as { action: { status: string }; receipt: { target: string } }
+  assert.equal(write.action.status, 'denied')
+  assert.equal(write.receipt.target, 'loopback://records/1')
   const reconciliation = await ipc.invoke(IPC_CHANNELS.runReconciliation, { runId: started.run.id, action: 'inspect' }) as { runId: string; budgetUsage: { steps: number }; candidates: unknown[] }
   assert.equal(reconciliation.runId, started.run.id)
   assert.equal(reconciliation.budgetUsage.steps, snapshot.run.steps)
