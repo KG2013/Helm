@@ -766,6 +766,69 @@ export interface BrowserRegistryOptions {
   ids?: RuntimeIdFactory;
 }
 
+export type A2ADeliveryState = 'queued' | 'sent' | 'ack' | 'failed';
+
+export interface A2AIdentity {
+  id: ID;
+  principal: ID;
+  role: string;
+  capabilities: readonly string[];
+  scope: Record<string, unknown>;
+}
+
+export interface A2ACapabilityGrant {
+  capabilities: readonly string[];
+  scope: Record<string, unknown>;
+}
+
+export interface A2AMinimalContext {
+  goalSummary: string;
+  constraints?: readonly string[];
+  summaries?: readonly string[];
+}
+
+export interface A2AEnvelopeInput {
+  sender: A2AIdentity;
+  recipient: A2AIdentity;
+  capabilityGrant: A2ACapabilityGrant;
+  taskId: ID;
+  runId: ID;
+  correlationId: ID;
+  idempotencyKey: string;
+  deadline: string;
+  scope: Record<string, unknown>;
+  context: A2AMinimalContext;
+  artifactRefs?: readonly ArtifactReference[];
+  signature: string;
+}
+
+export interface A2AEnvelope extends A2AEnvelopeInput {
+  messageId: ID;
+}
+
+export interface A2ADeliveryRecord {
+  messageId: ID;
+  taskId: ID;
+  runId: ID;
+  correlationId: ID;
+  senderId: ID;
+  recipientId: ID;
+  idempotencyKey: string;
+  state: A2ADeliveryState;
+  attempt: number;
+  queuedAt: string;
+  updatedAt: string;
+  deadline: string;
+  receiptHash?: string;
+  error?: string;
+}
+
+export interface A2ATransportOptions {
+  store: EventStore;
+  clock?: RuntimeClock;
+  ids?: RuntimeIdFactory;
+}
+
 export interface VerifierInput {
   task: Task;
   run: Run;
@@ -817,6 +880,9 @@ export type EventType =
   | 'browser.profile_registered'
   | 'browser.action'
   | 'browser.reconciliation'
+  | 'a2a.envelope'
+  | 'a2a.delivery'
+  | 'a2a.rejected'
   | 'tool.call'
   | 'tool.receipt'
   | 'step.observation'

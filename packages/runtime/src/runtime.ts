@@ -8,6 +8,7 @@ import { ActionGateway, createToolActionAdapter, toolActionRequest } from './act
 import { AgentRunCoordinator, type CreateChildAgentInput } from './agent.js';
 import { ConnectorRegistry, type ConnectorPreviewInput } from './connectors.js';
 import { BrowserFixtureRegistry } from './browser-fixture.js';
+import { A2ALoopbackTransport } from './a2a.js';
 import type {
   Budget,
   ApprovalBinding,
@@ -116,6 +117,7 @@ export class RuntimeFacade {
   private readonly agentCoordinator: AgentRunCoordinator;
   private readonly connectorRegistry: ConnectorRegistry;
   private readonly browserRegistry: BrowserFixtureRegistry;
+  private readonly a2aTransport: A2ALoopbackTransport;
   private readonly eventListeners = new Set<RuntimeEventListener>();
   private readonly tasks = new Map<ID, Task>();
   private readonly sessions = new Map<ID, Session>();
@@ -142,6 +144,7 @@ export class RuntimeFacade {
     this.agentCoordinator = new AgentRunCoordinator({ store: this.store, gateway: this.actionGateway, clock: this.clock, ids: this.ids });
     this.connectorRegistry = new ConnectorRegistry({ store: this.store, gateway: this.actionGateway, artifactStore: this.artifactStore, clock: this.clock, ids: this.ids });
     this.browserRegistry = new BrowserFixtureRegistry({ store: this.store, gateway: this.actionGateway, artifactStore: this.artifactStore, clock: this.clock, ids: this.ids });
+    this.a2aTransport = new A2ALoopbackTransport({ store: this.store, clock: this.clock, ids: this.ids });
   }
 
   async createTask(input: TaskInput): Promise<Task> {
@@ -762,6 +765,34 @@ export class RuntimeFacade {
 
   clearBrowserFailure(contextId: ID) {
     this.browserRegistry.clearFailure(contextId);
+  }
+
+  registerA2AIdentity(identity: import('./types.js').A2AIdentity, fixtureKey: string) {
+    return this.a2aTransport.registerIdentity(identity, fixtureKey);
+  }
+
+  signA2AEnvelope(input: Omit<import('./types.js').A2AEnvelopeInput, 'signature'>) {
+    return this.a2aTransport.sign(input);
+  }
+
+  sendA2A(input: import('./types.js').A2AEnvelopeInput) {
+    return this.a2aTransport.send(input);
+  }
+
+  dispatchA2A(messageId: ID) {
+    return this.a2aTransport.dispatch(messageId);
+  }
+
+  ackA2A(messageId: ID, receiptHash: string) {
+    return this.a2aTransport.ack(messageId, receiptHash);
+  }
+
+  failA2A(messageId: ID, reason: string) {
+    return this.a2aTransport.fail(messageId, reason);
+  }
+
+  listA2ADeliveries(runId?: ID) {
+    return this.a2aTransport.list(runId);
   }
 
   onEvent(listener: RuntimeEventListener): () => void {
