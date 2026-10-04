@@ -575,6 +575,7 @@ export interface ConnectorPreview {
 export interface ConnectorRegistryOptions {
   store: EventStore;
   gateway: import('./action-gateway.js').ActionGateway;
+  artifactStore?: ArtifactStore;
   clock?: RuntimeClock;
   ids?: RuntimeIdFactory;
 }
@@ -602,6 +603,21 @@ export interface ConnectorWriteInput {
 export interface ConnectorWriteResult {
   action: ActionExecutionResult;
   receipt: { target: string; scope: Record<string, unknown>; beforeHash: string; afterHash: string; version: string; idempotencyKey: string; remoteRequestId: string; postcondition: string; artifactRef?: string; traceRef?: string; replayed: boolean };
+  verification?: ConnectorVerificationResult;
+}
+
+export interface ConnectorVerificationResult {
+  actionId: ID;
+  target: string;
+  status: 'known' | 'failed' | 'unknown';
+  expectedAfterHash: string;
+  observedAfterHash?: string;
+  expectedVersion?: string;
+  observedVersion?: string;
+  postcondition: string;
+  evidence: Evidence[];
+  artifact?: ArtifactReference;
+  reason?: string;
 }
 
 export interface VerifierInput {
@@ -645,6 +661,7 @@ export type EventType =
   | 'connector.registered'
   | 'connector.preview'
   | 'connector.receipt'
+  | 'connector.reconciliation'
   | 'tool.call'
   | 'tool.receipt'
   | 'step.observation'

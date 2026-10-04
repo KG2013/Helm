@@ -77,6 +77,10 @@ child 的实际执行、父结果聚合和 CLI/Desktop 操作入口在 #30 继�
 
 `LoopbackConnector` 以 `expectedVersion` 做乐观并发检查，以 `idempotencyKey` 保证重复请求不重复改变记录；写入仍先经过 ActionGateway 的默认拒绝/审批策略。事件账本只保留 target、版本、幂等键和 before/after hash，不保留记录字段内容；CLI 与 Desktop 暴露 write 入口。Loopback 是可测试适配器，真实外部系统凭据、写后 read-back 和未知效果对账继续由 #34 处理。
 
+## 13. 写后验证与 UNKNOWN 对账（#34：已完成）
+
+成功的 Loopback 写入自动执行 read-after-write，比较 after hash 与 version 条件，并在可用时写入只含哈希/版本元数据的受限 Artifact。断连、超时、部分成功和异步结果由 Loopback failure injection 统一映射为 UNKNOWN 与 `run.needs_reconciliation`；读取到不匹配状态则为 failed，不能依据 HTTP 状态或模型文字放行。CLI `connector verify`、Desktop `connector-verify` 支持查询验证，`reconcile --action-id` 支持携证据标记 known/failed；重复 write 使用原幂等键安全重试，不会重复改变记录。
+
 ## 与原架构阶段的关系
 
 架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。

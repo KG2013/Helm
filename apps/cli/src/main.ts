@@ -26,7 +26,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 function printHelp(): void {
-  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm agent list <run-id>  List persisted child AgentRuns\n  helm agent create <run-id> <role> <goal>  Create a bounded child AgentRun\n  helm agent cancel|recover <run-id>  Cancel or recover child AgentRuns\n  helm connector list  List registered Connector Profiles\n  helm connector register <id> <version> <connector-id>  Register a bounded Profile\n  helm connector preview <run-id> <connector-id> <profile-id> <version> <action> <target>  Create a dry-run preview\n  helm connector write <run-id> <connector-id> <profile-id> <version> <action> <target>  Request an idempotent connector write\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
+  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm agent list <run-id>  List persisted child AgentRuns\n  helm agent create <run-id> <role> <goal>  Create a bounded child AgentRun\n  helm agent cancel|recover <run-id>  Cancel or recover child AgentRuns\n  helm connector list  List registered Connector Profiles\n  helm connector register <id> <version> <connector-id>  Register a bounded Profile\n  helm connector preview <run-id> <connector-id> <profile-id> <version> <action> <target>  Create a dry-run preview\n  helm connector write <run-id> <connector-id> <profile-id> <version> <action> <target>  Request an idempotent connector write\n  helm connector verify <run-id> <action-id> <target>  Query read-after-write evidence\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
 }
 
 async function printRun(runtime: RuntimeFacade, goal: string, workspaceId: string, jsonl = false): Promise<void> {
@@ -169,7 +169,7 @@ async function controlRun(runId: string, action: 'pause' | 'resume' | 'cancel', 
   }
 }
 
-async function reconcileRun(runId: string, options: { toolCallId?: string; outcome?: 'known' | 'failed' | 'unknown'; summary?: string; uri?: string; hash?: string }): Promise<void> {
+async function reconcileRun(runId: string, options: { toolCallId?: string; actionId?: string; outcome?: 'known' | 'failed' | 'unknown'; summary?: string; uri?: string; hash?: string }): Promise<void> {
   const statePath = process.env.HELM_STATE_DB
   if (!statePath) {
     console.error('helm reconcile requires HELM_STATE_DB to point at the Runtime SQLite ledger')
@@ -192,7 +192,7 @@ async function reconcileRun(runId: string, options: { toolCallId?: string; outco
     const evidence = options.summary
       ? [{ type: 'runtime.reconciliation', summary: options.summary, ...(options.uri ? { uri: options.uri } : {}), ...(options.hash ? { hash: options.hash } : {}) }]
       : undefined
-    const record = await runtime.recordReconciliation({ runId, toolCallId: options.toolCallId, outcome: options.outcome, evidence, reason: options.summary })
+    const record = await runtime.recordReconciliation({ runId, toolCallId: options.toolCallId, actionId: options.actionId, outcome: options.outcome, evidence, reason: options.summary })
     console.log(JSON.stringify({ runId, reconciliation: record, budgetUsage: await runtime.getBudgetUsage(runId), candidates: await runtime.listReconciliationCandidates(runId) }, null, 2))
   } finally {
     await runtime.shutdown('CLI reconciliation completed')
@@ -240,7 +240,7 @@ async function agentCommand(action: 'list' | 'create' | 'cancel' | 'recover', ar
   }
 }
 
-async function connectorCommand(action: 'list' | 'register' | 'preview' | 'write', args: string[]): Promise<void> {
+async function connectorCommand(action: 'list' | 'register' | 'preview' | 'write' | 'verify', args: string[]): Promise<void> {
   const statePath = process.env.HELM_STATE_DB
   if (!statePath) {
     console.error('helm connector requires HELM_STATE_DB to point at the Runtime SQLite ledger')
@@ -263,6 +263,17 @@ async function connectorCommand(action: 'list' | 'register' | 'preview' | 'write
       const scope = scopeIndex >= 0 && args[scopeIndex + 1] ? JSON.parse(args[scopeIndex + 1]) as Record<string, unknown> : {}
       if (!id || !version || !connectorId || !actions.length || !targets.length) throw new Error('connector register requires id, version, connector-id, --actions, and --targets')
       console.log(JSON.stringify(await runtime.registerConnectorProfile({ id, version, connectorId, actions, allowedTargets: targets, allowedFields: fields, scope }), null, 2))
+      return
+    }
+    if (action === 'verify') {
+      const [runId, actionId, target] = args
+      const run = runId ? await runtime.getRun(runId) : undefined
+      const expectedHashIndex = args.indexOf('--expected-hash')
+      const expectedVersionIndex = args.indexOf('--expected-version')
+      const postconditionIndex = args.indexOf('--postcondition')
+      const expectedAfterHash = expectedHashIndex >= 0 ? args[expectedHashIndex + 1]?.trim() : undefined
+      if (!run || !actionId || !target || !expectedAfterHash || !/^[a-f0-9]{64}$/i.test(expectedAfterHash)) throw new Error('connector verify requires run id, action id, target, and --expected-hash with a SHA-256 hash')
+      console.log(JSON.stringify(await runtime.verifyConnectorWrite({ runId, taskId: run.taskId, sessionId: run.sessionId, actionId, target, expectedAfterHash, expectedVersion: expectedVersionIndex >= 0 ? args[expectedVersionIndex + 1]?.trim() : undefined, postcondition: postconditionIndex >= 0 ? args[postconditionIndex + 1] : undefined }), null, 2))
       return
     }
     const [runId, connectorId, profileId, profileVersion, actionName, target] = args
@@ -411,6 +422,8 @@ if (command === 'run') {
 } else if (command === 'reconcile') {
   const runId = args[0]?.trim()
   const toolCallId = args[1]?.trim() || undefined
+  const actionIdIndex = args.indexOf('--action-id')
+  const actionId = actionIdIndex >= 0 ? args[actionIdIndex + 1]?.trim() : undefined
   const outcomeIndex = args.indexOf('--outcome')
   const rawOutcome = outcomeIndex >= 0 ? args[outcomeIndex + 1] : undefined
   const outcome = rawOutcome === 'known' || rawOutcome === 'failed' || rawOutcome === 'unknown' ? rawOutcome : undefined
@@ -424,7 +437,7 @@ if (command === 'run') {
     console.error('helm reconcile requires a run id; recording known/failed outcomes also requires --summary')
     process.exitCode = 2
   } else {
-    await reconcileRun(runId, { toolCallId, outcome, summary, uri, hash })
+    await reconcileRun(runId, { toolCallId, actionId, outcome, summary, uri, hash })
   }
 } else if (command === 'agent') {
   const action = args[0] === 'create' ? 'create' : args[0] === 'list' ? 'list' : args[0] === 'cancel' ? 'cancel' : args[0] === 'recover' ? 'recover' : undefined
@@ -435,9 +448,9 @@ if (command === 'run') {
     await agentCommand(action, args.slice(1))
   }
 } else if (command === 'connector') {
-  const action = args[0] === 'list' ? 'list' : args[0] === 'register' ? 'register' : args[0] === 'preview' ? 'preview' : args[0] === 'write' ? 'write' : undefined
+  const action = args[0] === 'list' ? 'list' : args[0] === 'register' ? 'register' : args[0] === 'preview' ? 'preview' : args[0] === 'write' ? 'write' : args[0] === 'verify' ? 'verify' : undefined
   if (!action) {
-    console.error('helm connector requires list, register, preview, or write')
+    console.error('helm connector requires list, register, preview, write, or verify')
     process.exitCode = 2
   } else {
     await connectorCommand(action, args.slice(1))

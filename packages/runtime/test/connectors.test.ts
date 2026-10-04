@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ActionGateway, ConnectorRegistry, InMemoryEventStore } from '../src/index.js';
+import { ActionGateway, ConnectorRegistry, InMemoryEventStore, MemoryArtifactStore } from '../src/index.js';
 
 async function fixture() {
   const store = new InMemoryEventStore();
@@ -63,4 +63,26 @@ test('ConnectorRegistry rejects stale expected versions without mutating the rec
   const result = await registry.write({ runId: 'run-connector-conflict', taskId: 'task-connector-conflict', sessionId: 'session-connector-conflict', connectorId: 'loopback', profileId: 'loopback.records', profileVersion: 'v1', action: 'record.write', target: 'loopback://records/2', scope: { records: ['2'] }, after: { name: 'new' }, expectedVersion: 'v9', idempotencyKey: 'write-conflict' });
   assert.equal(result.action.status, 'failed');
   assert.equal(result.receipt.version, 'v0');
+});
+
+test('ConnectorRegistry verifies read-after-write, stores restricted evidence, and reconciles injected disconnects', async () => {
+  const store = new InMemoryEventStore();
+  const gateway = new ActionGateway({ store, policy: () => ({ decision: 'allow' as const, reason: 'connector write policy' }) });
+  const registry = new ConnectorRegistry({ store, gateway, artifactStore: new MemoryArtifactStore() });
+  await registry.register({ id: 'loopback.records', version: 'v1', connectorId: 'loopback', actions: ['record.write'], allowedTargets: ['loopback://records'], allowedFields: ['name'], scope: { records: ['1'] } });
+  const input = { runId: 'run-connector-verify', taskId: 'task-connector-verify', sessionId: 'session-connector-verify', connectorId: 'loopback', profileId: 'loopback.records', profileVersion: 'v1', action: 'record.write', target: 'loopback://records/1', scope: { records: ['1'] }, after: { name: 'verified' }, idempotencyKey: 'verify-once' } as const;
+  const first = await registry.write(input);
+  assert.equal(first.verification?.status, 'known');
+  assert.ok(first.verification?.artifact?.uri.startsWith('artifact://'));
+  registry.injectLoopbackReadFailure(input.target, 'disconnect');
+  const replay = await registry.write(input);
+  assert.equal(replay.action.replayed, true);
+  assert.equal(replay.verification?.status, 'unknown');
+  assert.ok((await store.list(input.runId)).some((event) => event.type === 'run.needs_reconciliation'));
+  registry.clearLoopbackReadFailure(input.target);
+  const resolved = await registry.verifyWrite({ runId: input.runId, taskId: input.taskId, sessionId: input.sessionId, actionId: first.action.actionId, target: input.target, expectedAfterHash: first.receipt.afterHash, expectedVersion: first.receipt.version });
+  assert.equal(resolved.status, 'known');
+  const events = await store.list(input.runId);
+  assert.ok(events.some((event) => event.type === 'connector.reconciliation'));
+  assert.ok(events.some((event) => event.type === 'run.reconciled' && event.payload.actionId === first.action.actionId));
 });

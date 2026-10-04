@@ -88,6 +88,8 @@ test('desktop IPC starts a Runtime Run and forwards ordered events', async () =>
   const write = await ipc.invoke(IPC_CHANNELS.connectorWrite, { runId: started.run.id, taskId: started.task.id, sessionId: started.session.id, connectorId: 'loopback', profileId: 'loopback.records', profileVersion: 'v1', action: 'record.write', target: 'loopback://records/1', scope: { records: ['1'] }, after: { name: 'new' }, idempotencyKey: 'desktop-write-1' }) as { action: { status: string }; receipt: { target: string } }
   assert.equal(write.action.status, 'denied')
   assert.equal(write.receipt.target, 'loopback://records/1')
+  const verification = await ipc.invoke(IPC_CHANNELS.connectorVerify, { runId: started.run.id, taskId: started.task.id, sessionId: started.session.id, actionId: 'desktop-write-1', target: 'loopback://records/1', expectedAfterHash: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a' }) as { status: string }
+  assert.equal(verification.status, 'known')
   const reconciliation = await ipc.invoke(IPC_CHANNELS.runReconciliation, { runId: started.run.id, action: 'inspect' }) as { runId: string; budgetUsage: { steps: number }; candidates: unknown[] }
   assert.equal(reconciliation.runId, started.run.id)
   assert.equal(reconciliation.budgetUsage.steps, snapshot.run.steps)

@@ -138,7 +138,7 @@ export class RuntimeFacade {
     this.artifactStore = options.artifactStore;
     this.actionGateway = options.actionGateway ?? new ActionGateway({ store: this.store, clock: this.clock, ids: this.ids });
     this.agentCoordinator = new AgentRunCoordinator({ store: this.store, gateway: this.actionGateway, clock: this.clock, ids: this.ids });
-    this.connectorRegistry = new ConnectorRegistry({ store: this.store, gateway: this.actionGateway, clock: this.clock, ids: this.ids });
+    this.connectorRegistry = new ConnectorRegistry({ store: this.store, gateway: this.actionGateway, artifactStore: this.artifactStore, clock: this.clock, ids: this.ids });
   }
 
   async createTask(input: TaskInput): Promise<Task> {
@@ -695,6 +695,10 @@ export class RuntimeFacade {
 
   async writeConnector(input: import('./types.js').ConnectorWriteInput) {
     return this.connectorRegistry.write(input);
+  }
+
+  async verifyConnectorWrite(input: Parameters<ConnectorRegistry['verifyWrite']>[0]) {
+    return this.connectorRegistry.verifyWrite(input);
   }
 
   onEvent(listener: RuntimeEventListener): () => void {

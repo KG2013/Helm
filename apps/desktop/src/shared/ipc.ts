@@ -14,6 +14,7 @@ export const IPC_CHANNELS = {
   connectorRegister: 'helm:connector-register',
   connectorPreview: 'helm:connector-preview',
   connectorWrite: 'helm:connector-write',
+  connectorVerify: 'helm:connector-verify',
   runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
@@ -59,6 +60,7 @@ export type RunReconciliationRequest = {
   runId: string
   action: 'inspect' | 'record'
   toolCallId?: string
+  actionId?: string
   outcome?: 'known' | 'failed' | 'unknown'
   evidence?: Evidence[]
   reason?: string
@@ -88,6 +90,16 @@ export type AgentControlRequest = { parentRunId: string; action: 'cancel' | 'rec
 export type ConnectorPreviewRequest = import('@helm/runtime').ConnectorPreviewInput
 export type ConnectorRegisterRequest = import('@helm/runtime').ConnectorActionProfile
 export type ConnectorWriteRequest = import('@helm/runtime').ConnectorWriteInput
+export type ConnectorVerifyRequest = {
+  runId: string
+  taskId: string
+  sessionId: string
+  actionId: string
+  target: string
+  expectedAfterHash: string
+  expectedVersion?: string
+  postcondition?: string
+}
 
 export type StartRunResponse = {
   task: Task
@@ -140,6 +152,7 @@ export function isRunReconciliationRequest(value: unknown): value is RunReconcil
   const request = value as Partial<RunReconciliationRequest>
   if (!isRunId(request.runId) || (request.action !== 'inspect' && request.action !== 'record')) return false
   if (request.toolCallId !== undefined && !isRunId(request.toolCallId)) return false
+  if (request.actionId !== undefined && !isRunId(request.actionId)) return false
   if (request.outcome !== undefined && request.outcome !== 'known' && request.outcome !== 'failed' && request.outcome !== 'unknown') return false
   if (request.reason !== undefined && (typeof request.reason !== 'string' || request.reason.length > 2_000)) return false
   if (request.evidence !== undefined && (!Array.isArray(request.evidence) || request.evidence.length > 32 || request.evidence.some((item) => !item || typeof item !== 'object' || typeof item.type !== 'string' || typeof item.summary !== 'string'))) return false
@@ -199,4 +212,14 @@ export function isConnectorWriteRequest(value: unknown): value is ConnectorWrite
     && (request.postcondition === undefined || (typeof request.postcondition === 'string' && request.postcondition.length <= 500))
     && (request.artifactRef === undefined || (typeof request.artifactRef === 'string' && request.artifactRef.length <= 300))
     && (request.traceRef === undefined || (typeof request.traceRef === 'string' && request.traceRef.length <= 300))
+}
+
+export function isConnectorVerifyRequest(value: unknown): value is ConnectorVerifyRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<ConnectorVerifyRequest>
+  return isRunId(request.runId) && isRunId(request.taskId) && isRunId(request.sessionId) && isRunId(request.actionId)
+    && typeof request.target === 'string' && request.target.length > 0 && request.target.length <= 500
+    && typeof request.expectedAfterHash === 'string' && /^[a-f0-9]{64}$/i.test(request.expectedAfterHash)
+    && (request.expectedVersion === undefined || isRunId(request.expectedVersion))
+    && (request.postcondition === undefined || (typeof request.postcondition === 'string' && request.postcondition.length <= 500))
 }

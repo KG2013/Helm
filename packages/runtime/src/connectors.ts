@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { ActionGateway } from './action-gateway.js';
-import type { ActionExecutionResult, ConnectorActionProfile, ConnectorPreview, ConnectorRegistryOptions, ConnectorWriteInput, ConnectorWriteResult, EventStore, ID, RuntimeClock, RuntimeIdFactory } from './types.js';
+import type { ActionExecutionResult, ConnectorActionProfile, ConnectorPreview, ConnectorRegistryOptions, ConnectorVerificationResult, ConnectorWriteInput, ConnectorWriteResult, EventStore, ID, RuntimeClock, RuntimeIdFactory } from './types.js';
 
 const defaultClock: RuntimeClock = { now: () => new Date() };
 const defaultIds: RuntimeIdFactory = { next: (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}` };
@@ -47,11 +47,22 @@ export interface LoopbackWriteResult extends LoopbackReadResult {
 export class LoopbackConnector {
   private readonly records = new Map<string, { value: Record<string, unknown>; version: string }>();
   private readonly idempotency = new Map<string, LoopbackWriteResult>();
+  private readonly readFailures = new Map<string, string>();
   private version = 0;
 
   async read(target: string): Promise<LoopbackReadResult> {
+    const failure = this.readFailures.get(target);
+    if (failure) throw new Error(`Loopback read ${failure}.`);
     const record = this.records.get(target);
     return record ? { value: { ...record.value }, version: record.version } : { value: {}, version: 'v0' };
+  }
+
+  injectReadFailure(target: string, reason: 'timeout' | 'disconnect' | 'partial' | 'async'): void {
+    this.readFailures.set(target, reason);
+  }
+
+  clearReadFailure(target: string): void {
+    this.readFailures.delete(target);
   }
 
   async write(input: { target: string; after: Record<string, unknown>; expectedVersion?: string; idempotencyKey: string; remoteRequestId: string }): Promise<LoopbackWriteResult> {
@@ -96,6 +107,7 @@ export class ConnectorRegistry {
   private readonly ids: RuntimeIdFactory;
   private readonly profiles = new Map<string, ConnectorActionProfile>();
   private readonly loopback: LoopbackConnector;
+  private readonly artifactStore?: ConnectorRegistryOptions['artifactStore'];
 
   constructor(options: ConnectorRegistryOptions) {
     this.store = options.store;
@@ -103,6 +115,7 @@ export class ConnectorRegistry {
     this.clock = options.clock ?? defaultClock;
     this.ids = options.ids ?? defaultIds;
     this.loopback = new LoopbackConnector();
+    this.artifactStore = options.artifactStore;
   }
 
   async register(profile: ConnectorActionProfile): Promise<ConnectorActionProfile> {
@@ -213,6 +226,14 @@ export class ConnectorRegistry {
       version: read.version,
       replayed: Boolean(action.replayed),
       remoteRequestId,
+    } satisfies LoopbackWriteResult)).catch(() => ({
+      ok: action.ok,
+      before: {},
+      beforeVersion: 'unknown',
+      value: {},
+      version: 'unknown',
+      replayed: Boolean(action.replayed),
+      remoteRequestId,
     } satisfies LoopbackWriteResult));
     const priorReceipt = action.replayed
       ? [...await this.store.list(input.runId)].reverse().find((event) => event.type === 'connector.receipt' && event.payload.idempotencyKey === input.idempotencyKey)
@@ -253,7 +274,65 @@ export class ConnectorRegistry {
         payload: { actionId, connectorId: input.connectorId, profile: { id: profile.id, version: profile.version }, ...receipt },
       });
     }
-    return { action, receipt };
+    const verification = action.status === 'executed'
+      ? await this.verifyWrite({ runId: input.runId, taskId: input.taskId, sessionId: input.sessionId, actionId, target: input.target, expectedAfterHash: receipt.afterHash, expectedVersion: receipt.version, postcondition })
+      : undefined;
+    return { action, receipt, verification };
+  }
+
+  async verifyWrite(input: { runId: ID; taskId: ID; sessionId: ID; actionId: ID; target: string; expectedAfterHash: string; expectedVersion?: string; postcondition?: string }): Promise<ConnectorVerificationResult> {
+    const postcondition = input.postcondition?.slice(0, 500) || 'read-back version matches the receipt version';
+    let observedAfterHash: string | undefined;
+    let observedVersion: string | undefined;
+    let status: ConnectorVerificationResult['status'];
+    let reason: string | undefined;
+    try {
+      const observed = await this.loopback.read(input.target);
+      observedAfterHash = hash(observed.value);
+      observedVersion = observed.version;
+      status = observedAfterHash === input.expectedAfterHash && (!input.expectedVersion || observed.version === input.expectedVersion) ? 'known' : 'failed';
+      if (status === 'failed') reason = 'Read-after-write state does not satisfy the expected hash/version postcondition.';
+    } catch (error) {
+      status = 'unknown';
+      reason = error instanceof Error ? error.message.slice(0, 500) : 'Connector read-after-write failed.';
+    }
+    const evidence: Array<{ type: string; summary: string; uri?: string; hash?: string }> = [{
+      type: 'connector.read-after-write',
+      summary: status === 'known' ? `Read-after-write verified ${input.target}.` : status === 'failed' ? `Read-after-write detected a postcondition mismatch for ${input.target}.` : `Read-after-write is unavailable for ${input.target}.`,
+      uri: `connector://${encodeURIComponent(input.target)}/read-after-write`,
+      ...(observedAfterHash ? { hash: observedAfterHash } : {}),
+    }];
+    let artifact;
+    if (this.artifactStore && observedVersion) {
+      try {
+        artifact = await this.artifactStore.put({
+          runId: input.runId,
+          type: 'connector-read-after-write',
+          extension: 'json',
+          content: JSON.stringify({ target: input.target, status, expectedAfterHash: input.expectedAfterHash, observedAfterHash, expectedVersion: input.expectedVersion, observedVersion, postcondition }),
+          limitations: ['Snapshot contains hashes and version metadata only; connector field values are excluded.'],
+        });
+        evidence.push({ type: 'connector.read-after-write-artifact', summary: 'Restricted read-after-write evidence artifact.', uri: artifact.uri, hash: artifact.hash });
+      } catch (error) {
+        reason = `${reason ? `${reason} ` : ''}Evidence artifact unavailable: ${error instanceof Error ? error.message.slice(0, 200) : 'unknown error'}`;
+      }
+    }
+    const result: ConnectorVerificationResult = { actionId: input.actionId, target: input.target, status, expectedAfterHash: input.expectedAfterHash, observedAfterHash, expectedVersion: input.expectedVersion, observedVersion, postcondition, evidence, artifact, reason };
+    await this.store.append({ type: 'connector.reconciliation', taskId: input.taskId, sessionId: input.sessionId, runId: input.runId, payload: result as unknown as Record<string, unknown> });
+    if (status === 'unknown') {
+      await this.store.append({ type: 'run.needs_reconciliation', taskId: input.taskId, sessionId: input.sessionId, runId: input.runId, payload: { state: 'needs_reconciliation', reason: reason ?? 'Connector read-after-write is unknown.', actionId: input.actionId } });
+    } else {
+      await this.store.append({ type: 'run.reconciled', taskId: input.taskId, sessionId: input.sessionId, runId: input.runId, payload: { id: this.ids.next('reconciliation'), runId: input.runId, actionId: input.actionId, outcome: status, evidence, reason } });
+    }
+    return result;
+  }
+
+  injectLoopbackReadFailure(target: string, reason: 'timeout' | 'disconnect' | 'partial' | 'async'): void {
+    this.loopback.injectReadFailure(target, reason);
+  }
+
+  clearLoopbackReadFailure(target: string): void {
+    this.loopback.clearReadFailure(target);
   }
 
   async readLoopback(target: string): Promise<LoopbackReadResult> {

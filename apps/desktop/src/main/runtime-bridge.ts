@@ -12,6 +12,7 @@ import {
   isConnectorPreviewRequest,
   isConnectorRegisterRequest,
   isConnectorWriteRequest,
+  isConnectorVerifyRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
@@ -28,6 +29,7 @@ import {
   type ConnectorPreviewRequest,
   type ConnectorRegisterRequest,
   type ConnectorWriteRequest,
+  type ConnectorVerifyRequest,
   type StartRunResponse,
 } from '../shared/ipc.js'
 
@@ -160,6 +162,7 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
       record = await runtime.recordReconciliation({
         runId: request.runId,
         toolCallId: request.toolCallId,
+        actionId: request.actionId,
         outcome: request.outcome!,
         evidence: request.evidence,
         reason: request.reason,
@@ -203,6 +206,10 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
   ipc.handle(IPC_CHANNELS.connectorWrite, async (_event, value) => {
     if (!isConnectorWriteRequest(value)) throw new Error('Invalid Connector write request.')
     return sanitizeValue(await runtime.writeConnector(value as ConnectorWriteRequest))
+  })
+  ipc.handle(IPC_CHANNELS.connectorVerify, async (_event, value) => {
+    if (!isConnectorVerifyRequest(value)) throw new Error('Invalid Connector verification request.')
+    return sanitizeValue(await runtime.verifyConnectorWrite(value as ConnectorVerifyRequest))
   })
 
   return unsubscribe
