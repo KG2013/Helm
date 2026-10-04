@@ -1,6 +1,6 @@
 # 下一步实施计划
 
-更新日期：2026-10-04。架构已确认；#1–#4、T1/#6 至 T10/#15 的 Runtime 核心、Office worker、Episode/release gate、ownership/reconnect 和 Experience Candidate 已接入，#23 已补齐 CLI、Desktop IPC 与候选审核面板，#19 已补齐 digest/non-root Docker sandbox 合同与 fixture，#42 已补齐统一 G0 acceptance preflight 与 release gate 输出。当前剩余工作集中在真实 Docker daemon/image smoke、厂商联调、目标环境 Office/OCR smoke 和打包重启回归。当前能力参见 [实现状态](implementation-status.md)。
+更新日期：2026-10-04。架构已确认；#1–#4、T1/#6 至 T10/#15 的 Runtime 核心、Office worker、Episode/release gate、ownership/reconnect 和 Experience Candidate 已接入，#23 已补齐 CLI、Desktop IPC 与候选审核面板，#19 已补齐 digest/non-root Docker sandbox 合同与 fixture，#42 已补齐统一 G0 acceptance preflight 与 release gate 输出，#43 已补齐显式 opt-in smoke 证据收集和 Electron packaged smoke 接线。当前剩余工作集中在真实 Docker daemon/image smoke、厂商联调、目标环境 Office/OCR smoke 和打包重启回归。当前能力参见 [实现状态](implementation-status.md)。
 
 ## 1. 对话界面接入 Runtime：已完成（#1–#4）
 
@@ -41,7 +41,7 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 真实 worker 进程管理、Runtime E2E、任务前 health preflight 和 CLI/Desktop 的同一 Artifact/Verification projection 已接入；`helm office health` 会报告依赖版本、路径和缺失项。当前环境仍缺少 `tesseract`，真实 OCR smoke 尚未通过；DOCX 检查验证有界转换和可打开的 PDF 页数，不做像素级视觉对比；缺少渲染器或 OCR 命令时保持 UNKNOWN。
 
-剩余工作集中在 acceptance preflight 通过后的真实 Docker image/daemon smoke、DeepSeek/智谱真实联调、目标环境 Office/OCR 依赖和 Electron 打包重启回归；Experience Candidate 已提供 Runtime、CLI、Desktop IPC 和列表/详情/审核面板，仍需真实候选来源与生产数据验收。UsageLedger、Episode、release gate、独立 Runtime reconnect 和成对 Context compaction 核心已建立。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化的本地合同和 loopback fixture 已完成，真实 SaaS、浏览器和跨机 A2A 仍需独立环境验收。
+剩余工作集中在 acceptance smoke 通过后的真实 Docker image/daemon smoke、DeepSeek/智谱真实联调和目标环境 Office/OCR smoke；Electron packaged restart/multi-window smoke 已可通过 `acceptance smoke --run-real` 复用执行。Experience Candidate 已提供 Runtime、CLI、Desktop IPC 和列表/详情/审核面板，仍需真实候选来源与生产数据验收。UsageLedger、Episode、release gate、独立 Runtime reconnect 和成对 Context compaction 核心已建立。证据不全返回 UNKNOWN。多 Agent、网络 A2A、外部系统写入、GUI 自动化的本地合同和 loopback fixture 已完成，真实 SaaS、浏览器和跨机 A2A 仍需独立环境验收。
 
 ## 6. Runtime 硬化与对账入口（#17：已完成）
 

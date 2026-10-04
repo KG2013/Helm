@@ -12,12 +12,13 @@ import {
 import { createDockerCodingSandboxFromEnv } from '@helm/runtime/tools'
 
 export type AcceptanceStatus = 'passed' | 'failed' | 'unknown' | 'unverified'
+export type AcceptanceMode = 'preflight' | 'smoke'
 export type AcceptanceKind = 'docker' | 'provider' | 'office' | 'electron'
 
 export interface AcceptanceCheck {
   id: string
   kind: AcceptanceKind
-  mode: 'preflight'
+  mode: AcceptanceMode
   status: AcceptanceStatus
   reason: string
   evidenceRefs: string[]

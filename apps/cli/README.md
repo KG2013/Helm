@@ -7,7 +7,11 @@ CLI 与桌面端共用 `@helm/runtime`。默认命令使用 `MockProvider` 验�
 ```bash
 node apps/cli/dist/main.js acceptance preflight
 node apps/cli/dist/main.js acceptance preflight --json
+node apps/cli/dist/main.js acceptance smoke --json
+node apps/cli/dist/main.js acceptance smoke --run-real --json
 ```
+
+`acceptance smoke` 默认不会启动真实任务；只有显式传入 `--run-real` 才会执行当前已接入的 Electron packaged restart/multi-window smoke。子进程输出只保留字节数和 hash，真实 Docker、Provider、Office/OCR smoke 在目标环境接入前保持 `unverified`/`unknown`，不会读取或打印 Keychain 凭据。
 
 该命令只执行 Docker/Provider/Office/OCR/Electron 的 bounded preflight，不发起真实 Provider 请求或编码任务。默认输出人类摘要，`--json` 输出同一份机器可读矩阵；任何 `unknown`、`unverified` 或 `failed` 都以非零退出码阻断 release gate。API Key、Authorization header 和私有文件内容不会进入输出。
 
