@@ -238,6 +238,18 @@ export interface ProviderContext {
   truncated: boolean;
 }
 
+/** Bounded metadata describing a provider request without copying its content. */
+export interface ProviderRequestSummary {
+  messageCount: number;
+  contextEventCount: number;
+  contextItemCount: number;
+  toolCount: number;
+  toolResultCount: number;
+  goalChars: number;
+  inputChars: number;
+  transport: 'sse' | 'unary';
+}
+
 export interface ToolSchema {
   id: string;
   version: string;
@@ -921,6 +933,7 @@ export interface UsageRecord {
   cacheHit?: boolean;
   failureCode?: ProviderFailureCode;
   operation?: string;
+  requestSummary?: ProviderRequestSummary;
 }
 
 export interface Episode {

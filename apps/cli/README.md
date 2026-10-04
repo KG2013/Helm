@@ -1,6 +1,6 @@
 # Helm CLI
 
-CLI 与桌面端共用 `@helm/runtime`。默认命令使用 `MockProvider` 验证 Task → Session → Run → Event Ledger → Verification；设置 `HELM_STATE_DB=/absolute/path/state.sqlite` 可启用原生 SQLite 重启账本。设置 `HELM_PROVIDER=kimi` 后会从 macOS Keychain 读取 Kimi Code Key，并通过 `OpenAICompatibleProvider` 发起真实请求。
+CLI 与桌面端共用 `@helm/runtime`。默认命令使用 `MockProvider` 验证 Task → Session → Run → Event Ledger → Verification；设置 `HELM_STATE_DB=/absolute/path/state.sqlite` 可启用原生 SQLite 重启账本。设置 `HELM_PROVIDER=deepseek|zhipu|kimi` 后会从 macOS Keychain 读取对应凭据，并通过 `OpenAICompatibleProvider` 发起真实请求；DeepSeek/智谱默认走 Runtime SSE stream seam。Keychain 凭据缺失时请求会 fail-closed 并返回脱敏认证诊断，不会发起 HTTP 请求。
 
 ```bash
 pnpm --filter @helm/cli dev -- run "inspect the Helm workspace"

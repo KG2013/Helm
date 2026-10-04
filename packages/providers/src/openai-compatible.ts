@@ -87,15 +87,27 @@ export class OpenAICompatibleProvider implements Provider {
     this.outputCostUsdPer1k = options.outputCostUsdPer1k
   }
 
+  private async resolveApiKey(requestId: string): Promise<string | undefined> {
+    if (!this.getApiKey) return this.apiKey
+    try {
+      const value = await this.getApiKey()
+      if (typeof value === 'string' && value.trim()) return value.trim()
+    } catch {
+      throw new ProviderRequestError({ code: 'auth', message: 'Provider credentials could not be loaded from the OS credential store.', retryable: false, requestId })
+    }
+    throw new ProviderRequestError({ code: 'auth', message: `Provider credentials are unavailable for ${this.id}; configure the OS Keychain before a real call.`, retryable: false, requestId })
+  }
+
   async complete(request: ProviderRequest): Promise<ProviderResponse> {
     const startedAt = Date.now()
     const requestId = request.requestId ?? `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-    const apiKey = this.getApiKey ? await this.getApiKey() : this.apiKey
-    const headers: Record<string, string> = { 'content-type': 'application/json' }
-    if (apiKey) headers.authorization = `Bearer ${apiKey}`
-    headers['x-request-id'] = requestId
     const transport = makeTransportSignal(request.signal, request.timeoutMs)
     try {
+      throwIfAborted(transport.signal, requestId, transport.timedOut())
+      const apiKey = await this.resolveApiKey(requestId)
+      const headers: Record<string, string> = { 'content-type': 'application/json' }
+      if (apiKey) headers.authorization = `Bearer ${apiKey}`
+      headers['x-request-id'] = requestId
       throwIfAborted(transport.signal, requestId, transport.timedOut())
       const response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
@@ -166,11 +178,12 @@ export class OpenAICompatibleProvider implements Provider {
     }
     const startedAt = Date.now()
     const requestId = request.requestId ?? `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-    const apiKey = this.getApiKey ? await this.getApiKey() : this.apiKey
-    const headers: Record<string, string> = { 'content-type': 'application/json', 'x-request-id': requestId }
-    if (apiKey) headers.authorization = `Bearer ${apiKey}`
     const transport = makeTransportSignal(request.signal, request.timeoutMs)
     try {
+      throwIfAborted(transport.signal, requestId, transport.timedOut())
+      const apiKey = await this.resolveApiKey(requestId)
+      const headers: Record<string, string> = { 'content-type': 'application/json', 'x-request-id': requestId }
+      if (apiKey) headers.authorization = `Bearer ${apiKey}`
       throwIfAborted(transport.signal, requestId, transport.timedOut())
       const response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, { method: 'POST', headers, signal: transport.signal, body: JSON.stringify(buildRequestBody(request, true, this.model)) })
       if (!response.ok) throw new ProviderHttpError(response.status, await response.text(), requestId, parseRetryAfter(response.headers.get('retry-after')))

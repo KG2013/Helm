@@ -6,6 +6,7 @@ export interface ProviderCatalogEntry {
   defaultBaseUrl: string
   defaultModel: string
   defaultKeychainService: string
+  streaming: boolean
 }
 
 /**
@@ -13,9 +14,9 @@ export interface ProviderCatalogEntry {
  * user configuration so this catalog does not bake in stale account defaults.
  */
 export const providerCatalog: Readonly<Record<SupportedProvider, ProviderCatalogEntry>> = {
-  deepseek: { id: 'deepseek', label: 'DeepSeek', defaultBaseUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-chat', defaultKeychainService: 'com.helm.provider.deepseek' },
-  zhipu: { id: 'zhipu', label: '智谱 GLM', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4', defaultModel: 'glm-4-flash', defaultKeychainService: 'com.helm.provider.zhipu' },
-  kimi: { id: 'kimi', label: 'Kimi', defaultBaseUrl: 'https://api.kimi.com/coding/v1', defaultModel: 'kimi-for-coding', defaultKeychainService: 'com.helm.provider.kimi-code' },
+  deepseek: { id: 'deepseek', label: 'DeepSeek', defaultBaseUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-chat', defaultKeychainService: 'com.helm.provider.deepseek', streaming: true },
+  zhipu: { id: 'zhipu', label: '智谱 GLM', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4', defaultModel: 'glm-4-flash', defaultKeychainService: 'com.helm.provider.zhipu', streaming: true },
+  kimi: { id: 'kimi', label: 'Kimi', defaultBaseUrl: 'https://api.kimi.com/coding/v1', defaultModel: 'kimi-for-coding', defaultKeychainService: 'com.helm.provider.kimi-code', streaming: false },
 }
 
 export interface ProviderEnvironment {

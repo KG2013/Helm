@@ -78,6 +78,43 @@ test('mock provider and facade complete a final response with evidence', async (
   assert.equal((await runtime.getEvents(run.id)).filter((event) => event.type === 'step.completed').length, 1);
 });
 
+test('Runtime consumes an SSE-capable provider stream and records bounded provider trace', async () => {
+  const store = new InMemoryEventStore();
+  const base = new MockProvider().capabilities;
+  const runtime = new RuntimeFacade({
+    store,
+    provider: {
+      id: 'deepseek',
+      model: 'deepseek-chat',
+      capabilities: { ...base, streaming: true },
+      complete: async () => { throw new Error('Runtime should consume the stream seam.'); },
+      async *stream(request) {
+        assert.equal(request.requestId?.startsWith('request-'), true);
+        yield { kind: 'text_delta' as const, content: 'streamed ' };
+        yield { kind: 'text_delta' as const, content: 'answer' };
+        yield { kind: 'usage' as const, usage: { totalTokens: 4, latencyMs: 3, requestId: request.requestId } };
+        yield { kind: 'done' as const, finishReason: 'stop' };
+      },
+    },
+  });
+  const task = await runtime.createTask({ goal: 'stream a response', workspaceId: 'workspace-1' });
+  const session = await runtime.createSession({ taskId: task.id });
+  const run = await runtime.startRun({ taskId: task.id, sessionId: session.id });
+  const result = await runtime.run(run.id);
+
+  assert.equal(result.state, 'completed');
+  assert.equal(result.finalOutput, 'streamed answer');
+  const events = await runtime.getEvents(run.id);
+  const proposal = events.find((event) => event.type === 'step.proposal');
+  const trace = proposal?.payload.providerTrace as { requestSummary?: { transport?: string; goalChars?: number; messageCount?: number }; retries?: number } | undefined;
+  assert.equal(trace?.requestSummary?.transport, 'sse');
+  assert.equal(trace?.requestSummary?.goalChars, task.goal.length);
+  assert.equal(typeof trace?.requestSummary?.messageCount, 'number');
+  const usage = events.find((event) => event.type === 'usage.recorded');
+  assert.equal((usage?.payload.requestSummary as { transport?: string } | undefined)?.transport, 'sse');
+  assert.equal(usage?.payload.model, 'deepseek-chat');
+});
+
 test('usage ledger deduplicates request ids and release gate accepts a passed Episode', async () => {
   const store = new InMemoryEventStore();
   const runtime = new RuntimeFacade({

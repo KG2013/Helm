@@ -20,6 +20,9 @@ import type {
   Observation,
   Provider,
   ProviderRequest,
+  ProviderRequestSummary,
+  ProviderResponse,
+  TokenUsage,
   Proposal,
   Run,
   RunResult,
@@ -85,6 +88,79 @@ function sanitizeDiagnostic(value: unknown): string {
     .replace(/(?:api[-_ ]?key|authorization|cookie|secret|password|token)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi, '[redacted]')
     .replace(/\b(?:sk|pk)-[A-Za-z0-9_-]{8,}\b/g, '[redacted]')
     .slice(0, 500);
+}
+
+function providerRequestSummary(request: ProviderRequest, transport: 'sse' | 'unary'): ProviderRequestSummary {
+  return {
+    messageCount: request.messages?.length ?? 0,
+    contextEventCount: request.context.length,
+    contextItemCount: request.contextEnvelope?.items.length ?? 0,
+    toolCount: request.tools?.length ?? 0,
+    toolResultCount: request.toolResults?.length ?? 0,
+    goalChars: request.task.goal.length,
+    inputChars: typeof request.task.input === 'string' ? request.task.input.length : 0,
+    transport,
+  };
+}
+
+async function consumeProviderStream(provider: Provider, request: ProviderRequest): Promise<ProviderResponse> {
+  if (!provider.stream) return provider.complete(request);
+  const startedAt = Date.now();
+  let text = '';
+  let usage: TokenUsage | undefined;
+  const toolCalls = new Map<string, { name?: string; arguments: string }>();
+  for await (const chunk of provider.stream(request)) {
+    if (chunk.kind === 'text_delta') text += chunk.content;
+    if (chunk.kind === 'usage') usage = chunk.usage;
+    if (chunk.kind === 'tool_call_delta') {
+      const current = toolCalls.get(chunk.id) ?? { arguments: '' };
+      if (chunk.name) current.name = chunk.name;
+      if (chunk.argumentsDelta) current.arguments += chunk.argumentsDelta;
+      toolCalls.set(chunk.id, current);
+    }
+    if (chunk.kind === 'error') {
+      const error = new Error(chunk.failure.message);
+      Object.assign(error, { failure: chunk.failure });
+      throw error;
+    }
+  }
+  const normalizedUsage: TokenUsage = {
+    ...(usage ?? {}),
+    latencyMs: usage?.latencyMs ?? Date.now() - startedAt,
+    requestId: usage?.requestId ?? request.requestId,
+  };
+  if (toolCalls.size) {
+    const call = [...toolCalls.values()][0]!;
+    let args: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(call.arguments || '{}') as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) args = parsed as Record<string, unknown>;
+    } catch {
+      // Invalid streamed tool arguments are represented as an empty proposal;
+      // the registered ToolPolicy remains the final validation boundary.
+    }
+    return {
+      kind: 'tool_call',
+      name: call.name ?? 'unknown',
+      arguments: args,
+      provider: provider.id,
+      model: provider.model,
+      usage: normalizedUsage,
+      requestId: request.requestId,
+      attemptId: request.attemptId,
+      traceId: request.traceId,
+    };
+  }
+  return {
+    kind: 'final',
+    content: text,
+    provider: provider.id,
+    model: provider.model,
+    usage: normalizedUsage,
+    requestId: request.requestId,
+    attemptId: request.attemptId,
+    traceId: request.traceId,
+  };
 }
 
 type PendingApproval = {
@@ -258,7 +334,9 @@ export class RuntimeFacade {
       let response;
       const providerStartedAt = this.clock.now().getTime();
       try {
-        response = await this.provider.complete(request);
+        response = this.provider.capabilities.streaming && this.provider.stream
+          ? await consumeProviderStream(this.provider, request)
+          : await this.provider.complete(request);
       } catch (error) {
         run = await this.ensureOwnership(run.id, await this.requireRun(run.id));
         if (isTerminalRunState(run.state) || run.state === 'paused') break;
@@ -272,7 +350,7 @@ export class RuntimeFacade {
       // has claimed the Run.
       run = await this.ensureOwnership(run.id, await this.requireRun(run.id));
       if (isTerminalRunState(run.state) || run.state === 'paused') break;
-      await this.recordUsage(run, response, context);
+      await this.recordUsage(run, request, response, context);
       if (this.usageBudgetExceeded(run, context, response.usage)) {
         await this.transition(run.id, 'budget_exceeded', { reason: 'token or cost budget exceeded', usage: response.usage });
         run = await this.requireRun(run.id);
@@ -298,6 +376,11 @@ export class RuntimeFacade {
           requestId: response.requestId ?? request.requestId,
           attemptId: response.attemptId ?? request.attemptId,
           traceId: response.traceId ?? request.traceId,
+          providerTrace: {
+            requestSummary: providerRequestSummary(request, this.provider.capabilities.streaming && this.provider.stream ? 'sse' : 'unary'),
+            latencyMs: response.usage?.latencyMs,
+            retries: response.usage?.retries ?? 0,
+          },
         },
       });
 
@@ -1064,7 +1147,7 @@ export class RuntimeFacade {
     });
   }
 
-  private async recordUsage(run: Run, response: { provider?: string; model?: string; usage?: import('./types.js').TokenUsage }, events: DomainEvent[]): Promise<void> {
+  private async recordUsage(run: Run, request: ProviderRequest, response: { provider?: string; model?: string; usage?: TokenUsage }, events: DomainEvent[]): Promise<void> {
     const usage = response.usage;
     if (!usage) return;
     const requestId = usage.requestId;
@@ -1082,6 +1165,7 @@ export class RuntimeFacade {
         retries: 0,
         cacheHit: false,
         ...usage,
+        requestSummary: providerRequestSummary(request, this.provider.capabilities.streaming && this.provider.stream ? 'sse' : 'unary'),
       },
     });
   }
@@ -1104,6 +1188,7 @@ export class RuntimeFacade {
         latencyMs,
         retries: 0,
         cacheHit: false,
+        requestSummary: providerRequestSummary(request, this.provider.capabilities.streaming && this.provider.stream ? 'sse' : 'unary'),
         ...(typeof failureCode === 'string' ? { failureCode } : { failureCode: 'unknown' }),
       },
     });

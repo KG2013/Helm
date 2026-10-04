@@ -13,6 +13,7 @@ export function createProviderFromEnv(options: {
     model: config.model,
     baseUrl: config.baseUrl,
     getApiKey: options.getApiKey ? () => options.getApiKey!(config.keychainService) : undefined,
+    capabilities: { streaming: config.entry.streaming },
     fetchImpl: options.fetchImpl,
   })
 }

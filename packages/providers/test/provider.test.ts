@@ -32,10 +32,26 @@ test('provider catalog resolves DeepSeek, Zhipu, and Kimi without exposing crede
     assert.equal(config?.model, expected)
     assert.equal(config?.keychainService.includes('provider.'), true)
   }
+  assert.equal(providerConfigFromEnv({ HELM_PROVIDER: 'deepseek' })?.entry.streaming, true)
+  assert.equal(providerConfigFromEnv({ HELM_PROVIDER: 'zhipu' })?.entry.streaming, true)
+  assert.equal(providerConfigFromEnv({ HELM_PROVIDER: 'kimi' })?.entry.streaming, false)
   assert.equal(providerConfigFromEnv({ HELM_PROVIDER: 'unknown' }), undefined)
   const provider = createProviderFromEnv({ env: { HELM_PROVIDER: 'deepseek' }, getApiKey: () => 'secret-value' })
   assert.equal(provider?.id, 'deepseek')
   assert.equal(provider?.model, 'deepseek-chat')
+  assert.equal(provider?.capabilities.streaming, true)
+})
+
+test('Keychain-backed providers fail closed with a bounded credential diagnostic', async () => {
+  const provider = createProviderFromEnv({ env: { HELM_PROVIDER: 'zhipu' }, getApiKey: () => undefined, fetchImpl: async () => { throw new Error('network must not be called') } })
+  await assert.rejects(() => provider!.complete(request()), (error: unknown) => {
+    if (!(error instanceof ProviderRequestError)) return false
+    assert.equal(error.failure.code, 'auth')
+    assert.equal(error.failure.retryable, false)
+    assert.match(error.message, /credentials.*unavailable/i)
+    assert.doesNotMatch(error.message, /secret|authorization|token/i)
+    return true
+  })
 })
 
 test('OpenAI-compatible provider maps final response, structured context, usage, cost and IDs', async () => {

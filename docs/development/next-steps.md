@@ -25,7 +25,7 @@
 
 ## 3. 真实 Provider 与凭据（#8 合同已完成）
 
-Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证；Provider-neutral Context/Tool/ToolResult、request/attempt/trace、超时/取消、usage/cost、失败分类和 SSE 解析已有 fixture 合同。DeepSeek 和智谱真实凭据联调仍需在对应账户和环境中执行。凭据由主进程/CLI 通过 Keychain resolver 取得，数据库只存引用。
+Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证；Provider-neutral Context/Tool/ToolResult、request/attempt/trace、超时/取消、usage/cost、失败分类和 SSE 解析已有 fixture 合同。DeepSeek 和智谱的 Provider 已默认接入 Runtime SSE stream seam；Keychain resolver 缺失时会 fail-closed 并给出不含凭据的认证诊断，不发起 HTTP 请求。两家真实凭据、文本/工具调用、SSE、限流和认证 smoke 仍需在对应账户和环境中执行。凭据由主进程/CLI 通过 Keychain resolver 取得，数据库只存引用；`providerTrace.requestSummary` 只记录有界计数/长度和传输模式。
 
 完成条件：每家至少一个可重复文本/工具任务通过；配置与事件不含密钥；中止和失败不会把未知执行结果当成成功。测试 fixture 通过和真实厂商调用成功要分别记录。
 
