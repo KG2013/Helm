@@ -9,6 +9,7 @@ export const IPC_CHANNELS = {
   runReconciliation: 'helm:run-reconciliation',
   agentList: 'helm:agent-list',
   agentCreate: 'helm:agent-create',
+  agentControl: 'helm:agent-control',
   runExport: 'helm:run-export',
   runEvent: 'helm:run-event',
 } as const
@@ -79,6 +80,7 @@ export type AgentCreateRequest = {
   allowedScope: Record<string, unknown>
   budget?: Partial<import('@helm/runtime').Budget>
 }
+export type AgentControlRequest = { parentRunId: string; action: 'cancel' | 'recover'; reason?: string }
 
 export type StartRunResponse = {
   task: Task
@@ -149,4 +151,11 @@ export function isAgentCreateRequest(value: unknown): value is AgentCreateReques
     && Array.isArray(request.capabilities) && request.capabilities.every((item) => typeof item === 'string' && item.length <= 120)
     && Array.isArray(request.allowedCapabilities) && request.allowedCapabilities.every((item) => typeof item === 'string' && item.length <= 120)
     && Boolean(request.scope) && typeof request.scope === 'object' && Boolean(request.allowedScope) && typeof request.allowedScope === 'object'
+}
+
+export function isAgentControlRequest(value: unknown): value is AgentControlRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<AgentControlRequest>
+  return isRunId(request.parentRunId) && (request.action === 'cancel' || request.action === 'recover')
+    && (request.reason === undefined || typeof request.reason === 'string')
 }

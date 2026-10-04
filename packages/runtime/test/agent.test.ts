@@ -8,11 +8,11 @@ const rootRun: Run = {
   budget: { maxSteps: 10, maxDurationMs: 60_000, maxReviewerRounds: 1 },
 };
 
-async function fixture() {
+async function fixture(coordinatorOptions: { clock?: { now(): Date }; maxFanOut?: number; maxConcurrent?: number } = {}) {
   const store = new InMemoryEventStore();
   await store.append({ type: 'run.created', taskId: rootRun.taskId, sessionId: rootRun.sessionId, runId: rootRun.id, payload: rootRun as unknown as Record<string, unknown> });
-  const gateway = new ActionGateway({ store, policy: () => ({ decision: 'allow' as const, reason: 'parent policy' }) });
-  return { store, coordinator: new AgentRunCoordinator({ store, gateway }) };
+  const gateway = new ActionGateway({ store, clock: coordinatorOptions.clock, policy: () => ({ decision: 'allow' as const, reason: 'parent policy' }) });
+  return { store, coordinator: new AgentRunCoordinator({ store, gateway, ...coordinatorOptions }) };
 }
 
 test('AgentRunCoordinator persists bounded identity, lineage, and capability scope', async () => {
@@ -33,7 +33,7 @@ test('AgentRunCoordinator persists bounded identity, lineage, and capability sco
 });
 
 test('AgentRunCoordinator rejects capability and scope escalation before any child is created', async () => {
-  const { coordinator } = await fixture();
+  const { coordinator } = await fixture({ clock: { now: () => new Date('2026-10-04T00:01:00.000Z') } });
   await assert.rejects(() => coordinator.createChild({
     parentRunId: rootRun.id, role: 'unsafe', principal: 'local-user', goal: 'escape',
     capabilities: ['shell.exec'], scope: { workspaceId: 'workspace-root', paths: ['private.txt'] },
@@ -56,7 +56,7 @@ test('child result requires typed evidence and is replayable through the parent 
 });
 
 test('child actions are bounded by identity scope and aggregate typed evidence', async () => {
-  const { coordinator } = await fixture();
+  const { coordinator } = await fixture({ clock: { now: () => new Date('2026-10-04T00:01:00.000Z') } });
   const child = await coordinator.createChild({
     parentRunId: rootRun.id, role: 'worker', principal: 'local-user', goal: 'bounded action',
     capabilities: ['record.read'], scope: { connector: 'loopback', records: ['1'] },
@@ -73,4 +73,20 @@ test('child actions are bounded by identity scope and aggregate typed evidence',
     agentRunId: child.agentRunId, actionId: 'child-action-2', profile: { id: 'connector.write', version: 'v1' },
     target: 'loopback://records/2', capabilities: ['record.write'], scope: { connector: 'loopback', records: ['2'] }, argsHash: 'hash', adapter: { id: 'loopback', execute: async () => ({ ok: true }) },
   }), /capability/i);
+});
+
+test('AgentRunCoordinator enforces fan-out, records cumulative usage, and recovers unknown running children', async () => {
+  const store = new InMemoryEventStore();
+  await store.append({ type: 'run.created', taskId: rootRun.taskId, sessionId: rootRun.sessionId, runId: rootRun.id, payload: rootRun as unknown as Record<string, unknown> });
+  const gateway = new ActionGateway({ store });
+  const coordinator = new AgentRunCoordinator({ store, gateway, maxFanOut: 1, maxConcurrent: 1 });
+  const input = { parentRunId: rootRun.id, role: 'worker', principal: 'local-user', goal: 'bounded', capabilities: ['read'], scope: { resource: 'one' }, allowedCapabilities: ['read'], allowedScope: { resource: 'one' } };
+  const child = await coordinator.createChild(input);
+  await assert.rejects(() => coordinator.createChild({ ...input, role: 'second' }), /fan-out/i);
+  await coordinator.setState(child.agentRunId, 'running');
+  const recovered = await coordinator.recover(rootRun.id);
+  assert.equal(recovered[0]?.state, 'unknown');
+  assert.ok((await coordinator.getBudgetUsage(rootRun.id)).steps >= 0);
+  const cancelled = await coordinator.cancelTree(rootRun.id);
+  assert.equal(cancelled.length, 0);
 });

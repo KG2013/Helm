@@ -26,7 +26,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 function printHelp(): void {
-  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm agent list <run-id>  List persisted child AgentRuns\n  helm agent create <run-id> <role> <goal>  Create a bounded child AgentRun\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
+  console.log(`Helm local harness\n\nUsage:\n  helm run <goal>       Run a local task through the shared Runtime\n  helm inspect [path]   Inspect workspace metadata through the Runtime\n  helm control <id> <action>  Pause, resume, or cancel a persisted Run\n  helm approve <run-id> <approval-id>  Approve or deny the exact pending action\n  helm reconcile <run-id> [tool-call-id]  Inspect or record evidence-backed side-effect reconciliation\n  helm agent list <run-id>  List persisted child AgentRuns\n  helm agent create <run-id> <role> <goal>  Create a bounded child AgentRun\n  helm agent cancel|recover <run-id>  Cancel or recover child AgentRuns\n  helm export <run-id>  Explicitly export a redacted Episode and evidence projection\n\nSet HELM_OUTPUT=jsonl (or pass --jsonl) for ordered redacted Run events.\nSet HELM_TASK_KIND=office and HELM_WORKSPACE_ROOT to reconnect Office approvals.\n\nDefault provider: MockProvider. Set HELM_PROVIDER=kimi to use the Kimi Code\nKeychain entry without putting the API key in the shell or repository.`)
 }
 
 async function printRun(runtime: RuntimeFacade, goal: string, workspaceId: string, jsonl = false): Promise<void> {
@@ -200,7 +200,7 @@ async function reconcileRun(runId: string, options: { toolCallId?: string; outco
   }
 }
 
-async function agentCommand(action: 'list' | 'create', args: string[]): Promise<void> {
+async function agentCommand(action: 'list' | 'create' | 'cancel' | 'recover', args: string[]): Promise<void> {
   const statePath = process.env.HELM_STATE_DB
   if (!statePath) {
     console.error('helm agent requires HELM_STATE_DB to point at the Runtime SQLite ledger')
@@ -214,6 +214,14 @@ async function agentCommand(action: 'list' | 'create', args: string[]): Promise<
     if (!parentRunId) throw new Error('helm agent requires a parent run id')
     if (action === 'list') {
       console.log(JSON.stringify({ parentRunId, agents: await runtime.listAgentRuns(parentRunId), aggregate: await runtime.aggregateAgentResults(parentRunId) }, null, 2))
+      return
+    }
+    if (action === 'cancel') {
+      console.log(JSON.stringify({ parentRunId, agents: await runtime.cancelAgentTree(parentRunId, args.slice(1).join(' ').trim() || undefined) }, null, 2))
+      return
+    }
+    if (action === 'recover') {
+      console.log(JSON.stringify({ parentRunId, agents: await runtime.recoverAgentRuns(parentRunId), budgetUsage: await runtime.getAgentBudgetUsage(parentRunId) }, null, 2))
       return
     }
     const role = args[1]?.trim()
@@ -367,7 +375,7 @@ if (command === 'run') {
     await reconcileRun(runId, { toolCallId, outcome, summary, uri, hash })
   }
 } else if (command === 'agent') {
-  const action = args[0] === 'create' ? 'create' : args[0] === 'list' ? 'list' : undefined
+  const action = args[0] === 'create' ? 'create' : args[0] === 'list' ? 'list' : args[0] === 'cancel' ? 'cancel' : args[0] === 'recover' ? 'recover' : undefined
   if (!action) {
     console.error('helm agent requires list or create')
     process.exitCode = 2

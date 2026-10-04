@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { ActionGateway } from './action-gateway.js';
+import { isBudgetExceeded, summarizeBudgetUsage } from './hardening.js';
 import type { AgentAggregateResult, AgentIdentity, AgentResult, AgentRunRecord, AgentRunState, ActionAdapter, ActionRequest, ArtifactReference, Budget, EventStore, Evidence, ID, RuntimeClock, RuntimeIdFactory } from './types.js';
 
 const clock: RuntimeClock = { now: () => new Date() };
@@ -11,6 +12,8 @@ export interface AgentCoordinatorOptions {
   clock?: RuntimeClock;
   ids?: RuntimeIdFactory;
   maxDepth?: number;
+  maxFanOut?: number;
+  maxConcurrent?: number;
 }
 
 export interface CreateChildAgentInput {
@@ -33,6 +36,8 @@ export class AgentRunCoordinator {
   private readonly clock: RuntimeClock;
   private readonly ids: RuntimeIdFactory;
   private readonly maxDepth: number;
+  private readonly maxFanOut: number;
+  private readonly maxConcurrent: number;
 
   constructor(options: AgentCoordinatorOptions) {
     this.store = options.store;
@@ -40,6 +45,8 @@ export class AgentRunCoordinator {
     this.clock = options.clock ?? clock;
     this.ids = options.ids ?? ids;
     this.maxDepth = options.maxDepth ?? 3;
+    this.maxFanOut = options.maxFanOut ?? 8;
+    this.maxConcurrent = options.maxConcurrent ?? 4;
   }
 
   async createChild(input: CreateChildAgentInput): Promise<AgentRunRecord> {
@@ -50,6 +57,7 @@ export class AgentRunCoordinator {
     if (!scopeWithin(input.scope, input.allowedScope)) throw new Error('Child Agent requested scope outside the granted set.');
     const depth = await this.depth(input.parentAgentId);
     if (depth >= this.maxDepth) throw new Error(`Agent depth limit ${this.maxDepth} exceeded.`);
+    if ((await this.list(input.parentRunId)).length >= this.maxFanOut) throw new Error(`Agent fan-out limit ${this.maxFanOut} exceeded.`);
     const now = this.clock.now().toISOString();
     const agentRunId = this.ids.next('agent-run');
     const identity: AgentIdentity = {
@@ -122,9 +130,17 @@ export class AgentRunCoordinator {
     const record = await this.requireAgent(input.agentRunId);
     if (input.capabilities.some((capability) => !record.identity.capabilities.includes(capability))) throw new Error('Child Agent requested an ungranted capability.');
     if (!scopeWithin(input.scope, record.scope)) throw new Error('Child Agent requested an out-of-scope action.');
+    const active = (await this.list(record.parentRunId)).filter((candidate) => candidate.state === 'running' && candidate.agentRunId !== record.agentRunId);
+    if (active.length >= this.maxConcurrent) throw new Error(`Agent concurrency limit ${this.maxConcurrent} exceeded.`);
     if (record.state === 'created' || record.state === 'paused') await this.setState(record.agentRunId, 'running');
     const parent = await this.store.getRun(record.parentRunId);
     if (!parent) throw new Error(`Unknown parent Run: ${record.parentRunId}`);
+    const startedAt = this.clock.now().getTime();
+    const budgetUsage = summarizeBudgetUsage(parent, await this.store.list(record.parentRunId), startedAt);
+    if (isBudgetExceeded(parent.budget, budgetUsage) || (record.budget.maxSteps !== undefined && budgetUsage.steps >= record.budget.maxSteps)) {
+      await this.setState(record.agentRunId, 'paused', 'Agent budget exceeded.');
+      throw new Error('Agent budget exceeded.');
+    }
     const action = await this.gateway.executeApproved({
       request: {
         actionId: input.actionId,
@@ -146,6 +162,7 @@ export class AgentRunCoordinator {
       adapter: input.adapter,
       markRunNeedsReconciliation: false,
     });
+    await this.store.append({ type: 'usage.recorded', taskId: record.taskId, sessionId: parent.sessionId, runId: record.parentRunId, payload: { kind: 'tool', requestId: input.actionId, provider: 'agent-action', model: input.profile.id, operation: input.target, latencyMs: Math.max(0, this.clock.now().getTime() - startedAt), retries: 0, cacheHit: false } });
     const status = action.status === 'executed' && action.ok ? 'success' : action.status === 'unknown' ? 'unknown' : 'failure';
     const evidence = action.evidence ?? [];
     const result: AgentResult = {
@@ -169,6 +186,34 @@ export class AgentRunCoordinator {
     if (results.some((result) => result.status === 'failure')) return { parentRunId, status: 'failure', results };
     if (results.some((result) => result.conflict)) return { parentRunId, status: 'conflict', results, conflict: results.find((result) => result.conflict)?.conflict };
     return { parentRunId, status: 'success', results };
+  }
+
+  async cancelTree(parentRunId: ID, reason = 'Parent AgentRun cancelled'): Promise<AgentRunRecord[]> {
+    const children = await this.list(parentRunId);
+    const cancelled: AgentRunRecord[] = [];
+    for (const child of children) {
+      if (!['completed', 'failed', 'unknown', 'cancelled'].includes(child.state)) cancelled.push(await this.setState(child.agentRunId, 'cancelled', reason));
+      cancelled.push(...await this.cancelTree(child.agentRunId, reason));
+    }
+    return cancelled;
+  }
+
+  async recover(parentRunId: ID): Promise<AgentRunRecord[]> {
+    const children = await this.list(parentRunId);
+    const events = await this.store.listAll();
+    const recovered: AgentRunRecord[] = [];
+    for (const child of children) {
+      const hasResult = events.some((event) => event.type === 'agent.result' && event.payload.agentRunId === child.agentRunId);
+      if (child.state === 'running' && !hasResult) recovered.push(await this.setState(child.agentRunId, 'unknown', 'Recovered without a durable child result; reconciliation required.'));
+      recovered.push(...await this.recover(child.agentRunId));
+    }
+    return recovered;
+  }
+
+  async getBudgetUsage(parentRunId: ID) {
+    const parent = await this.store.getRun(parentRunId);
+    if (!parent) throw new Error(`Unknown parent Run: ${parentRunId}`);
+    return summarizeBudgetUsage(parent, await this.store.list(parentRunId), this.clock.now().getTime());
   }
 
   async get(agentRunId: ID): Promise<AgentRunRecord | undefined> {

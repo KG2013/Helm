@@ -65,6 +65,10 @@ child 的实际执行、父结果聚合和 CLI/Desktop 操作入口在 #30 继�
 
 累计预算、并发、取消和重启恢复在 #31 继续加固；本切片不放宽 child 的能力或 scope。
 
+## 10. Multi-Agent 预算、并发、取消与恢复（#31：已完成）
+
+父 Run 的 durable usage ledger 累计 child action 的 steps/time/latency/retry/cache 记录；AgentRunCoordinator 限制 fan-out 和并发，child action 使用幂等键，父树支持级联取消。重启恢复时，处于 running 但没有 durable typed result 的 child 会转为 UNKNOWN，不能继续交付；CLI 与 Desktop 提供 cancel/recover 控制。release gate 同时检查 action receipt 和 child AgentRun 的 UNKNOWN 状态，必须先写证据对账。
+
 ## 与原架构阶段的关系
 
 架构基线 Phase 0–3 是能力分组；本计划把桌面对话接线提前作为可观察的纵向切片。SQLite 持久恢复、执行隔离、固定评测和候选审核核心已落地；真实依赖与打包集成仍是后续验收边界。此顺序不表示这些门禁可以跳过，也不改变 ADR-0001 至 ADR-0005。

@@ -8,6 +8,7 @@ import {
   isRunReconciliationRequest,
   isAgentListRequest,
   isAgentCreateRequest,
+  isAgentControlRequest,
   isStartRunRequest,
   type RuntimeInfo,
   type RunSnapshot,
@@ -20,6 +21,7 @@ import {
   type RunReconciliationResponse,
   type AgentListRequest,
   type AgentCreateRequest,
+  type AgentControlRequest,
   type StartRunResponse,
 } from '../shared/ipc.js'
 
@@ -174,6 +176,14 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     if (!isAgentCreateRequest(value)) throw new Error('Invalid Agent create request.')
     const request = value as AgentCreateRequest
     return sanitizeValue(await runtime.createAgentChild(request))
+  })
+  ipc.handle(IPC_CHANNELS.agentControl, async (_event, value) => {
+    if (!isAgentControlRequest(value)) throw new Error('Invalid Agent control request.')
+    const request = value as AgentControlRequest
+    const result = request.action === 'cancel'
+      ? await runtime.cancelAgentTree(request.parentRunId, request.reason)
+      : await runtime.recoverAgentRuns(request.parentRunId)
+    return sanitizeValue({ parentRunId: request.parentRunId, action: request.action, agents: result, budgetUsage: await runtime.getAgentBudgetUsage(request.parentRunId) })
   })
 
   return unsubscribe

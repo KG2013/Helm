@@ -666,6 +666,18 @@ export class RuntimeFacade {
     return this.agentCoordinator.executeChildAction(input);
   }
 
+  async cancelAgentTree(parentRunId: ID, reason?: string) {
+    return this.agentCoordinator.cancelTree(parentRunId, reason);
+  }
+
+  async recoverAgentRuns(parentRunId: ID) {
+    return this.agentCoordinator.recover(parentRunId);
+  }
+
+  async getAgentBudgetUsage(parentRunId: ID) {
+    return this.agentCoordinator.getBudgetUsage(parentRunId);
+  }
+
   onEvent(listener: RuntimeEventListener): () => void {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);

@@ -77,6 +77,8 @@ test('desktop IPC starts a Runtime Run and forwards ordered events', async () =>
   assert.equal(agent.parentRunId, started.run.id)
   const listedAgents = await ipc.invoke(IPC_CHANNELS.agentList, { parentRunId: started.run.id }) as Array<{ agentRunId: string }>
   assert.deepEqual(listedAgents.map((item) => item.agentRunId), [agent.agentRunId])
+  const recoveredAgents = await ipc.invoke(IPC_CHANNELS.agentControl, { parentRunId: started.run.id, action: 'recover' }) as { parentRunId: string; agents: unknown[] }
+  assert.equal(recoveredAgents.parentRunId, started.run.id)
   const reconciliation = await ipc.invoke(IPC_CHANNELS.runReconciliation, { runId: started.run.id, action: 'inspect' }) as { runId: string; budgetUsage: { steps: number }; candidates: unknown[] }
   assert.equal(reconciliation.runId, started.run.id)
   assert.equal(reconciliation.budgetUsage.steps, snapshot.run.steps)

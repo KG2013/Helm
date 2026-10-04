@@ -74,6 +74,10 @@ export function evaluateReleaseGate(episodes: readonly Episode[], options: Relea
     if (!verificationEvents.length || verificationEvents.some((event) => (event.payload.verification as { result?: string } | undefined)?.result !== 'passed')) reasons.push(`${episode.runId}: verification is missing, unknown, or failed.`);
     const unresolvedUnknown = unknownCalls.some((event) => !reconciled.has(String(event.payload.toolCallId)));
     if (unresolvedUnknown) reasons.push(`${episode.runId}: tool side effect is unknown.`);
+    const unknownActions = episode.events.filter((event) => event.type === 'action.receipt' && ((event.payload.receipt as Record<string, unknown> | undefined)?.effect === 'unknown' || event.payload.outcome === 'unknown'));
+    const reconciledActions = new Set(episode.events.filter((event) => event.type === 'run.reconciled' && ['known', 'failed'].includes(String((event.payload as Record<string, unknown>).outcome))).map((event) => String((event.payload as Record<string, unknown>).actionId ?? '')));
+    if (unknownActions.some((event) => !reconciledActions.has(String(event.payload.actionId ?? (event.payload.receipt as Record<string, unknown> | undefined)?.actionId ?? '')))) reasons.push(`${episode.runId}: action side effect is unknown.`);
+    if (episode.events.some((event) => event.type === 'agent.result' && event.payload.status === 'unknown')) reasons.push(`${episode.runId}: child AgentRun result is unknown.`);
     if (containsCredentialMarker(episode.redactedJsonl)) reasons.push(`${episode.runId}: redacted export still contains a credential marker.`);
   }
   const evaluated = episodes.filter((episode) => episode.evaluationCase);
