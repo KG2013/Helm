@@ -94,6 +94,20 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     const sender = senderOf(event)
     if (options.windowRegistry && (!sender || !options.windowRegistry.isAuthorized(sender, runId))) throw new Error('Run is not authorized for this window.')
   }
+  const authorized = (event: unknown, runId: string) => {
+    const sender = senderOf(event)
+    return !options.windowRegistry || Boolean(sender && options.windowRegistry.isAuthorized(sender, runId))
+  }
+  const browserRunId = (contextId: string): string => {
+    const context = runtime.listBrowserContexts().find((candidate) => candidate.contextId === contextId)
+    if (!context) throw new Error('Unknown browser context.')
+    return context.runId
+  }
+  const a2aRunId = async (messageId: string): Promise<string> => {
+    const delivery = (await runtime.listA2ADeliveries()).find((candidate) => candidate.messageId === messageId)
+    if (!delivery) throw new Error('Unknown A2A message.')
+    return delivery.runId
+  }
   const unsubscribe = runtime.onEvent((event) => {
     if (event.runId) options.emit(sanitizeEvent(event))
   })
@@ -220,19 +234,26 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     }
     return sanitizeValue(response) as RunReconciliationResponse
   })
-  ipc.handle(IPC_CHANNELS.agentList, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.agentList, async (event, value) => {
     if (!isAgentListRequest(value)) throw new Error('Invalid Agent list request.')
     const request = (value ?? {}) as AgentListRequest
-    return sanitizeValue(await runtime.listAgentRuns(request.parentRunId))
+    if (request.parentRunId) {
+      assertRunAccess(event, request.parentRunId)
+      return sanitizeValue(await runtime.listAgentRuns(request.parentRunId))
+    }
+    const records = await runtime.listAgentRuns()
+    return sanitizeValue(records.filter((record) => authorized(event, record.parentRunId)))
   })
-  ipc.handle(IPC_CHANNELS.agentCreate, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.agentCreate, async (event, value) => {
     if (!isAgentCreateRequest(value)) throw new Error('Invalid Agent create request.')
     const request = value as AgentCreateRequest
+    assertRunAccess(event, request.parentRunId)
     return sanitizeValue(await runtime.createAgentChild(request))
   })
-  ipc.handle(IPC_CHANNELS.agentControl, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.agentControl, async (event, value) => {
     if (!isAgentControlRequest(value)) throw new Error('Invalid Agent control request.')
     const request = value as AgentControlRequest
+    assertRunAccess(event, request.parentRunId)
     const result = request.action === 'cancel'
       ? await runtime.cancelAgentTree(request.parentRunId, request.reason)
       : await runtime.recoverAgentRuns(request.parentRunId)
@@ -243,41 +264,54 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     if (!isConnectorRegisterRequest(value)) throw new Error('Invalid Connector profile.')
     return sanitizeValue(await runtime.registerConnectorProfile(value as ConnectorRegisterRequest))
   })
-  ipc.handle(IPC_CHANNELS.connectorPreview, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.connectorPreview, async (event, value) => {
     if (!isConnectorPreviewRequest(value)) throw new Error('Invalid Connector preview request.')
+    assertRunAccess(event, (value as ConnectorPreviewRequest).runId)
     return sanitizeValue(await runtime.previewConnector(value as ConnectorPreviewRequest))
   })
-  ipc.handle(IPC_CHANNELS.connectorWrite, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.connectorWrite, async (event, value) => {
     if (!isConnectorWriteRequest(value)) throw new Error('Invalid Connector write request.')
+    assertRunAccess(event, (value as ConnectorWriteRequest).runId)
     return sanitizeValue(await runtime.writeConnector(value as ConnectorWriteRequest))
   })
-  ipc.handle(IPC_CHANNELS.connectorVerify, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.connectorVerify, async (event, value) => {
     if (!isConnectorVerifyRequest(value)) throw new Error('Invalid Connector verification request.')
+    assertRunAccess(event, (value as ConnectorVerifyRequest).runId)
     return sanitizeValue(await runtime.verifyConnectorWrite(value as ConnectorVerifyRequest))
   })
-  ipc.handle(IPC_CHANNELS.browserContextList, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.browserContextList, async (event, value) => {
     if (!isBrowserContextListRequest(value)) throw new Error('Invalid Browser context list request.')
-    return sanitizeValue(runtime.listBrowserContexts((value as BrowserContextListRequest | undefined)?.runId))
+    const runId = (value as BrowserContextListRequest | undefined)?.runId
+    if (runId) {
+      assertRunAccess(event, runId)
+      return sanitizeValue(runtime.listBrowserContexts(runId))
+    }
+    return sanitizeValue(runtime.listBrowserContexts().filter((context) => authorized(event, context.runId)))
   })
-  ipc.handle(IPC_CHANNELS.browserContextCreate, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.browserContextCreate, async (event, value) => {
     if (!isBrowserContextCreateRequest(value)) throw new Error('Invalid Browser context create request.')
+    assertRunAccess(event, (value as BrowserContextCreateRequest).runId)
     return sanitizeValue(await runtime.createBrowserContext(value as BrowserContextCreateRequest))
   })
-  ipc.handle(IPC_CHANNELS.browserNavigate, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.browserNavigate, async (event, value) => {
     if (!isBrowserNavigateRequest(value)) throw new Error('Invalid Browser navigation request.')
+    assertRunAccess(event, browserRunId((value as BrowserNavigateRequest).contextId))
     return sanitizeValue(await runtime.navigateBrowser(value as BrowserNavigateRequest))
   })
-  ipc.handle(IPC_CHANNELS.browserApprove, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.browserApprove, async (event, value) => {
     if (!isBrowserNavigateRequest(value)) throw new Error('Invalid Browser navigation approval request.')
+    assertRunAccess(event, browserRunId((value as BrowserNavigateRequest).contextId))
     return sanitizeValue(await runtime.approveBrowserNavigation(value as BrowserNavigateRequest))
   })
-  ipc.handle(IPC_CHANNELS.browserAssert, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.browserAssert, async (event, value) => {
     if (!isBrowserAssertRequest(value)) throw new Error('Invalid Browser DOM assertion request.')
+    assertRunAccess(event, browserRunId((value as BrowserAssertRequest).contextId))
     return sanitizeValue(await runtime.assertBrowserDom(value as BrowserAssertRequest))
   })
-  ipc.handle(IPC_CHANNELS.browserControl, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.browserControl, async (event, value) => {
     if (!isBrowserControlRequest(value)) throw new Error('Invalid Browser context control request.')
     const request = value as BrowserControlRequest
+    assertRunAccess(event, browserRunId(request.contextId))
     const result = request.action === 'close'
       ? await runtime.closeBrowserContext(request.contextId, request.reason)
       : request.action === 'reconnect' ? await runtime.reconnectBrowserContext(request.contextId) : await runtime.cleanupBrowserContext(request.contextId)
@@ -288,25 +322,35 @@ export function registerRuntimeIpcHandlers(options: RuntimeBridgeOptions): () =>
     if (!isBrowserActionProfileRequest(value)) throw new Error('Invalid Browser action profile.')
     return sanitizeValue(await runtime.registerBrowserActionProfile(value as BrowserActionProfileRequest))
   })
-  ipc.handle(IPC_CHANNELS.browserAction, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.browserAction, async (event, value) => {
     if (!isBrowserActionRequest(value)) throw new Error('Invalid Browser action request.')
+    assertRunAccess(event, browserRunId((value as BrowserActionRequest).contextId))
     return sanitizeValue(await runtime.executeBrowserAction(value as BrowserActionRequest))
   })
-  ipc.handle(IPC_CHANNELS.browserActionApprove, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.browserActionApprove, async (event, value) => {
     if (!isBrowserActionRequest(value)) throw new Error('Invalid Browser action approval request.')
+    assertRunAccess(event, browserRunId((value as BrowserActionRequest).contextId))
     return sanitizeValue(await runtime.approveBrowserAction(value as BrowserActionRequest))
   })
-  ipc.handle(IPC_CHANNELS.browserVerify, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.browserVerify, async (event, value) => {
     if (!isBrowserVerifyRequest(value)) throw new Error('Invalid Browser postcondition verification request.')
+    assertRunAccess(event, browserRunId((value as BrowserVerifyRequest).contextId))
     return sanitizeValue(await runtime.verifyBrowserAction(value as BrowserVerifyRequest))
   })
-  ipc.handle(IPC_CHANNELS.a2aList, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.a2aList, async (event, value) => {
     if (!isA2AListRequest(value)) throw new Error('Invalid A2A list request.')
-    return sanitizeValue(await runtime.listA2ADeliveries((value as A2AListRequest | undefined)?.runId))
+    const runId = (value as A2AListRequest | undefined)?.runId
+    if (runId) {
+      assertRunAccess(event, runId)
+      return sanitizeValue(await runtime.listA2ADeliveries(runId))
+    }
+    const deliveries = await runtime.listA2ADeliveries()
+    return sanitizeValue(deliveries.filter((delivery) => authorized(event, delivery.runId)))
   })
-  ipc.handle(IPC_CHANNELS.a2aControl, async (_event, value) => {
+  ipc.handle(IPC_CHANNELS.a2aControl, async (event, value) => {
     if (!isA2AControlRequest(value)) throw new Error('Invalid A2A control request.')
     const request = value as A2AControlRequest
+    assertRunAccess(event, await a2aRunId(request.messageId))
     if (request.action === 'retry') return sanitizeValue(await runtime.retryA2A(request.messageId))
     if (request.action === 'mark-unknown') return sanitizeValue(await runtime.markUnknownA2A(request.messageId, request.reason ?? 'Marked unknown by local operator.'))
     return sanitizeValue(await runtime.reconcileA2A(request.messageId, request.outcome!, request.evidence, request.reason))

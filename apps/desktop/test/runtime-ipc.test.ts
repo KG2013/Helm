@@ -67,6 +67,66 @@ test('desktop IPC authorizes a Run per window and recovery is triggered by recon
   stop()
 })
 
+test('desktop IPC rejects cross-window access to Agent, Connector, Browser, and A2A Run data', async () => {
+  const ipc = new FakeIpcMain()
+  const registry = new DesktopWindowRegistry()
+  const owner = fakeSender()
+  const other = fakeSender()
+  registry.register(owner)
+  registry.register(other)
+  const runtime = new RuntimeFacade({
+    store: new InMemoryEventStore(),
+    provider: new MockProvider([{ kind: 'final', content: 'authorized run' }]),
+  })
+  const stop = registerRuntimeIpcHandlers({
+    ipc,
+    runtime,
+    windowRegistry: registry,
+    workspaceIds: ['workspace-test'],
+    runtimeInfo: { appVersion: '0.1.0', platform: 'test', isPackaged: true },
+    emit: (event) => registry.publish(event),
+  })
+  const started = await ipc.invoke(IPC_CHANNELS.runStart, { goal: 'authorization boundary', workspaceId: 'workspace-test' }, { sender: owner }) as { task: { id: string }; session: { id: string }; run: { id: string } }
+  await assert.rejects(() => ipc.invoke(IPC_CHANNELS.agentList, { parentRunId: started.run.id }, { sender: other }), /not authorized/i)
+  await assert.rejects(() => ipc.invoke(IPC_CHANNELS.agentCreate, {
+    parentRunId: started.run.id,
+    role: 'observer',
+    principal: 'local-user',
+    goal: 'read one bounded resource',
+    capabilities: ['workspace.read'],
+    scope: { workspaceId: 'workspace-test' },
+    allowedCapabilities: ['workspace.read'],
+    allowedScope: { workspaceId: 'workspace-test' },
+  }, { sender: other }), /not authorized/i)
+  await assert.rejects(() => ipc.invoke(IPC_CHANNELS.connectorPreview, {
+    runId: started.run.id,
+    taskId: started.task.id,
+    sessionId: started.session.id,
+    connectorId: 'loopback',
+    profileId: 'missing',
+    profileVersion: 'v1',
+    action: 'record.preview',
+    target: 'loopback://records/1',
+    scope: { records: ['1'] },
+    before: {},
+    after: {},
+    impact: [],
+    rollbackPlan: 'none',
+    reconciliationPlan: 'read back',
+  }, { sender: other }), /not authorized/i)
+  const context = await ipc.invoke(IPC_CHANNELS.browserContextCreate, {
+    runId: started.run.id,
+    taskId: started.task.id,
+    sessionId: started.session.id,
+    profile: { id: 'browser.fixture', version: 'v1', allowedOrigins: ['https://fixture.example.test'], allowedApps: ['fixture-app'], allowedWindows: ['fixture-window'] },
+    appId: 'fixture-app',
+    windowId: 'fixture-window',
+  }, { sender: owner }) as { contextId: string }
+  await assert.rejects(() => ipc.invoke(IPC_CHANNELS.browserNavigate, { contextId: context.contextId, url: 'https://fixture.example.test/home', idempotencyKey: 'cross-window-navigation' }, { sender: other }), /not authorized/i)
+  await assert.rejects(() => ipc.invoke(IPC_CHANNELS.a2aList, { runId: started.run.id }, { sender: other }), /not authorized/i)
+  stop()
+})
+
 test('desktop IPC lists and reviews Experience Candidates with evidence gates', async () => {
   const ipc = new FakeIpcMain()
   const runtime = new RuntimeFacade({ store: new InMemoryEventStore(), provider: new MockProvider() })
