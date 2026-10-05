@@ -1030,8 +1030,6 @@ export interface RuntimeOptions {
   actionGateway?: import('./action-gateway.js').ActionGateway;
   /** Policy used when the Runtime constructs its default ActionGateway. */
   actionPolicy?: ActionGatewayOptions['policy'];
-  /** Explicit endpoint allowlist for remote Agent actions; empty by default. */
-  remoteNetworkAllowlist?: readonly string[];
 }
 
 export type RuntimeEventListener = (event: DomainEvent) => void;
