@@ -174,7 +174,7 @@ export class DockerCodingSandbox implements CodingSandbox {
   }
 
   private async invoke(command: string[], options: { signal?: AbortSignal; timeoutMs?: number }): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    const result = await this.execDocker(['run', '--pull=never', '--rm', '--network=none', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--read-only', '--tmpfs', '/tmp', '--pids-limit', String(this.pidsLimit), '--memory', this.memory, '--cpus', this.cpus, '--user', this.user, '--mount', `type=bind,source=${this.root},target=/workspace,rw,bind-propagation=rprivate`, '--workdir', '/workspace', this.image, ...command], options);
+    const result = await this.execDocker(['run', '--pull=never', '--rm', '--network=none', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--read-only', '--tmpfs', '/tmp', '--pids-limit', String(this.pidsLimit), '--memory', this.memory, '--cpus', this.cpus, '--user', this.user, '--mount', `type=bind,source=${this.root},target=/workspace,bind-propagation=rprivate`, '--workdir', '/workspace', this.image, ...command], options);
     return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
   }
 

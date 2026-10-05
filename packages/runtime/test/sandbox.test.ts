@@ -21,7 +21,9 @@ test('Docker Coding sandbox uses a fixed, network-disabled container contract', 
     assert.ok(calls[0]?.args.includes('--read-only'));
     assert.ok(calls[0]?.args.includes('--user'));
     assert.ok(calls[0]?.args.includes('65532:65532'));
-    assert.ok(calls[0]?.args.some((arg) => arg.includes('bind-propagation=rprivate')));
+    const mount = calls[0]?.args.find((arg) => arg.includes('bind-propagation=rprivate'));
+    assert.ok(mount);
+    assert.doesNotMatch(mount, /,rw,/);
     assert.ok(calls[0]?.args.includes('--workdir'));
     assert.equal(calls[0]?.args.at(-3), 'helm-coding:test');
     assert.equal(calls[0]?.args.at(-2), 'pnpm');
