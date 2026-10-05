@@ -1,6 +1,6 @@
 # 下一步实施计划
 
-更新日期：2026-10-05。架构已确认；#1–#4、T1/#6 至 T10/#15 的 Runtime 核心、Office worker、Episode/release gate、ownership/reconnect 和 Experience Candidate 已接入，#23 已补齐 CLI、Desktop IPC 与候选审核面板，#19 已补齐 digest/non-root Docker sandbox 合同与 fixture，#42 已补齐统一 G0 acceptance preflight 与 release gate 输出，#43 已补齐显式 opt-in smoke 证据收集和 Electron packaged smoke 接线，#44 已补齐桌面扩展动作的窗口 Run 授权，#45 已补齐 Loopback Connector 与 Browser 动作的 ActionGateway 策略、receipt 绑定和幂等隔离，#46 已补齐 Connector/Browser registry 的事件回放和 Runtime 启动恢复闸门。当前剩余工作集中在未知事件兼容、完整 release gate、真实 Docker daemon/image smoke、厂商联调、目标环境 Office/OCR smoke 和打包重启回归。当前能力参见 [实现状态](implementation-status.md)。
+更新日期：2026-10-05。架构已确认；#1–#4、T1/#6 至 T10/#15 的 Runtime 核心、Office worker、Episode/release gate、ownership/reconnect 和 Experience Candidate 已接入，#23 已补齐 CLI、Desktop IPC 与候选审核面板，#19 已补齐 digest/non-root Docker sandbox 合同与 fixture，#42 已补齐统一 G0 acceptance preflight 与 release gate 输出，#43 已补齐显式 opt-in smoke 证据收集和 Electron packaged smoke 接线，#44 已补齐桌面扩展动作的窗口 Run 授权，#45 已补齐 Loopback Connector 与 Browser 动作的 ActionGateway 策略、receipt 绑定和幂等隔离，#46 已补齐 Connector/Browser registry 的事件回放和 Runtime 启动恢复闸门，#47 已把 Docker、Keychain-backed Provider、Office/OCR 和 Electron 接入真实 smoke runner。当前剩余工作集中在未知事件兼容、完整 release gate、真实目标环境 smoke、厂商联调和打包重启回归。当前能力参见 [实现状态](implementation-status.md)。
 
 ## 1. 对话界面接入 Runtime：已完成（#1–#4）
 

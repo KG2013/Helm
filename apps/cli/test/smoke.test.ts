@@ -41,6 +41,37 @@ test('acceptance smoke records bounded Electron success evidence', async () => {
   assert.equal(report.releaseGate.eligible, false)
 })
 
+test('acceptance smoke executes injected Docker, Provider, Office, and Electron runners', async () => {
+  const runner = (command: string) => async () => ({ command, exitCode: 0, durationMs: 1, stdoutBytes: 2, stderrBytes: 0, stdoutHash: 'out', stderrHash: 'err' })
+  const report = await collectAcceptanceSmokeReport({
+    preflight: await preflight(),
+    runReal: true,
+    dockerRunner: runner('docker-smoke'),
+    providerRunner: runner('provider-smoke'),
+    officeRunner: runner('office-smoke'),
+    electronRunner: runner('electron-smoke'),
+  })
+  assert.equal(report.releaseGate.eligible, true)
+  assert.ok(report.checks.every((check) => check.status === 'passed'))
+  assert.equal(report.checks.find((check) => check.id === 'docker.preflight')?.details.smoke?.command, 'docker-smoke')
+  assert.equal(report.checks.find((check) => check.id === 'provider.preflight')?.details.smoke?.command, 'provider-smoke')
+})
+
+test('acceptance smoke keeps unavailable target runners UNKNOWN', async () => {
+  const report = await collectAcceptanceSmokeReport({
+    preflight: await preflight(),
+    runReal: true,
+    dockerRunner: async () => ({ command: 'docker-smoke', durationMs: 1, stdoutBytes: 0, stderrBytes: 0, stdoutHash: 'out', stderrHash: 'err', unavailable: true }),
+    providerRunner: async () => ({ command: 'provider-smoke', durationMs: 1, stdoutBytes: 0, stderrBytes: 0, stdoutHash: 'out', stderrHash: 'err', unavailable: true }),
+    officeRunner: async () => ({ command: 'office-smoke', durationMs: 1, stdoutBytes: 0, stderrBytes: 0, stdoutHash: 'out', stderrHash: 'err', unavailable: true }),
+    electronRunner: async () => ({ command: 'electron-smoke', exitCode: 0, durationMs: 1, stdoutBytes: 0, stderrBytes: 0, stdoutHash: 'out', stderrHash: 'err' }),
+  })
+  assert.equal(report.checks.find((check) => check.id === 'docker.preflight')?.status, 'unknown')
+  assert.equal(report.checks.find((check) => check.id === 'provider.preflight')?.status, 'unknown')
+  assert.equal(report.checks.find((check) => check.id === 'office.preflight')?.status, 'unknown')
+  assert.equal(report.releaseGate.eligible, false)
+})
+
 test('acceptance smoke maps a failed Electron runner to a failed gate', async () => {
   const report = await collectAcceptanceSmokeReport({
     preflight: await preflight(),
