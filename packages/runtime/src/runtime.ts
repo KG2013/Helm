@@ -218,7 +218,7 @@ export class RuntimeFacade {
     this.leaseDurationMs = options.leaseDurationMs ?? 5 * 60 * 1000;
     this.approvalTtlMs = options.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS;
     this.artifactStore = options.artifactStore;
-    this.actionGateway = options.actionGateway ?? new ActionGateway({ store: this.store, clock: this.clock, ids: this.ids });
+    this.actionGateway = options.actionGateway ?? new ActionGateway({ store: this.store, policy: options.actionPolicy, clock: this.clock, ids: this.ids });
     this.agentCoordinator = new AgentRunCoordinator({ store: this.store, gateway: this.actionGateway, clock: this.clock, ids: this.ids });
     this.connectorRegistry = new ConnectorRegistry({ store: this.store, gateway: this.actionGateway, artifactStore: this.artifactStore, clock: this.clock, ids: this.ids });
     this.browserRegistry = new BrowserFixtureRegistry({ store: this.store, gateway: this.actionGateway, artifactStore: this.artifactStore, clock: this.clock, ids: this.ids });

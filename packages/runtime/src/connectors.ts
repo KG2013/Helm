@@ -65,8 +65,9 @@ export class LoopbackConnector {
     this.readFailures.delete(target);
   }
 
-  async write(input: { target: string; after: Record<string, unknown>; expectedVersion?: string; idempotencyKey: string; remoteRequestId: string }): Promise<LoopbackWriteResult> {
-    const prior = this.idempotency.get(input.idempotencyKey);
+  async write(input: { target: string; after: Record<string, unknown>; expectedVersion?: string; idempotencyKey: string; idempotencyScope: string; remoteRequestId: string }): Promise<LoopbackWriteResult> {
+    const scopedKey = `${input.idempotencyScope}:${input.idempotencyKey}`;
+    const prior = this.idempotency.get(scopedKey);
     if (prior) return { ...prior, before: { ...prior.before }, value: { ...prior.value }, replayed: true };
     const current = await this.read(input.target);
     if (input.expectedVersion && input.expectedVersion !== current.version) {
@@ -80,7 +81,7 @@ export class LoopbackConnector {
         remoteRequestId: input.remoteRequestId,
         error: `Connector version conflict: expected ${input.expectedVersion}, found ${current.version}.`,
       };
-      this.idempotency.set(input.idempotencyKey, failed);
+      this.idempotency.set(scopedKey, failed);
       return { ...failed, before: { ...failed.before }, value: { ...failed.value } };
     }
     const next = `v${++this.version}`;
@@ -94,7 +95,7 @@ export class LoopbackConnector {
       remoteRequestId: input.remoteRequestId,
     };
     this.records.set(input.target, { value: { ...result.value }, version: result.version });
-    this.idempotency.set(input.idempotencyKey, result);
+    this.idempotency.set(scopedKey, result);
     return { ...result, before: { ...result.before }, value: { ...result.value } };
   }
 }
@@ -178,8 +179,9 @@ export class ConnectorRegistry {
 
   async write(input: ConnectorWriteInput): Promise<ConnectorWriteResult> {
     const profile = validateAction(this.get(input.profileId, input.profileVersion), input.connectorId, input.action, input.target, input.scope, input.after, true);
-    const actionId = input.actionId ?? this.ids.next('action-connector-write');
-    const remoteRequestId = input.remoteRequestId ?? `loopback-${hash({ target: input.target, idempotencyKey: input.idempotencyKey }).slice(0, 16)}`;
+    const actionId = input.actionId ?? `action-connector-write-${hash({ connectorId: input.connectorId, profileId: input.profileId, profileVersion: input.profileVersion, target: input.target, scope: input.scope, idempotencyKey: input.idempotencyKey }).slice(0, 24)}`;
+    const idempotencyScope = hash({ connectorId: input.connectorId, profileId: input.profileId, profileVersion: input.profileVersion, target: input.target, scope: input.scope });
+    const remoteRequestId = input.remoteRequestId ?? `loopback-${hash({ idempotencyScope, idempotencyKey: input.idempotencyKey }).slice(0, 16)}`;
     const postcondition = input.postcondition?.slice(0, 500) || 'read-back version matches the receipt version';
     const traceRef = input.traceRef?.slice(0, 300) || `run:${input.runId}:action:${actionId}`;
     let adapterResult: LoopbackWriteResult | undefined;
@@ -203,7 +205,7 @@ export class ConnectorRegistry {
       adapter: {
         id: `connector-write:${input.connectorId}`,
         execute: async () => {
-          adapterResult = await this.loopback.write({ target: input.target, after: input.after, expectedVersion: input.expectedVersion, idempotencyKey: input.idempotencyKey, remoteRequestId });
+          adapterResult = await this.loopback.write({ target: input.target, after: input.after, expectedVersion: input.expectedVersion, idempotencyKey: input.idempotencyKey, idempotencyScope, remoteRequestId });
           return {
             ok: adapterResult.ok,
             output: { version: adapterResult.version },
@@ -236,7 +238,7 @@ export class ConnectorRegistry {
       remoteRequestId,
     } satisfies LoopbackWriteResult));
     const priorReceipt = action.replayed
-      ? [...await this.store.list(input.runId)].reverse().find((event) => event.type === 'connector.receipt' && event.payload.idempotencyKey === input.idempotencyKey)
+      ? [...await this.store.list(input.runId)].reverse().find((event) => event.type === 'connector.receipt' && event.payload.actionId === actionId && event.payload.target === input.target && event.payload.idempotencyKey === input.idempotencyKey)
       : undefined;
     const receipt = priorReceipt
       ? {
@@ -284,17 +286,32 @@ export class ConnectorRegistry {
     const postcondition = input.postcondition?.slice(0, 500) || 'read-back version matches the receipt version';
     let observedAfterHash: string | undefined;
     let observedVersion: string | undefined;
-    let status: ConnectorVerificationResult['status'];
+    let status: ConnectorVerificationResult['status'] | undefined;
     let reason: string | undefined;
+    const receiptEvent = [...await this.store.list(input.runId)].reverse().find((event) => event.type === 'connector.receipt' && event.payload.actionId === input.actionId && event.payload.target === input.target);
+    const recordedAfterHash = typeof receiptEvent?.payload.afterHash === 'string' ? receiptEvent.payload.afterHash : undefined;
+    if (!receiptEvent) {
+      status = 'unknown';
+      reason = 'Connector write receipt is unavailable; verification cannot promote an unexecuted action.';
+    } else if (recordedAfterHash && recordedAfterHash !== input.expectedAfterHash) {
+      status = 'failed';
+      reason = 'Requested postcondition is not bound to the recorded connector write receipt.';
+    }
     try {
+      if (status !== undefined) throw new Error('__verification_already_classified__');
       const observed = await this.loopback.read(input.target);
       observedAfterHash = hash(observed.value);
       observedVersion = observed.version;
       status = observedAfterHash === input.expectedAfterHash && (!input.expectedVersion || observed.version === input.expectedVersion) ? 'known' : 'failed';
       if (status === 'failed') reason = 'Read-after-write state does not satisfy the expected hash/version postcondition.';
     } catch (error) {
+      if (error instanceof Error && error.message === '__verification_already_classified__') {
+        // The receipt binding check above intentionally avoids reading state for
+        // an unexecuted or mismatched action.
+      } else {
       status = 'unknown';
       reason = error instanceof Error ? error.message.slice(0, 500) : 'Connector read-after-write failed.';
+      }
     }
     const evidence: Array<{ type: string; summary: string; uri?: string; hash?: string }> = [{
       type: 'connector.read-after-write',
@@ -317,12 +334,13 @@ export class ConnectorRegistry {
         reason = `${reason ? `${reason} ` : ''}Evidence artifact unavailable: ${error instanceof Error ? error.message.slice(0, 200) : 'unknown error'}`;
       }
     }
-    const result: ConnectorVerificationResult = { actionId: input.actionId, target: input.target, status, expectedAfterHash: input.expectedAfterHash, observedAfterHash, expectedVersion: input.expectedVersion, observedVersion, postcondition, evidence, artifact, reason };
+    const finalStatus = status ?? 'unknown';
+    const result: ConnectorVerificationResult = { actionId: input.actionId, target: input.target, status: finalStatus, expectedAfterHash: input.expectedAfterHash, observedAfterHash, expectedVersion: input.expectedVersion, observedVersion, postcondition, evidence, artifact, reason };
     await this.store.append({ type: 'connector.reconciliation', taskId: input.taskId, sessionId: input.sessionId, runId: input.runId, payload: result as unknown as Record<string, unknown> });
-    if (status === 'unknown') {
+    if (finalStatus === 'unknown') {
       await this.store.append({ type: 'run.needs_reconciliation', taskId: input.taskId, sessionId: input.sessionId, runId: input.runId, payload: { state: 'needs_reconciliation', reason: reason ?? 'Connector read-after-write is unknown.', actionId: input.actionId } });
     } else {
-      await this.store.append({ type: 'run.reconciled', taskId: input.taskId, sessionId: input.sessionId, runId: input.runId, payload: { id: this.ids.next('reconciliation'), runId: input.runId, actionId: input.actionId, outcome: status, evidence, reason } });
+      await this.store.append({ type: 'run.reconciled', taskId: input.taskId, sessionId: input.sessionId, runId: input.runId, payload: { id: this.ids.next('reconciliation'), runId: input.runId, actionId: input.actionId, outcome: finalStatus, evidence, reason } });
     }
     return result;
   }

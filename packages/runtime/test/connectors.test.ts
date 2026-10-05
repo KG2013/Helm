@@ -86,3 +86,31 @@ test('ConnectorRegistry verifies read-after-write, stores restricted evidence, a
   assert.ok(events.some((event) => event.type === 'connector.reconciliation'));
   assert.ok(events.some((event) => event.type === 'run.reconciled' && event.payload.actionId === first.action.actionId));
 });
+
+test('ConnectorRegistry does not verify an action without a matching receipt', async () => {
+  const { registry, store } = await fixture();
+  const result = await registry.verifyWrite({
+    runId: 'run-connector-unbound',
+    taskId: 'task-connector-unbound',
+    sessionId: 'session-connector-unbound',
+    actionId: 'action-never-executed',
+    target: 'loopback://records/1',
+    expectedAfterHash: 'a'.repeat(64),
+  });
+  assert.equal(result.status, 'unknown');
+  assert.match(result.reason ?? '', /receipt/i);
+  assert.ok((await store.list('run-connector-unbound')).some((event) => event.type === 'run.needs_reconciliation'));
+});
+
+test('ConnectorRegistry scopes loopback idempotency by target and grant', async () => {
+  const { registry } = await fixture();
+  const first = await registry.write({
+    runId: 'run-connector-scope', taskId: 'task-connector-scope', sessionId: 'session-connector-scope', connectorId: 'loopback', profileId: 'loopback.records', profileVersion: 'v1', action: 'record.write', target: 'loopback://records/1', scope: { records: ['1'] }, after: { name: 'one' }, idempotencyKey: 'same-key',
+  });
+  const second = await registry.write({
+    runId: 'run-connector-scope', taskId: 'task-connector-scope', sessionId: 'session-connector-scope', connectorId: 'loopback', profileId: 'loopback.records', profileVersion: 'v1', action: 'record.write', target: 'loopback://records/2', scope: { records: ['2'] }, after: { name: 'two' }, idempotencyKey: 'same-key',
+  });
+  assert.equal(first.receipt.replayed, false);
+  assert.equal(second.receipt.replayed, false);
+  assert.notEqual(first.receipt.version, second.receipt.version);
+});

@@ -17,6 +17,7 @@ import type {
   Verification,
 } from './types.js';
 import { StaticToolRegistry } from './tools.js';
+import { createLocalActionPolicy } from './action-gateway.js';
 
 /** The small protocol boundary between Runtime and the Python document worker. */
 export interface OfficeWorkerRequest {
@@ -231,6 +232,7 @@ export function createOfficeRuntime(options: OfficeRuntimeOptions): RuntimeFacad
     policy: createOfficePolicy(registry, { roots: { [options.workspaceId]: options.root } }),
     executor: createOfficeExecutor({ roots: { [options.workspaceId]: options.root }, worker: options.worker, preflight: options.preflight }),
     verifier: new OfficeVerifier(),
+    actionPolicy: createLocalActionPolicy,
     ownerId: options.ownerId,
     artifactStore: options.artifactStore,
   });

@@ -3,6 +3,7 @@ import { lstat, readFile, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { MockProvider } from './mock-provider.js';
 import { RuntimeFacade } from './runtime.js';
+import { createLocalActionPolicy } from './action-gateway.js';
 import { TextOutputVerifier, WorkspaceInspectVerifier } from './verifier.js';
 import type {
   EventStore,
@@ -124,6 +125,7 @@ export function createWorkspaceInspectionRuntime(options: { store: EventStore; p
     policy: createReadOnlyWorkspacePolicy(registry, { roots: { [options.workspaceId]: options.root } }),
     executor: createWorkspaceInspectionExecutor({ roots: { [options.workspaceId]: options.root } }),
     verifier: createTaskAwareVerifier(),
+    actionPolicy: createLocalActionPolicy,
     artifactStore: options.artifactStore,
     ownerId: options.ownerId,
   });
@@ -138,6 +140,7 @@ export function createCodingRuntime(options: { store: EventStore; provider: Prov
     policy: createCodingPolicy(registry, { roots: { [options.workspaceId]: options.root }, sandboxAvailable: Boolean(options.sandbox) }),
     executor: createCodingExecutor({ roots: { [options.workspaceId]: options.root }, sandbox: options.sandbox, artifactStore: options.artifactStore }),
     verifier: new CodingVerifier(),
+    actionPolicy: createLocalActionPolicy,
     artifactStore: options.artifactStore,
     ownerId: options.ownerId,
   });

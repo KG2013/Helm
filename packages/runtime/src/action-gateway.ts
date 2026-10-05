@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ActionAdapter, ActionAdapterResult, ActionExecutionResult, ActionGatewayOptions, ActionRequest, ActionReceipt, EventStore, ID, NewDomainEvent, RuntimeClock, RuntimeIdFactory, ToolExecutor, ToolExecutorResult, ToolProfile, ProviderRequest, ToolCall } from './types.js';
+import type { ActionAdapter, ActionAdapterResult, ActionExecutionResult, ActionGatewayOptions, ActionPolicyResult, ActionRequest, ActionReceipt, EventStore, ID, NewDomainEvent, RuntimeClock, RuntimeIdFactory, ToolExecutor, ToolExecutorResult, ToolProfile, ProviderRequest, ToolCall } from './types.js';
 
 const defaultClock: RuntimeClock = { now: () => new Date() };
 const defaultIds: RuntimeIdFactory = {
@@ -51,8 +51,9 @@ export class ActionGateway {
     if (!priorEvents.some((event) => event.type === 'action.requested' && event.payload.actionId === input.request.actionId)) {
       await this.append('action.requested', input.request, { validation: undefined });
     }
-    const replay = await this.findReceipt(input.request.runId, input.request.actionId, input.request.idempotencyKey);
-    if (replay) return { ...replay.result, replayed: true };
+    const replay = await this.findReceipt(input.request);
+    if (replay?.conflict) return this.denied(input.request, replay.conflict);
+    if (replay && 'result' in replay) return { ...replay.result, replayed: true };
     await this.append('action.approved', input.request, { approvalId: input.request.actionId, approvalSource: 'runtime' });
     const deadline = Date.parse(input.request.deadline);
     if (!Number.isFinite(deadline) || deadline <= this.clock.now().getTime()) {
@@ -66,7 +67,7 @@ export class ActionGateway {
     }
     if (result.receipt?.sideEffect === 'unknown') return this.recordUnknown(input.request, result, input.markRunNeedsReconciliation !== false);
     const receipt = this.makeReceipt(input.request, result, false);
-    await this.append('action.receipt', input.request, { receipt, evidence: result.evidence ?? [] });
+    await this.append('action.receipt', input.request, { receipt, requestHash: actionHash(input.request), evidence: result.evidence ?? [] });
     return { status: result.ok ? 'executed' : 'failed', actionId: input.request.actionId, ok: result.ok, output: result.output, error: result.error, receipt: result.receipt, evidence: result.evidence };
   }
 
@@ -85,7 +86,7 @@ export class ActionGateway {
 
   private async recordUnknown(request: ActionRequest, result: ActionAdapterResult, markRunNeedsReconciliation: boolean): Promise<ActionExecutionResult> {
     const receipt = this.makeReceipt(request, result, false);
-    await this.append('action.receipt', request, { receipt, evidence: result.evidence ?? [], outcome: 'unknown' });
+    await this.append('action.receipt', request, { receipt, requestHash: actionHash(request), evidence: result.evidence ?? [], outcome: 'unknown' });
     if (markRunNeedsReconciliation) {
       await this.store.append({
         type: 'run.needs_reconciliation',
@@ -117,15 +118,17 @@ export class ActionGateway {
     };
   }
 
-  private async findReceipt(runId: ID, actionId: ID, idempotencyKey: string): Promise<{ result: ActionExecutionResult } | undefined> {
-    const events = await this.store.list(runId);
+  private async findReceipt(request: ActionRequest): Promise<{ result: ActionExecutionResult; conflict?: never } | { conflict: string } | undefined> {
+    const events = await this.store.list(request.runId);
     const event = [...events].reverse().find((candidate) => candidate.type === 'action.receipt'
-      && (candidate.payload.actionId === actionId || candidate.payload.idempotencyKey === idempotencyKey));
+      && (candidate.payload.actionId === request.actionId || candidate.payload.idempotencyKey === request.idempotencyKey));
     if (!event) return undefined;
+    const recordedHash = typeof event.payload.requestHash === 'string' ? event.payload.requestHash : undefined;
+    if (recordedHash && recordedHash !== actionHash(request)) return { conflict: 'Action idempotency or approval binding conflicts with the recorded request.' };
     const receipt = event.payload.receipt as Partial<ActionReceipt> | undefined;
     if (!receipt) return undefined;
     const status = receipt.effect === 'unknown' ? 'unknown' : receipt.ok === true ? 'executed' : 'failed';
-    return { result: { status, actionId, ok: receipt.ok === true, error: typeof receipt.diagnostics === 'string' ? receipt.diagnostics : undefined, receipt } };
+    return { result: { status, actionId: request.actionId, ok: receipt.ok === true, error: typeof receipt.diagnostics === 'string' ? receipt.diagnostics : undefined, receipt } };
   }
 
   private async append(type: 'action.requested' | 'action.approval_required' | 'action.approved' | 'action.denied' | 'action.receipt', request: ActionRequest, payload: Record<string, unknown>): Promise<void> {
@@ -139,6 +142,29 @@ export class ActionGateway {
     };
     await this.store.append(event);
   }
+}
+
+/**
+ * Policy for the deterministic local adapters. Unknown or networked actions
+ * remain denied; only the loopback/browser/agent seams are eligible for the
+ * adapter-specific profile and scope checks that happen before Gateway entry.
+ */
+export function createLocalActionPolicy(request: ActionRequest): ActionPolicyResult {
+  const localTarget = /^(?:loopback|browser|agent):/i.test(request.target)
+  const localProfile = /^(?:browser\.|agent\.)/i.test(request.profile.id)
+  if (request.network.mode === 'none' && (localTarget || localProfile)) return { decision: 'allow', reason: 'Bounded local adapter action is allowed after profile and scope validation.' }
+  if (request.profile.id === 'browser.navigation' && request.network.mode === 'allowlist' && request.network.hosts?.length === 1) {
+    try {
+      const url = new URL(request.target)
+      const host = request.network.hosts[0]!.toLowerCase()
+      if ((url.protocol === 'https:' || url.protocol === 'http:') && url.host.toLowerCase() === host) {
+        return { decision: 'allow', reason: 'Browser navigation is restricted to the validated origin allowlist.' }
+      }
+    } catch {
+      // The request validator below emits the bounded denial for malformed URLs.
+    }
+  }
+  return { decision: 'deny', reason: 'Action target or network capability is outside the local adapter policy.' }
 }
 
 export function createToolActionAdapter(executor: ToolExecutor, input: { call: ToolCall; request: ProviderRequest }): ActionAdapter {
@@ -202,7 +228,12 @@ function validateRequest(request: ActionRequest): string | undefined {
 }
 
 function actionHash(request: ActionRequest): string {
-  return createHash('sha256').update(JSON.stringify(requestSummary(request))).digest('hex');
+  // The deadline is an execution lease, not an approval scope. Excluding it
+  // lets an idempotent retry reuse the same bound action while the Gateway
+  // still checks the current deadline before invoking the adapter.
+  const summary = requestSummary(request);
+  delete summary.deadline;
+  return createHash('sha256').update(JSON.stringify(summary)).digest('hex');
 }
 
 function hashArgs(args: Record<string, unknown>): string {

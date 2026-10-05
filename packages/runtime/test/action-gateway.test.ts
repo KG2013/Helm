@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ActionGateway, InMemoryEventStore, type ActionRequest } from '../src/index.js';
+import { ActionGateway, InMemoryEventStore, createLocalActionPolicy, type ActionRequest } from '../src/index.js';
 
 function request(overrides: Partial<ActionRequest> = {}): ActionRequest {
   return {
@@ -66,4 +66,32 @@ test('ActionGateway marks adapter disconnect as UNKNOWN and reconciliation requi
   const events = await store.list('run-action');
   assert.ok(events.some((event) => event.type === 'run.needs_reconciliation'));
   assert.ok(events.some((event) => event.type === 'action.receipt'));
+});
+
+test('ActionGateway rejects a replay whose request binding changed', async () => {
+  const store = new InMemoryEventStore();
+  let executions = 0;
+  const gateway = new ActionGateway({ store, policy: () => ({ decision: 'allow' as const, reason: 'fixture' }) });
+  const adapter = { id: 'loopback', execute: async () => { executions += 1; return { ok: true, receipt: { sideEffect: 'known' as const } }; } };
+  const first = await gateway.execute({ request: request({ actionId: 'action-binding', idempotencyKey: 'idem-binding' }), adapter });
+  assert.equal(first.status, 'executed');
+  const conflict = await gateway.executeApproved({ request: request({ actionId: 'action-binding', idempotencyKey: 'idem-binding', target: 'loopback://records/other' }), adapter });
+  assert.equal(conflict.status, 'denied');
+  assert.match(conflict.error ?? '', /binding|idempotency/i);
+  assert.equal(executions, 1);
+});
+
+test('local action policy allows bounded browser navigation and denies unrelated network access', () => {
+  const navigation = createLocalActionPolicy(request({
+    profile: { id: 'browser.navigation', version: 'v1' },
+    target: 'https://example.test/path',
+    network: { mode: 'allowlist', hosts: ['example.test'] },
+  }));
+  assert.equal(navigation.decision, 'allow');
+  const wrongHost = createLocalActionPolicy(request({
+    profile: { id: 'browser.navigation', version: 'v1' },
+    target: 'https://evil.test/path',
+    network: { mode: 'allowlist', hosts: ['example.test'] },
+  }));
+  assert.equal(wrongHost.decision, 'deny');
 });

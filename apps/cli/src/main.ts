@@ -430,17 +430,19 @@ async function browserCommand(action: 'list' | 'create' | 'navigate' | 'approve'
       const valueIndex = args.indexOf('--value')
       const artifactIndex = args.indexOf('--artifact-uri')
       const keyIndex = args.indexOf('--idempotency-key')
+      const actionIdIndex = args.indexOf('--action-id')
       if (!contextId || !profileId || !profileVersion || !actionName || !locator) throw new Error('browser action requires context, profile, version, action, and locator')
-      const request = { contextId, profileId, profileVersion, action: actionName as BrowserActionName, locator, value: valueIndex >= 0 ? args[valueIndex + 1] : undefined, artifactUri: artifactIndex >= 0 ? args[artifactIndex + 1] : undefined, idempotencyKey: keyIndex >= 0 ? args[keyIndex + 1] ?? `action:${contextId}:${actionName}:${locator}` : `action:${contextId}:${actionName}:${locator}` }
+      const request = { contextId, profileId, profileVersion, action: actionName as BrowserActionName, locator, actionId: actionIdIndex >= 0 ? args[actionIdIndex + 1] : undefined, value: valueIndex >= 0 ? args[valueIndex + 1] : undefined, artifactUri: artifactIndex >= 0 ? args[artifactIndex + 1] : undefined, idempotencyKey: keyIndex >= 0 ? args[keyIndex + 1] ?? `action:${contextId}:${actionName}:${locator}` : `action:${contextId}:${actionName}:${locator}` }
       console.log(JSON.stringify(action === 'action' ? await runtime.executeBrowserAction(request) : await runtime.approveBrowserAction(request), null, 2))
       return
     }
     if (action === 'navigate' || action === 'approve') {
       const url = args[1]?.trim()
       const keyIndex = args.indexOf('--idempotency-key')
+      const actionIdIndex = args.indexOf('--action-id')
       const idempotencyKey = keyIndex >= 0 ? args[keyIndex + 1]?.trim() : `${action}:${contextId}:${url}`
       if (!url || !idempotencyKey) throw new Error(`browser ${action} requires a URL and idempotency key`)
-      const result = action === 'navigate' ? await runtime.navigateBrowser({ contextId, url, idempotencyKey }) : await runtime.approveBrowserNavigation({ contextId, url, idempotencyKey })
+      const result = action === 'navigate' ? await runtime.navigateBrowser({ contextId, url, actionId: actionIdIndex >= 0 ? args[actionIdIndex + 1] : undefined, idempotencyKey }) : await runtime.approveBrowserNavigation({ contextId, url, actionId: actionIdIndex >= 0 ? args[actionIdIndex + 1] : undefined, idempotencyKey })
       console.log(JSON.stringify(result, null, 2))
       return
     }

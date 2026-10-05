@@ -1028,6 +1028,8 @@ export interface RuntimeOptions {
   approvalTtlMs?: number;
   artifactStore?: ArtifactStore;
   actionGateway?: import('./action-gateway.js').ActionGateway;
+  /** Policy used when the Runtime constructs its default ActionGateway. */
+  actionPolicy?: ActionGatewayOptions['policy'];
   /** Explicit endpoint allowlist for remote Agent actions; empty by default. */
   remoteNetworkAllowlist?: readonly string[];
 }
