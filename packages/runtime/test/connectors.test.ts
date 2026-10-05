@@ -37,7 +37,7 @@ test('ConnectorRegistry rejects unregistered target, field, and scope before the
 test('ConnectorRegistry writes through the Gateway with idempotent, hash-only receipts', async () => {
   const { store, registry } = await fixture();
   const input = {
-    runId: 'run-connector-write', taskId: 'task-connector-write', sessionId: 'session-connector-write', connectorId: 'loopback', profileId: 'loopback.records', profileVersion: 'v1', action: 'record.write', target: 'loopback://records/1', scope: { records: ['1'], token: 'private-token' }, after: { name: 'new', status: 'ready' }, idempotencyKey: 'write-once', actionId: 'action-write-1', remoteRequestId: 'remote-42', postcondition: 'read back status=ready', artifactRef: 'artifact://receipt/1', traceRef: 'trace://run-connector-write/action-write-1',
+    runId: 'run-connector-write', taskId: 'task-connector-write', sessionId: 'session-connector-write', connectorId: 'loopback', profileId: 'loopback.records', profileVersion: 'v1', action: 'record.write', target: 'loopback://records/1', scope: { records: ['1'], token: 'private-token' }, after: { name: 'new', status: 'ready' }, idempotencyKey: 'write-once', actionId: 'action-write-1', postcondition: 'read back status=ready', artifactRef: 'artifact://receipt/1', traceRef: 'trace://run-connector-write/action-write-1',
   } as const;
   const first = await registry.write(input);
   const second = await registry.write(input);
@@ -45,7 +45,7 @@ test('ConnectorRegistry writes through the Gateway with idempotent, hash-only re
   assert.equal(first.receipt.replayed, false);
   assert.equal(second.receipt.replayed, true);
   assert.equal(second.receipt.version, first.receipt.version);
-  assert.equal(first.receipt.remoteRequestId, 'remote-42');
+  assert.match(first.receipt.requestId, /^loopback-/);
   assert.equal(first.receipt.postcondition, 'read back status=ready');
   assert.equal(first.receipt.scope.token, '[redacted]');
   assert.equal(first.receipt.artifactRef, 'artifact://receipt/1');

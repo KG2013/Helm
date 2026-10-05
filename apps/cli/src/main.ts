@@ -367,13 +367,12 @@ async function connectorCommand(action: 'list' | 'register' | 'preview' | 'write
       const expectedVersionIndex = args.indexOf('--expected-version')
       const idempotencyIndex = args.indexOf('--idempotency-key')
       const actionIdIndex = args.indexOf('--action-id')
-      const remoteRequestIndex = args.indexOf('--remote-request-id')
       const postconditionIndex = args.indexOf('--postcondition')
       const artifactRefIndex = args.indexOf('--artifact-ref')
       const traceRefIndex = args.indexOf('--trace-ref')
       const idempotencyKey = idempotencyIndex >= 0 ? args[idempotencyIndex + 1]?.trim() : undefined
       if (!idempotencyKey) throw new Error('connector write requires --idempotency-key')
-      console.log(JSON.stringify(await runtime.writeConnector({ runId, taskId: run.taskId, sessionId: run.sessionId, connectorId, profileId, profileVersion, action: actionName, target, scope, after, expectedVersion: expectedVersionIndex >= 0 ? args[expectedVersionIndex + 1]?.trim() : undefined, actionId: actionIdIndex >= 0 ? args[actionIdIndex + 1]?.trim() : undefined, remoteRequestId: remoteRequestIndex >= 0 ? args[remoteRequestIndex + 1]?.trim() : undefined, postcondition: postconditionIndex >= 0 ? args[postconditionIndex + 1] : undefined, artifactRef: artifactRefIndex >= 0 ? args[artifactRefIndex + 1]?.trim() : undefined, traceRef: traceRefIndex >= 0 ? args[traceRefIndex + 1]?.trim() : undefined, idempotencyKey }), null, 2))
+      console.log(JSON.stringify(await runtime.writeConnector({ runId, taskId: run.taskId, sessionId: run.sessionId, connectorId, profileId, profileVersion, action: actionName, target, scope, after, expectedVersion: expectedVersionIndex >= 0 ? args[expectedVersionIndex + 1]?.trim() : undefined, actionId: actionIdIndex >= 0 ? args[actionIdIndex + 1]?.trim() : undefined, postcondition: postconditionIndex >= 0 ? args[postconditionIndex + 1] : undefined, artifactRef: artifactRefIndex >= 0 ? args[artifactRefIndex + 1]?.trim() : undefined, traceRef: traceRefIndex >= 0 ? args[traceRefIndex + 1]?.trim() : undefined, idempotencyKey }), null, 2))
       return
     }
     console.log(JSON.stringify(await runtime.previewConnector({ runId, taskId: run.taskId, sessionId: run.sessionId, connectorId, profileId, profileVersion, action: actionName, target, scope, before: {}, after, impact: ['preview'], rollbackPlan: 'No write was performed.', reconciliationPlan: 'Read target state before any future write.' }), null, 2))

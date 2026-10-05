@@ -258,7 +258,6 @@ export function isConnectorWriteRequest(value: unknown): value is ConnectorWrite
     && Boolean(request.after) && typeof request.after === 'object' && isRunId(request.idempotencyKey)
     && (request.actionId === undefined || isRunId(request.actionId))
     && (request.expectedVersion === undefined || isRunId(request.expectedVersion))
-    && (request.remoteRequestId === undefined || (typeof request.remoteRequestId === 'string' && request.remoteRequestId.length <= 300))
     && (request.postcondition === undefined || (typeof request.postcondition === 'string' && request.postcondition.length <= 500))
     && (request.artifactRef === undefined || (typeof request.artifactRef === 'string' && request.artifactRef.length <= 300))
     && (request.traceRef === undefined || (typeof request.traceRef === 'string' && request.traceRef.length <= 300))

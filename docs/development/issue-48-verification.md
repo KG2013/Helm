@@ -23,4 +23,4 @@ pnpm typecheck
 git diff --check
 ```
 
-真实 Docker、Provider、Office/OCR 和跨机 A2A 的环境证据仍由 #47 及后续目标环境验收提供；本 issue 只负责让缺失、失败和未知状态可靠地阻断交付。
+真实 Docker、Provider 和 Office/OCR 的环境证据仍由 #47 及后续目标环境验收提供；A2A 只验收本机 Loopback 状态，本 issue 只负责让缺失、失败和未知状态可靠地阻断交付。

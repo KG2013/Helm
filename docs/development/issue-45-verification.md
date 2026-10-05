@@ -22,4 +22,4 @@ pnpm --filter @helm/desktop test:electron  # 2/2
 git diff --check                       # passed
 ```
 
-桌面 IPC 回归将没有 Connector receipt 的 verify 结果校正为 `unknown`；这保留了“未执行动作不得伪造写后验证”的 fail-closed 语义。真实 SaaS Connector 和真实浏览器仍需目标环境单独验收。
+桌面 IPC 回归将没有 Connector receipt 的 verify 结果校正为 `unknown`；这保留了“未执行动作不得伪造写后验证”的 fail-closed 语义。真实浏览器仍需目标环境单独验收；SaaS Connector 已退出范围，本 issue 只覆盖本机 Loopback fixture。

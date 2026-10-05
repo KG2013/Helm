@@ -40,11 +40,11 @@ export interface LoopbackWriteResult extends LoopbackReadResult {
   before: Record<string, unknown>;
   beforeVersion: string;
   replayed: boolean;
-  remoteRequestId: string;
+  requestId: string;
   error?: string;
 }
 
-/** A deterministic local connector used by tests and the first external-write slice. */
+/** A deterministic local connector used only for local ActionGateway tests. */
 export class LoopbackConnector {
   private readonly records = new Map<string, { value: Record<string, unknown>; version: string; valueHash?: string }>();
   private readonly idempotency = new Map<string, LoopbackWriteResult>();
@@ -64,7 +64,7 @@ export class LoopbackConnector {
     if (numericVersion) this.version = Math.max(this.version, Number(numericVersion));
   }
 
-  restoreIdempotency(scopedKey: string, input: { target: string; version: string; afterHash: string; remoteRequestId: string }): void {
+  restoreIdempotency(scopedKey: string, input: { target: string; version: string; afterHash: string; requestId: string }): void {
     if (this.idempotency.has(scopedKey)) return;
     this.idempotency.set(scopedKey, {
       ok: true,
@@ -74,7 +74,7 @@ export class LoopbackConnector {
       version: input.version,
       valueHash: input.afterHash,
       replayed: false,
-      remoteRequestId: input.remoteRequestId,
+      requestId: input.requestId,
     });
   }
 
@@ -86,7 +86,7 @@ export class LoopbackConnector {
     this.readFailures.delete(target);
   }
 
-  async write(input: { target: string; after: Record<string, unknown>; expectedVersion?: string; idempotencyKey: string; idempotencyScope: string; remoteRequestId: string }): Promise<LoopbackWriteResult> {
+  async write(input: { target: string; after: Record<string, unknown>; expectedVersion?: string; idempotencyKey: string; idempotencyScope: string; requestId: string }): Promise<LoopbackWriteResult> {
     const scopedKey = `${input.idempotencyScope}:${input.idempotencyKey}`;
     const prior = this.idempotency.get(scopedKey);
     if (prior) return { ...prior, before: { ...prior.before }, value: { ...prior.value }, replayed: true };
@@ -99,7 +99,7 @@ export class LoopbackConnector {
         value: current.value,
         version: current.version,
         replayed: false,
-        remoteRequestId: input.remoteRequestId,
+        requestId: input.requestId,
         error: `Connector version conflict: expected ${input.expectedVersion}, found ${current.version}.`,
         valueHash: current.valueHash,
       };
@@ -114,7 +114,7 @@ export class LoopbackConnector {
       value: { ...input.after },
       version: next,
       replayed: false,
-      remoteRequestId: input.remoteRequestId,
+      requestId: input.requestId,
       valueHash: hash(input.after),
     };
     this.records.set(input.target, { value: { ...result.value }, version: result.version, valueHash: result.valueHash });
@@ -171,7 +171,7 @@ export class ConnectorRegistry {
         if (target && version && afterHash) this.loopback.restore(target, version, afterHash);
         if (target && version && afterHash && idempotencyKey && connectorId && typeof profile.id === 'string' && typeof profile.version === 'string') {
           const scopeKey = hash({ connectorId, profileId: profile.id, profileVersion: profile.version, target, scope });
-          this.loopback.restoreIdempotency(`${scopeKey}:${idempotencyKey}`, { target, version, afterHash, remoteRequestId: typeof event.payload.remoteRequestId === 'string' ? event.payload.remoteRequestId : `restored-${idempotencyKey}` });
+          this.loopback.restoreIdempotency(`${scopeKey}:${idempotencyKey}`, { target, version, afterHash, requestId: typeof event.payload.requestId === 'string' ? event.payload.requestId : `restored-${idempotencyKey}` });
         }
       }
     }
@@ -242,7 +242,7 @@ export class ConnectorRegistry {
     const profile = validateAction(this.get(input.profileId, input.profileVersion), input.connectorId, input.action, input.target, input.scope, input.after, true);
     const actionId = input.actionId ?? `action-connector-write-${hash({ connectorId: input.connectorId, profileId: input.profileId, profileVersion: input.profileVersion, target: input.target, scope: input.scope, idempotencyKey: input.idempotencyKey }).slice(0, 24)}`;
     const idempotencyScope = hash({ connectorId: input.connectorId, profileId: input.profileId, profileVersion: input.profileVersion, target: input.target, scope: input.scope });
-    const remoteRequestId = input.remoteRequestId ?? `loopback-${hash({ idempotencyScope, idempotencyKey: input.idempotencyKey }).slice(0, 16)}`;
+    const requestId = `loopback-${hash({ idempotencyScope, idempotencyKey: input.idempotencyKey }).slice(0, 16)}`;
     const postcondition = input.postcondition?.slice(0, 500) || 'read-back version matches the receipt version';
     const traceRef = input.traceRef?.slice(0, 300) || `run:${input.runId}:action:${actionId}`;
     let adapterResult: LoopbackWriteResult | undefined;
@@ -266,12 +266,12 @@ export class ConnectorRegistry {
       adapter: {
         id: `connector-write:${input.connectorId}`,
         execute: async () => {
-          adapterResult = await this.loopback.write({ target: input.target, after: input.after, expectedVersion: input.expectedVersion, idempotencyKey: input.idempotencyKey, idempotencyScope, remoteRequestId });
+          adapterResult = await this.loopback.write({ target: input.target, after: input.after, expectedVersion: input.expectedVersion, idempotencyKey: input.idempotencyKey, idempotencyScope, requestId });
           return {
             ok: adapterResult.ok,
             output: { version: adapterResult.version },
             error: adapterResult.error,
-            receipt: { sideEffect: adapterResult.ok ? 'known' : 'none', version: adapterResult.version, beforeHash: hash(adapterResult.before), afterHash: hash(adapterResult.value), replayed: adapterResult.replayed, remoteRequestId: adapterResult.remoteRequestId },
+            receipt: { sideEffect: adapterResult.ok ? 'known' : 'none', version: adapterResult.version, beforeHash: hash(adapterResult.before), afterHash: hash(adapterResult.value), replayed: adapterResult.replayed, requestId: adapterResult.requestId },
             evidence: [
               { type: 'connector.before', summary: `Loopback target ${input.target} before write.`, hash: hash(adapterResult.before) },
               { type: 'connector.after', summary: `Loopback target ${input.target} after write.`, hash: hash(adapterResult.value) },
@@ -288,7 +288,7 @@ export class ConnectorRegistry {
       value: read.value,
       version: read.version,
       replayed: Boolean(action.replayed),
-      remoteRequestId,
+      requestId,
     } satisfies LoopbackWriteResult)).catch(() => ({
       ok: action.ok,
       before: {},
@@ -296,7 +296,7 @@ export class ConnectorRegistry {
       value: {},
       version: 'unknown',
       replayed: Boolean(action.replayed),
-      remoteRequestId,
+      requestId,
     } satisfies LoopbackWriteResult));
     const priorReceipt = action.replayed
       ? [...await this.store.list(input.runId)].reverse().find((event) => event.type === 'connector.receipt' && event.payload.actionId === actionId && event.payload.target === input.target && event.payload.idempotencyKey === input.idempotencyKey)
@@ -309,7 +309,7 @@ export class ConnectorRegistry {
           afterHash: String(priorReceipt.payload.afterHash ?? hash(current.value)),
           version: String(priorReceipt.payload.version ?? current.version),
           idempotencyKey: input.idempotencyKey,
-          remoteRequestId: String(priorReceipt.payload.remoteRequestId ?? remoteRequestId),
+          requestId: String(priorReceipt.payload.requestId ?? requestId),
           postcondition: String(priorReceipt.payload.postcondition ?? postcondition),
           ...(priorReceipt.payload.artifactRef ? { artifactRef: String(priorReceipt.payload.artifactRef) } : input.artifactRef ? { artifactRef: input.artifactRef.slice(0, 300) } : {}),
           traceRef: String(priorReceipt.payload.traceRef ?? traceRef),
@@ -322,7 +322,7 @@ export class ConnectorRegistry {
           afterHash: hash(current.value),
           version: current.version,
           idempotencyKey: input.idempotencyKey,
-          remoteRequestId,
+          requestId,
           postcondition,
           ...(input.artifactRef ? { artifactRef: input.artifactRef.slice(0, 300) } : {}),
           traceRef,

@@ -606,7 +606,6 @@ export interface ConnectorWriteInput {
   after: Record<string, unknown>;
   expectedVersion?: string;
   idempotencyKey: string;
-  remoteRequestId?: string;
   postcondition?: string;
   artifactRef?: string;
   traceRef?: string;
@@ -614,7 +613,7 @@ export interface ConnectorWriteInput {
 
 export interface ConnectorWriteResult {
   action: ActionExecutionResult;
-  receipt: { target: string; scope: Record<string, unknown>; beforeHash: string; afterHash: string; version: string; idempotencyKey: string; remoteRequestId: string; postcondition: string; artifactRef?: string; traceRef?: string; replayed: boolean };
+  receipt: { target: string; scope: Record<string, unknown>; beforeHash: string; afterHash: string; version: string; idempotencyKey: string; requestId: string; postcondition: string; artifactRef?: string; traceRef?: string; replayed: boolean };
   verification?: ConnectorVerificationResult;
 }
 
