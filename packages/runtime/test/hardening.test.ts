@@ -50,6 +50,7 @@ test('reconciliation candidates disappear only after evidence-backed resolution'
 
   const runtime = new RuntimeFacade({ store, provider: new MockProvider(), ownerId: 'hardening-owner' });
   await assert.rejects(() => runtime.recordReconciliation({ runId: 'run-hardening', toolCallId: 'tool-1', outcome: 'known' }), /requires evidence/i);
+  await assert.rejects(() => runtime.recordReconciliation({ runId: 'run-hardening', toolCallId: 'tool-1', outcome: 'known', evidence: [{} as never] }), /requires evidence/i);
   await runtime.recordReconciliation({
     runId: 'run-hardening',
     toolCallId: 'tool-1',

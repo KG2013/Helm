@@ -15,6 +15,7 @@ import {
   MemoryArtifactStore,
   type ProviderResponse,
   type ToolRegistry,
+  type Episode,
 } from '../src/index.js';
 
 const allowToolPolicy = {
@@ -194,7 +195,7 @@ test('fixed coding and office dev/holdout cases run three times before release',
     sessionId: 'fixed-session',
     events: [
       { type: 'run.completed', payload: { verification: { result: 'passed' } } },
-      { type: 'verification.result', payload: { verification: { result: 'passed' } } },
+      { type: 'verification.result', payload: { verification: { result: 'passed', evidence: [{ type: 'matrix', summary: 'Fixed matrix fixture passed.' }] } } },
     ],
     usage: [],
     redactedJsonl: '{"result":"passed"}',
@@ -210,6 +211,71 @@ test('fixed coding and office dev/holdout cases run three times before release',
   assert.equal(matrix.episodes.length, 12);
   assert.equal(matrix.gate.result, 'passed');
   await assert.rejects(() => runFixedEvaluationMatrix([{ id: 'coding', split: 'dev', run: async (attempt: number) => ({ ...base, evaluationCase: 'wrong', evaluationSplit: 'dev' as const, evaluationAttempt: attempt }) }]));
+});
+
+function gateFixture(extraEvents: Array<{ type: string; payload: Record<string, unknown> }> = []): Episode {
+  return {
+    runId: 'gate-run',
+    taskId: 'gate-task',
+    sessionId: 'gate-session',
+    events: [
+      { type: 'run.completed', payload: {} },
+      { type: 'verification.result', payload: { verification: { result: 'passed', evidence: [{ type: 'test', summary: 'gate fixture' }] } } },
+      ...extraEvents,
+    ],
+    usage: [],
+    redactedJsonl: '{"result":"passed"}',
+    trace: { providerIds: [], toolProfiles: [], toolProfileVersions: [], policyVersions: [], stepIds: [], approvalIds: [], artifactUris: [], verifierIds: [], requestIds: [], traceIds: [] },
+  } as unknown as Episode;
+}
+
+test('release gate blocks incomplete action, agent, budget, and external reconciliation evidence', () => {
+  const cases: Array<[string, Array<{ type: string; payload: Record<string, unknown> }>, RegExp]> = [
+    ['pending action', [
+      { type: 'action.requested', payload: { actionId: 'action-pending' } },
+      { type: 'action.approval_required', payload: { actionId: 'action-pending' } },
+    ], /awaiting approval|unapproved/],
+    ['failed child agent', [
+      { type: 'agent.created', payload: { agentRunId: 'agent-failed' } },
+      { type: 'agent.result', payload: { agentRunId: 'agent-failed', status: 'failure', evidence: [{ type: 'error', summary: 'worker failed' }] } },
+    ], /AgentRun .*failed/],
+    ['budget overrun', [
+      { type: 'run.created', payload: { budget: { maxSteps: 2, maxDurationMs: 60_000, maxTokens: 1, maxReviewerRounds: 0 }, createdAt: new Date().toISOString(), steps: 0, reviewerRounds: 0 } },
+      { type: 'usage.recorded', payload: { totalTokens: 2 } },
+    ], /budget usage/],
+    ['connector reconciliation gap', [
+      { type: 'connector.reconciliation', payload: { actionId: 'connector-unknown', status: 'unknown', evidence: [] } },
+    ], /Connector reconciliation/],
+    ['connector receipt without reconciliation', [
+      { type: 'connector.receipt', payload: { actionId: 'connector-unbound', afterHash: 'hash-1' } },
+    ], /Connector receipt lacks reconciliation/],
+    ['browser reconciliation gap', [
+      { type: 'browser.reconciliation', payload: { actionId: 'browser-unknown', status: 'unknown', evidence: [] } },
+    ], /Browser reconciliation/],
+    ['browser action without reconciliation', [
+      { type: 'browser.action', payload: { actionId: 'browser-unbound', domAfterHash: 'hash-1' } },
+    ], /Browser action lacks reconciliation/],
+    ['malformed verification evidence', [
+      { type: 'verification.result', payload: { verification: { result: 'passed', evidence: [{ type: '', summary: '' }] } } },
+    ], /verification .*lacks evidence/],
+  ];
+  for (const [label, events, reason] of cases) {
+    const gate = evaluateReleaseGate([gateFixture(events)]);
+    assert.equal(gate.result, 'blocked', label);
+    assert.ok(gate.reasons.some((item) => reason.test(item)), `${label}: ${gate.reasons.join('; ')}`);
+  }
+});
+
+test('release gate accepts evidence-backed completed local action and external reconciliations', () => {
+  const gate = evaluateReleaseGate([gateFixture([
+    { type: 'action.requested', payload: { actionId: 'action-ok' } },
+    { type: 'action.approved', payload: { actionId: 'action-ok' } },
+    { type: 'action.receipt', payload: { actionId: 'action-ok', receipt: { effect: 'known', ok: true }, evidence: [{ type: 'action', summary: 'action receipt' }] } },
+    { type: 'connector.reconciliation', payload: { actionId: 'connector-ok', status: 'known', evidence: [{ type: 'connector', summary: 'read after write' }] } },
+    { type: 'browser.reconciliation', payload: { actionId: 'browser-ok', status: 'known', evidence: [{ type: 'browser', summary: 'DOM postcondition' }] } },
+    { type: 'a2a.delivery', payload: { messageId: 'message-ok', state: 'ack', receiptHash: 'a'.repeat(64) } },
+  ])]);
+  assert.equal(gate.result, 'passed', gate.reasons.join('; '));
 });
 
 test('token budget hard-stops a response before delivery', async () => {

@@ -3,7 +3,7 @@ import { transitionRunState, isTerminalRunState, RunStateError } from './state-m
 import { TextOutputVerifier } from './verifier.js';
 import { boundProviderEvents, buildProviderContext, normalizeProviderContextProjection, toolProfileToSchema } from './context.js';
 import { canPromoteExperienceCandidate, createExperienceCandidate as createCandidate, reviewExperienceCandidate as reviewCandidate, type ExperienceCandidate } from './experience.js';
-import { isBudgetExceeded, listReconciliationCandidates, summarizeBudgetUsage } from './hardening.js';
+import { isBudgetExceeded, isValidEvidence, listReconciliationCandidates, summarizeBudgetUsage } from './hardening.js';
 import { ActionGateway, createToolActionAdapter, toolActionRequest } from './action-gateway.js';
 import { AgentRunCoordinator, type CreateChildAgentInput } from './agent.js';
 import { ConnectorRegistry, type ConnectorPreviewInput } from './connectors.js';
@@ -738,7 +738,7 @@ export class RuntimeFacade {
   async recordReconciliation(input: { runId: ID; toolCallId?: ID; actionId?: ID; outcome: 'known' | 'failed' | 'unknown'; evidence?: Evidence[]; reason?: string }): Promise<ReconciliationRecord> {
     const run = await this.requireRun(input.runId);
     await this.assertOwner(run);
-    if ((input.outcome === 'known' || input.outcome === 'failed') && (!input.evidence || input.evidence.length === 0)) {
+    if ((input.outcome === 'known' || input.outcome === 'failed') && (!input.evidence || input.evidence.length === 0 || !input.evidence.every(isValidEvidence))) {
       throw new Error('Reconciliation requires evidence when resolving an unknown effect.');
     }
     const record: ReconciliationRecord = {

@@ -70,6 +70,11 @@ export function parseReconciliationRecord(event: DomainEvent): ReconciliationRec
   };
 }
 
+/** Validate the bounded evidence shape before it can resolve an unknown effect. */
+export function isValidEvidence(value: unknown): value is Evidence {
+  return isEvidence(value);
+}
+
 function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
 }

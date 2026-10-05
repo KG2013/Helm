@@ -367,7 +367,9 @@ export class SqliteEventStore implements EventStore {
 interface SqliteEventRow {
   id: string;
   sequence: number;
-  type: DomainEvent['type'];
+  // SQLite has no knowledge of the TypeScript union. Older readers must be
+  // able to materialize event names introduced by a newer Runtime.
+  type: string;
   task_id: string | null;
   session_id: string | null;
   run_id: string | null;
@@ -376,11 +378,15 @@ interface SqliteEventRow {
 }
 
 function rowToEvent(row: SqliteEventRow): DomainEvent {
-  if (!KNOWN_EVENT_TYPES.has(row.type)) throw new Error(`Unsupported Helm event type: ${String(row.type)}`);
+  // Event types are persisted as strings so newer Runtime versions can add
+  // events without making older readers unable to open an existing ledger.
+  // Keep an unknown value intact: reducers intentionally ignore event types
+  // they do not understand, while list/replay/export remain available for
+  // audit and forward-compatible upgrades.
   return {
     id: row.id,
     sequence: Number(row.sequence),
-    type: row.type,
+    type: row.type as DomainEvent['type'],
     taskId: row.task_id ?? undefined,
     sessionId: row.session_id ?? undefined,
     runId: row.run_id ?? undefined,
@@ -388,10 +394,6 @@ function rowToEvent(row: SqliteEventRow): DomainEvent {
     payload: JSON.parse(row.payload_json) as Record<string, unknown>,
   };
 }
-
-const KNOWN_EVENT_TYPES = new Set<DomainEvent['type']>([
-  'task.created', 'session.created', 'run.created', 'run.started', 'run.state_changed', 'run.paused', 'run.resumed', 'run.completed', 'run.failed', 'run.cancelled', 'run.needs_reconciliation', 'run.reconciled', 'step.started', 'step.proposal', 'policy.decision', 'approval.requested', 'approval.decided', 'action.requested', 'action.approval_required', 'action.approved', 'action.denied', 'action.receipt', 'agent.created', 'agent.state_changed', 'agent.result', 'connector.registered', 'connector.preview', 'connector.receipt', 'connector.reconciliation', 'browser.context_created', 'browser.context_closed', 'browser.context_reconnected', 'browser.context_cleaned', 'browser.navigation', 'browser.observation', 'browser.profile_registered', 'browser.action', 'browser.reconciliation', 'a2a.envelope', 'a2a.delivery', 'a2a.rejected', 'a2a.reconciliation', 'tool.call', 'tool.receipt', 'step.observation', 'step.completed', 'verification.result', 'run.checkpoint', 'usage.recorded', 'run.owner_acquired', 'run.owner_released', 'experience.candidate_created', 'experience.candidate_reviewed',
-]);
 
 const REDACTED_KEY = /api[-_]?key|authorization|cookie|secret|password|token/i;
 const PRIVATE_VALUE_KEY = /^(content|output|body|diff|fileContent|privateFile|oldText|newText)$/i;

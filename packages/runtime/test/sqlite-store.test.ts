@@ -92,6 +92,42 @@ test('native SQLite migrates, serializes concurrent appends, projects facts, and
   });
 });
 
+test('SQLite list, replay, and export preserve event types added by a newer Runtime', async () => {
+  await withDatabase(async (filename) => {
+    const database = openSqliteEventStore(filename);
+    await database.store.append({
+      type: 'run.created',
+      taskId: 'task-forward',
+      sessionId: 'session-forward',
+      runId: 'run-forward',
+      payload: {
+        id: 'run-forward',
+        taskId: 'task-forward',
+        sessionId: 'session-forward',
+        state: 'ready',
+        createdAt: 'now',
+        updatedAt: 'now',
+        steps: 0,
+        reviewerRounds: 0,
+        budget: { maxSteps: 2, maxDurationMs: 1_000, maxReviewerRounds: 0 },
+      },
+    });
+    database.database.run(
+      'INSERT INTO helm_events (id, sequence, type, task_id, session_id, run_id, timestamp, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      ['evt-future', 2, 'future.runtime.event', 'task-forward', 'session-forward', 'run-forward', 'now', JSON.stringify({ version: 2, privateFile: 'must redact' })],
+    );
+
+    const events = await database.store.list('run-forward');
+    assert.equal(events.length, 2);
+    assert.equal(events[1]?.type, 'future.runtime.event');
+    assert.equal((await database.store.replayRun('run-forward')).state, 'ready');
+    const exported = await database.store.exportJsonl('run-forward');
+    assert.match(exported, /future\.runtime\.event/);
+    assert.doesNotMatch(exported, /must redact/);
+    await database.store.close();
+  });
+});
+
 test('two SQLite store instances allocate a unique append-only sequence', async () => {
   await withDatabase(async (filename) => {
     const first = openSqliteEventStore(filename)
