@@ -2,7 +2,7 @@
 
 Helm 是个人本地 LLM Harness，目标是连接 DeepSeek、智谱、Kimi，完成本地编码与 DOCX、XLSX、PDF 任务。首发平台为 macOS Apple Silicon，提供 Electron 桌面端和 CLI，由同一个 TypeScript Runtime 管理任务、权限、执行和验收。
 
-**当前阶段：架构已确认，#1–#4 的 Desktop IPC → Runtime 骨架、#6 的安全只读工作区检查、#7 的 SQLite 恢复、#8 的 Provider-neutral Context/Tool 合同、#9 的 Coding 核心工具与验收、#10–#12 的 Office Worker/Runtime 核心接线、#13 的 Episode/UsageLedger 核心以及 #14 的 Runtime owner/lease 核心已完成。** Kimi Code 已提供可选的 Keychain-backed 真实文本请求冒烟路径；DeepSeek/智谱已接入 Runtime SSE stream seam，缺少 Keychain 凭据时 fail-closed；CLI/Desktop 的 Coding/Office 工作台投影、扫描 PDF 的完整 OCR 可用性、DOCX 像素级视觉对比、跨进程 owner arbitration 和三家真实 API 联调仍待目标环境验收。DOCX 已具备可选的有界渲染检查；缺少 `soffice`/`libreoffice` 或 `pdftoppm`/`tesseract` 时按 UNKNOWN 阻断交付。
+**当前阶段：架构已确认，#1–#4 的 Desktop IPC → Runtime 骨架、#6 的安全只读工作区检查、#7 的 SQLite 恢复、#8 的 Provider-neutral Context/Tool 合同、#9 的 Coding 核心工具与验收、#10–#12 的 Office Worker/Runtime 核心接线、#13 的 Episode/UsageLedger 核心以及 #14 的 Runtime owner/lease 核心已完成。** Kimi Code、DeepSeek 和智谱均已完成 Keychain-backed 真实文本 smoke；Docker 固定 digest sandbox、Office/OCR 和 Electron packaged smoke 已在当前 macOS 目标环境通过。DOCX 仍只提供有界 PDF 可打开性证据，不包含像素级视觉对比；缺少 `soffice`/`libreoffice` 或 `pdftoppm`/`tesseract` 时仍按 UNKNOWN 阻断交付。
 
 ## 快速开始
 

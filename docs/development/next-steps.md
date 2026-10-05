@@ -1,6 +1,6 @@
 # 下一步实施计划
 
-更新日期：2026-10-05。架构已确认；#1–#4、T1/#6 至 T10/#15 的 Runtime 核心、Office worker、Episode/release gate、ownership/reconnect 和 Experience Candidate 已接入，#23 已补齐 CLI、Desktop IPC 与候选审核面板，#19 已补齐 digest/non-root Docker sandbox 合同与 fixture，#42 已补齐统一 G0 acceptance preflight 与 release gate 输出，#43 已补齐显式 opt-in smoke 证据收集和 Electron packaged smoke 接线，#44 已补齐桌面扩展动作的窗口 Run 授权，#45 已补齐 Loopback Connector 与 Browser 动作的 ActionGateway 策略、receipt 绑定和幂等隔离，#46 已补齐 Connector/Browser registry 的事件回放和 Runtime 启动恢复闸门，#47 已把 Docker、Keychain-backed Provider、Office/OCR 和 Electron 接入真实 smoke runner，#48 已补齐未知事件回放兼容和横向 Release Gate 门禁。当前剩余工作是目标环境真实 smoke、厂商联调和打包重启回归；SaaS/外部系统写入与跨机 A2A 已退出范围。当前能力参见 [实现状态](implementation-status.md)。
+更新日期：2026-10-05。架构已确认；#1–#4、T1/#6 至 T10/#15 的 Runtime 核心、Office worker、Episode/release gate、ownership/reconnect 和 Experience Candidate 已接入，#23 已补齐 CLI、Desktop IPC 与候选审核面板，#19 已补齐 digest/non-root Docker sandbox 合同与 fixture，#42 已补齐统一 G0 acceptance preflight 与 release gate 输出，#43 已补齐显式 opt-in smoke 证据收集和 Electron packaged smoke 接线，#44 已补齐桌面扩展动作的窗口 Run 授权，#45 已补齐 Loopback Connector 与 Browser 动作的 ActionGateway 策略、receipt 绑定和幂等隔离，#46 已补齐 Connector/Browser registry 的事件回放和 Runtime 启动恢复闸门，#47 已把 Docker、Keychain-backed Provider、Office/OCR 和 Electron 接入真实 smoke runner，#48 已补齐未知事件回放兼容和横向 Release Gate 门禁。当前 macOS 目标环境的 Docker、DeepSeek、Office/OCR 和 Electron real smoke 均已通过；后续只剩真实浏览器/跨平台长任务等独立环境回归，SaaS/外部系统写入与跨机 A2A 已退出范围。当前能力参见 [实现状态](implementation-status.md)。
 
 ## 1. 对话界面接入 Runtime：已完成（#1–#4）
 
@@ -39,9 +39,9 @@ Kimi Code 的 Keychain-backed 文本请求已完成首个真实连通性验证�
 
 受限 JSONL worker 已提供 DOCX package/content 与可选有界 `soffice`/`libreoffice` PDF 转换检查、XLSX 指定单元格/范围读写与 bounded workbook fingerprint、target/scope checks、PDF text-layer 分页来源与 coverage，并在 `pdftoppm`/`tesseract` 可用时提供带页码和 confidence 的 OCR。所有路径均返回 hash、source Run、worker Receipt、checks 与 limitations；缺渲染、OCR、覆盖率或未授权范围证据时返回 UNKNOWN 并暂停交付。
 
-真实 worker 进程管理、Runtime E2E、任务前 health preflight 和 CLI/Desktop 的同一 Artifact/Verification projection 已接入；`helm office health` 会报告依赖版本、路径和缺失项。当前环境仍缺少 `tesseract`，真实 OCR smoke 尚未通过；DOCX 检查验证有界转换和可打开的 PDF 页数，不做像素级视觉对比；缺少渲染器或 OCR 命令时保持 UNKNOWN。
+真实 worker 进程管理、Runtime E2E、任务前 health preflight 和 CLI/Desktop 的同一 Artifact/Verification projection 已接入；`helm office health` 会报告依赖版本、路径和缺失项。当前环境已安装并验证 `tesseract` 5.5.3（含 `chi_sim`），Office/OCR real smoke 通过；DOCX 检查验证有界转换和可打开的 PDF 页数，不做像素级视觉对比；缺少渲染器或 OCR 命令时保持 UNKNOWN。
 
-剩余工作集中在 acceptance smoke 通过后的真实 Docker image/daemon smoke、DeepSeek/智谱真实联调和目标环境 Office/OCR smoke；Electron packaged restart/multi-window smoke 已可通过 `acceptance smoke --run-real` 复用执行。Experience Candidate 已提供 Runtime、CLI、Desktop IPC 和列表/详情/审核面板，仍需真实候选来源与生产数据验收。UsageLedger、Episode、release gate、独立 Runtime reconnect 和成对 Context compaction 核心已建立。证据不全返回 UNKNOWN。多 Agent、本机 Loopback A2A、本地 ActionGateway fixture 和 GUI fixture 已完成；真实浏览器仍需独立环境验收，SaaS/外部系统写入与跨机 A2A 不再进入验收。
+当前 acceptance smoke 已覆盖 Docker、DeepSeek Provider、Office/OCR 和 Electron packaged runner，并在本机 macOS 通过 release gate。Experience Candidate 仍需真实候选来源与生产数据验收；跨平台安装包、真实长任务重启和真实浏览器仍需独立环境回归。UsageLedger、Episode、release gate、独立 Runtime reconnect 和成对 Context compaction 核心已建立。证据不全返回 UNKNOWN。多 Agent、本机 Loopback A2A、本地 ActionGateway fixture 和 GUI fixture 已完成；SaaS/外部系统写入与跨机 A2A 不再进入验收。
 
 ## 6. Runtime 硬化与对账入口（#17：已完成）
 
