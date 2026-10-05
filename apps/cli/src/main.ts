@@ -180,7 +180,7 @@ async function createPersistedRuntime(store: EventStore, workspaceId: string): P
   const taskKind = process.env.HELM_TASK_KIND?.toLowerCase()
   if (taskKind === 'office') {
     const scriptPath = process.env.HELM_DOCUMENT_WORKER ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../workers/document-worker/worker.py')
-    return createOfficeRuntime({
+    return readyRuntime(createOfficeRuntime({
       store,
       provider: new MockProvider(),
       worker: new PythonDocumentWorkerClient({ scriptPath, workspaceRoot: root }),
@@ -188,10 +188,10 @@ async function createPersistedRuntime(store: EventStore, workspaceId: string): P
       root,
       ownerId: process.env.HELM_RUNTIME_OWNER ?? `cli-${process.pid}`,
       artifactStore: createCliArtifactStore(),
-    })
+    }))
   }
   if (taskKind === 'coding') {
-    return createCodingRuntime({
+    return readyRuntime(createCodingRuntime({
       store,
       provider: new MockProvider(),
       workspaceId,
@@ -199,15 +199,20 @@ async function createPersistedRuntime(store: EventStore, workspaceId: string): P
       sandbox: createDockerCodingSandboxFromEnv(process.env, root),
       ownerId: process.env.HELM_RUNTIME_OWNER ?? `cli-${process.pid}`,
       artifactStore: createCliArtifactStore(),
-    })
+    }))
   }
-  return createWorkspaceInspectionRuntime({
+  return readyRuntime(createWorkspaceInspectionRuntime({
     store,
     provider: new MockProvider(),
     workspaceId,
     root,
     ownerId: process.env.HELM_RUNTIME_OWNER ?? `cli-${process.pid}`,
-  })
+  }))
+}
+
+async function readyRuntime(runtime: RuntimeFacade): Promise<RuntimeFacade> {
+  await runtime.ready();
+  return runtime;
 }
 
 function createCliArtifactStore(): FileArtifactStore | undefined {

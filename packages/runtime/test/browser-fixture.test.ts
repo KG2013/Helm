@@ -109,3 +109,28 @@ test('BrowserFixtureRegistry keeps interrupted effects UNKNOWN and requires evid
   assert.ok((await store.list(context.runId)).some((event) => event.type === 'browser.reconciliation' && event.payload.status === 'unknown'));
   assert.ok((await store.list(context.runId)).some((event) => event.type === 'run.needs_reconciliation'));
 });
+
+test('BrowserFixtureRegistry rehydrates context, profile, navigation, and DOM hash after restart', async () => {
+  const store = new InMemoryEventStore();
+  const gateway = new ActionGateway({ store, policy: () => ({ decision: 'allow' as const, reason: 'fixture browser policy' }) });
+  const first = new BrowserFixtureRegistry({ store, gateway });
+  const context = await first.createContext({ runId: 'run-browser-restart', taskId: 'task-browser-restart', sessionId: 'session-browser-restart', profile, appId: 'fixture-app', windowId: 'fixture-window' });
+  await first.registerActionProfile({ id: 'browser.restart', version: 'v1', actions: ['click'], allowedLocators: ['#save'] });
+  const navigation = await first.navigate({ contextId: context.contextId, url: 'https://fixture.example.test/restart', idempotencyKey: 'restart-navigation' });
+  const action = await first.executeAction({ contextId: context.contextId, actionId: 'restart-action', profileId: 'browser.restart', profileVersion: 'v1', action: 'click', locator: '#save', idempotencyKey: 'restart-action-key' });
+  const closed = await first.closeContext(context.contextId);
+  assert.equal(closed.state, 'closed');
+
+  const restarted = new BrowserFixtureRegistry({ store, gateway });
+  await restarted.ready();
+  assert.equal(restarted.listContexts('run-browser-restart')[0]?.url, navigation.receipt.url);
+  assert.equal(restarted.listContexts('run-browser-restart')[0]?.state, 'closed');
+  assert.deepEqual(restarted.listActionProfiles().map((item) => item.id), ['browser.restart']);
+  const reconnected = await restarted.reconnectContext(context.contextId);
+  assert.equal(reconnected.state, 'active');
+  const replay = await restarted.executeAction({ contextId: context.contextId, actionId: 'restart-action', profileId: 'browser.restart', profileVersion: 'v1', action: 'click', locator: '#save', idempotencyKey: 'restart-action-key' });
+  assert.equal(replay.action.replayed, true);
+  assert.equal(replay.receipt.domAfterHash, action.receipt.domAfterHash);
+  const verified = await restarted.verifyAction({ contextId: context.contextId, actionId: action.action.actionId, expectedDomAfterHash: action.receipt.domAfterHash });
+  assert.equal(verified.status, 'known');
+});

@@ -196,6 +196,7 @@ export class RuntimeFacade {
   private readonly browserRegistry: BrowserFixtureRegistry;
   private readonly a2aTransport: A2ALoopbackTransport;
   private readonly remoteAgentCoordinator: RemoteAgentCoordinator;
+  private readonly registryHydration: Promise<void>;
   private readonly eventListeners = new Set<RuntimeEventListener>();
   private readonly tasks = new Map<ID, Task>();
   private readonly sessions = new Map<ID, Session>();
@@ -224,6 +225,12 @@ export class RuntimeFacade {
     this.browserRegistry = new BrowserFixtureRegistry({ store: this.store, gateway: this.actionGateway, artifactStore: this.artifactStore, clock: this.clock, ids: this.ids });
     this.a2aTransport = new A2ALoopbackTransport({ store: this.store, clock: this.clock, ids: this.ids });
     this.remoteAgentCoordinator = new RemoteAgentCoordinator({ store: this.store, gateway: this.actionGateway, agents: this.agentCoordinator, transport: this.a2aTransport, clock: this.clock, ids: this.ids, artifactStore: this.artifactStore, networkAllowlist: options.remoteNetworkAllowlist });
+    this.registryHydration = Promise.all([this.connectorRegistry.ready(), this.browserRegistry.ready()]).then(() => undefined);
+  }
+
+  /** Wait until registry metadata and restart-safe local state have been replayed. */
+  async ready(): Promise<void> {
+    await this.registryHydration;
   }
 
   async createTask(input: TaskInput): Promise<Task> {

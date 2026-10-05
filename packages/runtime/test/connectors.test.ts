@@ -56,6 +56,9 @@ test('ConnectorRegistry writes through the Gateway with idempotent, hash-only re
   assert.equal(receiptEvents.length, 2);
   assert.equal(Object.hasOwn(receiptEvents[0]!.payload, 'after'), false);
   assert.ok(receiptEvents[0]!.payload.afterHash);
+  const exported = await store.exportJsonl?.();
+  assert.ok(exported);
+  assert.doesNotMatch(exported, /private-token/);
 });
 
 test('ConnectorRegistry rejects stale expected versions without mutating the record', async () => {
@@ -113,4 +116,24 @@ test('ConnectorRegistry scopes loopback idempotency by target and grant', async 
   assert.equal(first.receipt.replayed, false);
   assert.equal(second.receipt.replayed, false);
   assert.notEqual(first.receipt.version, second.receipt.version);
+});
+
+test('ConnectorRegistry rehydrates profiles and hash-only loopback state after restart', async () => {
+  const { store, registry } = await fixture();
+  const input = { runId: 'run-connector-restart', taskId: 'task-connector-restart', sessionId: 'session-connector-restart', connectorId: 'loopback', profileId: 'loopback.records', profileVersion: 'v1', action: 'record.write', target: 'loopback://records/1', scope: { records: ['1'] }, after: { name: 'persisted' }, idempotencyKey: 'restart-write' } as const;
+  const first = await registry.write(input);
+  const restarted = new ConnectorRegistry({ store, gateway: new ActionGateway({ store, policy: () => ({ decision: 'allow' as const, reason: 'restart fixture' }) }) });
+  await restarted.ready();
+  assert.equal(restarted.list()[0]?.id, 'loopback.records');
+  const restored = await restarted.readLoopback(input.target);
+  assert.equal(restored.version, first.receipt.version);
+  assert.equal(restored.valueHash, first.receipt.afterHash);
+  const verification = await restarted.verifyWrite({ runId: input.runId, taskId: input.taskId, sessionId: input.sessionId, actionId: first.action.actionId, target: input.target, expectedAfterHash: first.receipt.afterHash, expectedVersion: first.receipt.version });
+  assert.equal(verification.status, 'known');
+  const replay = await restarted.write(input);
+  assert.equal(replay.action.replayed, true);
+  assert.equal(replay.receipt.replayed, true);
+  // ActionGateway replay returns the durable receipt and never invokes the
+  // adapter a second time after a Runtime restart.
+  assert.equal((await store.list(input.runId)).filter((event) => event.type === 'action.receipt').length, 1);
 });

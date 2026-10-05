@@ -29,7 +29,7 @@ import type {
 const defaultClock: RuntimeClock = { now: () => new Date() };
 const defaultIds: RuntimeIdFactory = { next: (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}` };
 
-type Page = { url: string; origin: string; dom: string };
+type Page = { url: string; origin: string; dom: string; domHash?: string };
 
 /** Deterministic browser seam. It models a restricted browser context without granting OS or shell access. */
 export class BrowserFixtureRegistry {
@@ -44,6 +44,7 @@ export class BrowserFixtureRegistry {
   private readonly pages = new Map<ID, Page>();
   private readonly screenshots = new Map<ID, ArtifactReference>();
   private readonly failures = new Map<ID, BrowserFailureMode>();
+  private hydration?: Promise<void>;
 
   constructor(options: BrowserRegistryOptions) {
     this.store = options.store;
@@ -51,9 +52,70 @@ export class BrowserFixtureRegistry {
     this.artifactStore = options.artifactStore;
     this.clock = options.clock ?? defaultClock;
     this.ids = options.ids ?? defaultIds;
+    this.hydration = this.hydrate();
+  }
+
+  async ready(): Promise<void> {
+    await this.ensureHydrated();
+  }
+
+  private async ensureHydrated(): Promise<void> {
+    if (!this.hydration) this.hydration = this.hydrate();
+    await this.hydration;
+  }
+
+  async hydrate(): Promise<void> {
+    const events = await this.store.listAll();
+    for (const event of events) {
+      if (event.type === 'browser.profile_registered') {
+        const profile = cloneActionProfile(event.payload as unknown as BrowserActionProfile);
+        if (profile.id && profile.version) this.actionProfiles.set(`${profile.id}@${profile.version}`, profile);
+      }
+      if (event.type === 'browser.context_created') {
+        const payload = event.payload as Record<string, unknown>;
+        const profile = cloneContextProfile(payload.profile as BrowserContextProfile | undefined);
+        const context = cloneContextRecord(payload as unknown as BrowserContextRecord);
+        if (profile && context.contextId && context.runId) {
+          this.contexts.set(context.contextId, context);
+          this.profiles.set(context.contextId, profile);
+        }
+      }
+      if (event.type === 'browser.context_closed' || event.type === 'browser.context_reconnected' || event.type === 'browser.context_cleaned') {
+        const contextId = typeof event.payload.contextId === 'string' ? event.payload.contextId : undefined;
+        const current = contextId ? this.contexts.get(contextId) : undefined;
+        if (!current || !contextId) continue;
+        const state = event.type === 'browser.context_closed' ? 'closed' : event.type === 'browser.context_cleaned' ? 'cleaned' : 'active';
+        this.contexts.set(contextId, { ...current, state, updatedAt: typeof event.payload.updatedAt === 'string' ? event.payload.updatedAt : current.updatedAt });
+        if (state === 'cleaned') {
+          this.pages.delete(contextId);
+          this.screenshots.delete(contextId);
+          this.profiles.delete(contextId);
+        }
+      }
+      if (event.type === 'browser.navigation') {
+        const contextId = typeof event.payload.contextId === 'string' ? event.payload.contextId : undefined;
+        const context = contextId ? this.contexts.get(contextId) : undefined;
+        const url = typeof event.payload.url === 'string' ? event.payload.url : undefined;
+        const origin = typeof event.payload.origin === 'string' ? event.payload.origin : undefined;
+        const domHash = typeof event.payload.domHash === 'string' ? event.payload.domHash : undefined;
+        if (context && contextId && url && origin) {
+          this.contexts.set(contextId, { ...context, url, origin });
+          this.pages.set(contextId, { url, origin, dom: '', domHash });
+          const screenshot = event.payload.screenshot as ArtifactReference | undefined;
+          if (screenshot?.uri && screenshot.hash) this.screenshots.set(contextId, screenshot);
+        }
+      }
+      if (event.type === 'browser.action') {
+        const contextId = typeof event.payload.contextId === 'string' ? event.payload.contextId : undefined;
+        const page = contextId ? this.pages.get(contextId) : undefined;
+        const domHash = typeof event.payload.domAfterHash === 'string' ? event.payload.domAfterHash : undefined;
+        if (page && domHash) this.pages.set(contextId!, { ...page, domHash });
+      }
+    }
   }
 
   async createContext(input: BrowserContextCreateInput): Promise<BrowserContextRecord> {
+    await this.ensureHydrated();
     validateProfile(input.profile);
     if (!input.profile.allowedApps.includes(input.appId)) throw new Error('Browser app is outside the profile allowlist.');
     if (!input.profile.allowedWindows.includes(input.windowId)) throw new Error('Browser window is outside the profile allowlist.');
@@ -81,6 +143,7 @@ export class BrowserFixtureRegistry {
   }
 
   async registerActionProfile(profile: BrowserActionProfile): Promise<BrowserActionProfile> {
+    await this.ensureHydrated();
     validateActionProfile(profile);
     const key = `${profile.id}@${profile.version}`;
     if (this.actionProfiles.has(key)) return this.actionProfiles.get(key)!;
@@ -95,6 +158,7 @@ export class BrowserFixtureRegistry {
   }
 
   async executeAction(input: BrowserActionInput, approved = false): Promise<BrowserActionResult> {
+    await this.ensureHydrated();
     const context = this.requireContext(input.contextId);
     if (context.state !== 'active') throw new Error('Browser context is not active.');
     const profile = this.actionProfiles.get(`${input.profileId}@${input.profileVersion}`);
@@ -130,7 +194,7 @@ export class BrowserFixtureRegistry {
           return { ok: false, error: `Browser ${failure} interrupted the action.`, receipt: { sideEffect: 'unknown', reason: failure } };
         }
         const before = page.dom;
-        const domBeforeHash = hash(before);
+        const domBeforeHash = pageHash(page);
         const screenshotBefore = await this.putScreenshot(context.runId, context.contextId, hash(`screenshot:${page.url}:${domBeforeHash}`));
         let artifact;
         if (input.action === 'upload') {
@@ -143,7 +207,8 @@ export class BrowserFixtureRegistry {
         }
         const marker = input.action === 'type' || input.action === 'select' ? hash(input.value ?? '') : hash(`${input.action}:${input.locator}`);
         page.dom = page.dom.replace('</main>', `<div data-action="${input.action}" data-locator="${escapeAttribute(input.locator)}" data-value-hash="${marker}"></div></main>`);
-        const domAfterHash = hash(page.dom);
+        page.domHash = undefined;
+        const domAfterHash = pageHash(page);
         const screenshotAfter = await this.putScreenshot(context.runId, context.contextId, hash(`screenshot:${page.url}:${domAfterHash}`));
         adapterReceipt = { contextId: context.contextId, action: input.action, locator: input.locator, profile: { id: profile.id, version: profile.version }, domBeforeHash, domAfterHash, screenshotBefore, screenshotAfter, artifact, highRisk, idempotencyKey: input.idempotencyKey, replayed: false };
         const evidence = this.actionEvidence(adapterReceipt);
@@ -154,7 +219,7 @@ export class BrowserFixtureRegistry {
     const action = highRisk && !approved
       ? await this.gateway.requestApproval({ request, reason: `Browser action ${input.action} requires per-action approval.` })
       : approved ? await this.gateway.approve({ runId: request.runId, actionId, adapter, markRunNeedsReconciliation: false }) : await this.gateway.execute({ request, adapter, markRunNeedsReconciliation: false });
-    const currentHash = hash(page.dom);
+    const currentHash = pageHash(page);
     const receipt = adapterReceipt ?? { contextId: context.contextId, action: input.action, locator: input.locator, profile: { id: profile.id, version: profile.version }, domBeforeHash: currentHash, domAfterHash: currentHash, highRisk, idempotencyKey: input.idempotencyKey, replayed: Boolean(action.replayed) };
     const evidence = adapterReceipt ? this.actionEvidence(adapterReceipt) : [];
     if (action.status === 'unknown') {
@@ -181,6 +246,7 @@ export class BrowserFixtureRegistry {
   }
 
   async verifyAction(input: { contextId: ID; actionId: ID; expectedDomAfterHash: string }): Promise<BrowserPostconditionResult> {
+    await this.ensureHydrated();
     const context = this.requireContext(input.contextId);
     const actionEvent = [...await this.store.list(context.runId)].reverse().find((event) => event.type === 'browser.action' && event.payload.actionId === input.actionId);
     if (!actionEvent) {
@@ -227,7 +293,7 @@ export class BrowserFixtureRegistry {
         reason: !page ? 'Browser page is unavailable for postcondition verification.' : 'Browser context is not active for postcondition verification.',
       });
     }
-    const observedDomHash = hash(page.dom);
+    const observedDomHash = pageHash(page);
     const status = observedDomHash === input.expectedDomAfterHash ? 'known' : 'failed';
     const evidence: Evidence[] = [{ type: 'browser.postcondition', summary: status === 'known' ? 'Browser postcondition DOM hash verified.' : 'Browser postcondition DOM hash differs from the expected action result.', uri: `browser://${context.contextId}/postcondition`, hash: observedDomHash }];
     return this.recordPostcondition(context, {
@@ -242,34 +308,38 @@ export class BrowserFixtureRegistry {
   }
 
   async closeContext(contextId: ID, reason = 'closed by user'): Promise<BrowserContextRecord> {
+    await this.ensureHydrated();
     const context = this.requireContext(contextId);
     const next = { ...context, state: 'closed' as const, updatedAt: this.clock.now().toISOString() };
     this.contexts.set(contextId, next);
-    await this.store.append({ type: 'browser.context_closed', taskId: context.taskId, sessionId: context.sessionId, runId: context.runId, payload: { contextId, state: next.state, reason } });
+    await this.store.append({ type: 'browser.context_closed', taskId: context.taskId, sessionId: context.sessionId, runId: context.runId, payload: { contextId, state: next.state, updatedAt: next.updatedAt, reason } });
     return next;
   }
 
   async reconnectContext(contextId: ID): Promise<BrowserContextRecord> {
+    await this.ensureHydrated();
     const context = this.requireContext(contextId);
     if (context.state === 'cleaned') throw new Error('Browser context has been cleaned and cannot reconnect.');
     const next = { ...context, state: 'active' as const, updatedAt: this.clock.now().toISOString() };
     this.contexts.set(contextId, next);
-    await this.store.append({ type: 'browser.context_reconnected', taskId: context.taskId, sessionId: context.sessionId, runId: context.runId, payload: { contextId, state: next.state } });
+    await this.store.append({ type: 'browser.context_reconnected', taskId: context.taskId, sessionId: context.sessionId, runId: context.runId, payload: { contextId, state: next.state, updatedAt: next.updatedAt } });
     return next;
   }
 
   async cleanupContext(contextId: ID): Promise<BrowserContextRecord> {
+    await this.ensureHydrated();
     const context = this.requireContext(contextId);
     const next = { ...context, state: 'cleaned' as const, updatedAt: this.clock.now().toISOString() };
     this.contexts.set(contextId, next);
     this.pages.delete(contextId);
     this.screenshots.delete(contextId);
     this.profiles.delete(contextId);
-    await this.store.append({ type: 'browser.context_cleaned', taskId: context.taskId, sessionId: context.sessionId, runId: context.runId, payload: { contextId, state: next.state } });
+    await this.store.append({ type: 'browser.context_cleaned', taskId: context.taskId, sessionId: context.sessionId, runId: context.runId, payload: { contextId, state: next.state, updatedAt: next.updatedAt } });
     return next;
   }
 
   async navigate(input: BrowserNavigationInput, approved = false): Promise<BrowserNavigationResult> {
+    await this.ensureHydrated();
     const context = this.requireContext(input.contextId);
     if (context.state !== 'active') throw new Error('Browser context is not active.');
     const url = parseAllowedUrl(input.url, this.profileFor(context));
@@ -310,15 +380,15 @@ export class BrowserFixtureRegistry {
     };
     const action = approved ? await this.gateway.approve({ runId: request.runId, actionId, adapter, markRunNeedsReconciliation: false }) : await this.gateway.execute({ request, adapter, markRunNeedsReconciliation: false });
     const page = this.pages.get(context.contextId);
-    const evidence = page ? this.navigationEvidence(context, page, hash(page.dom), hash(`screenshot:${page.url}:${hash(page.dom)}`), undefined) : [];
+    const evidence = page ? this.navigationEvidence(context, page, pageHash(page), hash(`screenshot:${page.url}:${pageHash(page)}`), undefined) : [];
     const receipt: BrowserNavigationReceipt = {
       contextId: context.contextId,
       url: page?.url ?? url.href,
       origin: page?.origin ?? url.origin,
       windowId: context.windowId,
       appId: context.appId,
-      domHash: page ? hash(page.dom) : hash(''),
-      screenshotHash: page ? hash(`screenshot:${page.url}:${hash(page.dom)}`) : hash(''),
+      domHash: page ? pageHash(page) : hash(''),
+      screenshotHash: page ? hash(`screenshot:${page.url}:${pageHash(page)}`) : hash(''),
       idempotencyKey: input.idempotencyKey,
       replayed: Boolean(action.replayed),
       ...(this.screenshots.get(context.contextId) ? { screenshot: this.screenshots.get(context.contextId) } : {}),
@@ -331,10 +401,11 @@ export class BrowserFixtureRegistry {
   }
 
   async assertDom(input: BrowserDomAssertionInput): Promise<BrowserObservationResult> {
+    await this.ensureHydrated();
     const context = this.requireContext(input.contextId);
     const page = this.pages.get(context.contextId);
     const actionId = input.actionId ?? this.ids.next('action-browser-assert');
-    const domHash = page ? hash(page.dom) : undefined;
+    const domHash = page ? pageHash(page) : undefined;
     const passed = Boolean(page && ((!input.expectedText || page.dom.includes(input.expectedText)) && (!input.expectedSelector || page.dom.includes(input.expectedSelector))));
     const request = this.observationRequest(context, actionId, 'browser.dom-assertion', input.idempotencyKey, { expectedText: input.expectedText, expectedSelector: input.expectedSelector });
     const evidence: Evidence[] = page ? [{ type: 'browser.dom', summary: passed ? 'DOM assertion passed in the controlled fixture.' : 'DOM assertion failed in the controlled fixture.', uri: `browser://${context.contextId}/dom`, hash: domHash }] : [];
@@ -444,6 +515,35 @@ function validateActionInput(profile: BrowserActionProfile, input: BrowserAction
 
 function escapeAttribute(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]!));
+}
+
+function pageHash(page: Page): string {
+  return page.domHash ?? hash(page.dom);
+}
+
+function cloneContextProfile(profile: BrowserContextProfile | undefined): BrowserContextProfile | undefined {
+  if (!profile || !profile.id || !profile.version) return undefined;
+  return {
+    ...profile,
+    allowedOrigins: [...profile.allowedOrigins],
+    allowedApps: [...profile.allowedApps],
+    allowedWindows: [...profile.allowedWindows],
+    ...(profile.allowedArtifactUris ? { allowedArtifactUris: [...profile.allowedArtifactUris] } : {}),
+  };
+}
+
+function cloneContextRecord(record: BrowserContextRecord): BrowserContextRecord {
+  return { ...record, profile: { ...record.profile } };
+}
+
+function cloneActionProfile(profile: BrowserActionProfile): BrowserActionProfile {
+  return {
+    ...profile,
+    actions: [...profile.actions],
+    allowedLocators: [...profile.allowedLocators],
+    ...(profile.allowedArtifactUris ? { allowedArtifactUris: [...profile.allowedArtifactUris] } : {}),
+    ...(profile.highRiskActions ? { highRiskActions: [...profile.highRiskActions] } : {}),
+  };
 }
 
 function hash(value: unknown): string {

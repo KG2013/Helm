@@ -104,6 +104,7 @@ app.whenReady().then(async () => {
         ownerId,
         artifactStore,
       })
+  await runtime.ready()
   activeRuntime = runtime
   registerRuntimeIpcHandlers({
     ipc: {

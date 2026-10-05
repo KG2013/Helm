@@ -32,6 +32,7 @@ export interface ConnectorPreviewResult {
 export interface LoopbackReadResult {
   value: Record<string, unknown>;
   version: string;
+  valueHash?: string;
 }
 
 export interface LoopbackWriteResult extends LoopbackReadResult {
@@ -45,7 +46,7 @@ export interface LoopbackWriteResult extends LoopbackReadResult {
 
 /** A deterministic local connector used by tests and the first external-write slice. */
 export class LoopbackConnector {
-  private readonly records = new Map<string, { value: Record<string, unknown>; version: string }>();
+  private readonly records = new Map<string, { value: Record<string, unknown>; version: string; valueHash?: string }>();
   private readonly idempotency = new Map<string, LoopbackWriteResult>();
   private readonly readFailures = new Map<string, string>();
   private version = 0;
@@ -54,7 +55,27 @@ export class LoopbackConnector {
     const failure = this.readFailures.get(target);
     if (failure) throw new Error(`Loopback read ${failure}.`);
     const record = this.records.get(target);
-    return record ? { value: { ...record.value }, version: record.version } : { value: {}, version: 'v0' };
+    return record ? { value: { ...record.value }, version: record.version, ...(record.valueHash ? { valueHash: record.valueHash } : {}) } : { value: {}, version: 'v0' };
+  }
+
+  restore(target: string, version: string, valueHash: string): void {
+    this.records.set(target, { value: {}, version, valueHash });
+    const numericVersion = /^v(\d+)$/.exec(version)?.[1];
+    if (numericVersion) this.version = Math.max(this.version, Number(numericVersion));
+  }
+
+  restoreIdempotency(scopedKey: string, input: { target: string; version: string; afterHash: string; remoteRequestId: string }): void {
+    if (this.idempotency.has(scopedKey)) return;
+    this.idempotency.set(scopedKey, {
+      ok: true,
+      before: {},
+      beforeVersion: 'unknown',
+      value: {},
+      version: input.version,
+      valueHash: input.afterHash,
+      replayed: false,
+      remoteRequestId: input.remoteRequestId,
+    });
   }
 
   injectReadFailure(target: string, reason: 'timeout' | 'disconnect' | 'partial' | 'async'): void {
@@ -80,6 +101,7 @@ export class LoopbackConnector {
         replayed: false,
         remoteRequestId: input.remoteRequestId,
         error: `Connector version conflict: expected ${input.expectedVersion}, found ${current.version}.`,
+        valueHash: current.valueHash,
       };
       this.idempotency.set(scopedKey, failed);
       return { ...failed, before: { ...failed.before }, value: { ...failed.value } };
@@ -93,8 +115,9 @@ export class LoopbackConnector {
       version: next,
       replayed: false,
       remoteRequestId: input.remoteRequestId,
+      valueHash: hash(input.after),
     };
-    this.records.set(input.target, { value: { ...result.value }, version: result.version });
+    this.records.set(input.target, { value: { ...result.value }, version: result.version, valueHash: result.valueHash });
     this.idempotency.set(scopedKey, result);
     return { ...result, before: { ...result.before }, value: { ...result.value } };
   }
@@ -109,6 +132,7 @@ export class ConnectorRegistry {
   private readonly profiles = new Map<string, ConnectorActionProfile>();
   private readonly loopback: LoopbackConnector;
   private readonly artifactStore?: ConnectorRegistryOptions['artifactStore'];
+  private hydration?: Promise<void>;
 
   constructor(options: ConnectorRegistryOptions) {
     this.store = options.store;
@@ -117,14 +141,49 @@ export class ConnectorRegistry {
     this.ids = options.ids ?? defaultIds;
     this.loopback = new LoopbackConnector();
     this.artifactStore = options.artifactStore;
+    this.hydration = this.hydrate();
+  }
+
+  async ready(): Promise<void> {
+    await this.ensureHydrated();
+  }
+
+  private async ensureHydrated(): Promise<void> {
+    if (!this.hydration) this.hydration = this.hydrate();
+    await this.hydration;
+  }
+
+  async hydrate(): Promise<void> {
+    const events = await this.store.listAll();
+    for (const event of events) {
+      if (event.type === 'connector.registered') {
+        const profile = event.payload as unknown as ConnectorActionProfile;
+        if (profile.id && profile.version && profile.connectorId) this.profiles.set(`${profile.id}@${profile.version}`, cloneProfile(profile));
+      }
+      if (event.type === 'connector.receipt') {
+        const target = typeof event.payload.target === 'string' ? event.payload.target : undefined;
+        const version = typeof event.payload.version === 'string' ? event.payload.version : undefined;
+        const afterHash = typeof event.payload.afterHash === 'string' ? event.payload.afterHash : undefined;
+        const profile = event.payload.profile && typeof event.payload.profile === 'object' ? event.payload.profile as { id?: unknown; version?: unknown } : {};
+        const idempotencyKey = typeof event.payload.idempotencyKey === 'string' ? event.payload.idempotencyKey : undefined;
+        const connectorId = typeof event.payload.connectorId === 'string' ? event.payload.connectorId : undefined;
+        const scope = event.payload.scope && typeof event.payload.scope === 'object' ? event.payload.scope : {};
+        if (target && version && afterHash) this.loopback.restore(target, version, afterHash);
+        if (target && version && afterHash && idempotencyKey && connectorId && typeof profile.id === 'string' && typeof profile.version === 'string') {
+          const scopeKey = hash({ connectorId, profileId: profile.id, profileVersion: profile.version, target, scope });
+          this.loopback.restoreIdempotency(`${scopeKey}:${idempotencyKey}`, { target, version, afterHash, remoteRequestId: typeof event.payload.remoteRequestId === 'string' ? event.payload.remoteRequestId : `restored-${idempotencyKey}` });
+        }
+      }
+    }
   }
 
   async register(profile: ConnectorActionProfile): Promise<ConnectorActionProfile> {
+    await this.ensureHydrated();
     validateProfile(profile);
     const key = `${profile.id}@${profile.version}`;
     if (this.profiles.has(key)) return this.profiles.get(key)!;
     this.profiles.set(key, { ...profile, actions: [...profile.actions], allowedTargets: [...profile.allowedTargets], allowedFields: [...profile.allowedFields] });
-    await this.store.append({ type: 'connector.registered', payload: profile as unknown as Record<string, unknown> });
+    await this.store.append({ type: 'connector.registered', payload: safeProfile(profile) as unknown as Record<string, unknown> });
     return this.profiles.get(key)!;
   }
 
@@ -137,6 +196,7 @@ export class ConnectorRegistry {
   }
 
   async preview(input: ConnectorPreviewInput): Promise<ConnectorPreviewResult> {
+    await this.ensureHydrated();
     const profile = validateAction(this.get(input.profileId, input.profileVersion), input.connectorId, input.action, input.target, input.scope, input.after);
     const preview: ConnectorPreview = {
       previewId: this.ids.next('connector-preview'),
@@ -178,6 +238,7 @@ export class ConnectorRegistry {
   }
 
   async write(input: ConnectorWriteInput): Promise<ConnectorWriteResult> {
+    await this.ensureHydrated();
     const profile = validateAction(this.get(input.profileId, input.profileVersion), input.connectorId, input.action, input.target, input.scope, input.after, true);
     const actionId = input.actionId ?? `action-connector-write-${hash({ connectorId: input.connectorId, profileId: input.profileId, profileVersion: input.profileVersion, target: input.target, scope: input.scope, idempotencyKey: input.idempotencyKey }).slice(0, 24)}`;
     const idempotencyScope = hash({ connectorId: input.connectorId, profileId: input.profileId, profileVersion: input.profileVersion, target: input.target, scope: input.scope });
@@ -283,6 +344,7 @@ export class ConnectorRegistry {
   }
 
   async verifyWrite(input: { runId: ID; taskId: ID; sessionId: ID; actionId: ID; target: string; expectedAfterHash: string; expectedVersion?: string; postcondition?: string }): Promise<ConnectorVerificationResult> {
+    await this.ensureHydrated();
     const postcondition = input.postcondition?.slice(0, 500) || 'read-back version matches the receipt version';
     let observedAfterHash: string | undefined;
     let observedVersion: string | undefined;
@@ -300,7 +362,7 @@ export class ConnectorRegistry {
     try {
       if (status !== undefined) throw new Error('__verification_already_classified__');
       const observed = await this.loopback.read(input.target);
-      observedAfterHash = hash(observed.value);
+      observedAfterHash = observed.valueHash ?? hash(observed.value);
       observedVersion = observed.version;
       status = observedAfterHash === input.expectedAfterHash && (!input.expectedVersion || observed.version === input.expectedVersion) ? 'known' : 'failed';
       if (status === 'failed') reason = 'Read-after-write state does not satisfy the expected hash/version postcondition.';
@@ -354,6 +416,7 @@ export class ConnectorRegistry {
   }
 
   async readLoopback(target: string): Promise<LoopbackReadResult> {
+    await this.ensureHydrated();
     return this.loopback.read(target);
   }
 }
@@ -375,6 +438,14 @@ function validateAction(profile: ConnectorActionProfile | undefined, connectorId
 function validateProfile(profile: ConnectorActionProfile): void {
   if (!profile.id || !profile.version || !profile.connectorId) throw new Error('Connector profile identity is required.');
   if (!profile.actions.length || !profile.allowedTargets.length) throw new Error('Connector profile must declare actions and targets.');
+}
+
+function cloneProfile(profile: ConnectorActionProfile): ConnectorActionProfile {
+  return { ...profile, actions: [...profile.actions], allowedTargets: [...profile.allowedTargets], allowedFields: [...profile.allowedFields], scope: safeScope(profile.scope) };
+}
+
+function safeProfile(profile: ConnectorActionProfile): ConnectorActionProfile {
+  return { ...cloneProfile(profile), scope: safeScope(profile.scope) };
 }
 
 function safeScope(value: unknown, depth = 0): Record<string, unknown> {
